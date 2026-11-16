@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 scenario="${1:?usage: scripts/perf.sh ledger|turns [args]}"
 shift
 
-commit="$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || echo '-dirty')"
+commit="$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain -- crates Cargo.toml Cargo.lock)" ] || echo '-dirty')"
 load_before="$(uptime | sed 's/.*load average[s]*: //')"
 cargo build --quiet --release --locked -p voice-testkit --bin voice-perf
 set +e
