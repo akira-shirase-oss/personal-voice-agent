@@ -1,0 +1,20 @@
+[package]
+name = "voice-domain"
+description = "Pure model of the voice agent: turn reducer, ledger records, consent, policy. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Architecture rule (scripts/check-architecture.sh): only serde and thiserror here.
+# No async runtime, filesystem, process, clock or network crate may appear in [dependencies].
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

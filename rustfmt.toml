@@ -1,0 +1,4 @@
+# Stable options only, so every toolchain formats the same way.
+edition = "2024"
+style_edition = "2024"
+max_width = 120

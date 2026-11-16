@@ -1,0 +1,16 @@
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Rust
+/target/
+
+# Swift
+apps/macos/.build/
+apps/macos/.swiftpm/
+*.xcodeproj/xcuserdata/
+/build/
+
+# Local runtime data (ledger, consent log) — never committed
+/var/
