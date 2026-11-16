@@ -1,0 +1,20 @@
+[package]
+name = "voice-session"
+description = "The voice agent's session service: stdio JSON lines, the session actor, deadlines and the crash-safe ledger."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+voice-domain.workspace = true
+crc32fast.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

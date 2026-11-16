@@ -67,7 +67,7 @@ covers the JSON bytes exactly and the JSON is
   with an error instead of guessing. A session log without
   `session_closed` gets `turn_abandoned` for each open turn, `uncertain`
   for each tool call sent without a result, then `session_closed`.
-- **Bounds:** a record is at most 16 KiB; a session log holds at most
+- **Bounds:** a record is at most 64 KiB (the domain's content limits keep real records far smaller); a session log holds at most
   4,000,000 records, after which new turns are refused as degraded
   (`ledger_full`) rather than dropped silently.
 - Files are created with mode 0600 inside a directory the app marks as

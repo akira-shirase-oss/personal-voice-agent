@@ -1,0 +1,16 @@
+{"type":"ready","protocol":1,"session":"019a8f2e-7c41-7b3a-9d2e-5f1a2b3c4d5e","consent":{"capture":true,"personal_voice":false},"recovered":{"sessions":1,"abandoned_turns":1,"uncertain_calls":0,"torn_tails":1}}
+{"type":"turn_opened","turn":3}
+{"type":"capture","turn":3,"on":true}
+{"type":"stt_request","call":7,"turn":3,"deadline_ms":3000}
+{"type":"lm_request","call":8,"turn":3,"deadline_ms":20000,"heard":"Send $42 to Priya tomorrow."}
+{"type":"tts_request","call":9,"turn":3,"seq":0,"text":"Here is a draft.","voice":"standard","deadline_ms":3000}
+{"type":"cancel","call":8}
+{"type":"stop_playback","fence":4}
+{"type":"confirm_request","turn":3,"digest":"9f0c1e22aa31b7d4","heard":"Send $42 to Priya tomorrow.","tool":"fixture.note","slots":[{"name":"text","kind":"text","value":"milk"}],"reasons":["sensitive_slot","slot_not_heard"]}
+{"type":"turn_closed","turn":3,"outcome":"interrupted"}
+{"type":"degraded","turn":3,"stage":"lm","reason":"deadline"}
+{"type":"degraded","turn":null,"stage":"ledger","reason":"ledger_full"}
+{"type":"consent_state","capture":false,"personal_voice":false}
+{"type":"notice","code":"consent_required","turn":null}
+{"type":"flushed","seq":42}
+{"type":"error","code":"bad_message","detail":"malformed line"}
