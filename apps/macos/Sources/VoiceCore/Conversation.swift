@@ -113,6 +113,7 @@ public actor Conversation {
     // MARK: Lifecycle
 
     public func start() throws {
+        config.model.prewarm()
         let p = try SessionProcess(binary: config.binary, dataDir: config.dataDir, limits: config.limits)
         process = p
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))

@@ -104,7 +104,8 @@ public struct AppleSpeechRecognizer: SpeechRecognizing {
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw RecognizerError.audioFormat
         }
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        // Keep the speech model loaded across turns instead of reloading it for each one.
+        let analyzer = SpeechAnalyzer(modules: [transcriber], options: .init(priority: .userInitiated, modelRetention: .processLifetime))
         try await analyzer.prepareToAnalyze(in: format)
         let (stream, input) = AsyncStream.makeStream(of: AnalyzerInput.self, bufferingPolicy: .bufferingOldest(maxQueuedBuffers))
         let results = Task { () throws -> HeardText in

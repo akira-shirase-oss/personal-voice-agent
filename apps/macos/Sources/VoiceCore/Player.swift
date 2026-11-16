@@ -60,6 +60,41 @@ public final class TurnFencedPlayer: @unchecked Sendable {
         if !offline { engine.prepare() }
         try engine.start()
         node.play()
+        if !offline { installStopMeter() }
+    }
+
+    /// Live only: host time (seconds since boot, the clock `NSEvent.timestamp` uses) at which
+    /// the mixer last rendered a non-silent sample.
+    private let lastLoud = Mutex<TimeInterval?>(nil)
+
+    /// D-021 on the live device: from an interrupt event's timestamp to the last non-silent
+    /// sample the mixer rendered, plus the output device's reported presentation latency.
+    public struct StopMeasurement: Sendable, Equatable {
+        public let renderedMs: Double
+        public let deviceLatencyMs: Double
+        public var totalMs: Double { renderedMs + deviceLatencyMs }
+    }
+
+    /// Call ~0.5 s after an interrupt whose event happened at `eventUptime`.
+    public func measureStop(since eventUptime: TimeInterval) -> StopMeasurement? {
+        guard !offline, let loud = lastLoud.withLock({ $0 }) else { return nil }
+        return StopMeasurement(renderedMs: max(0, loud - eventUptime) * 1000, deviceLatencyMs: engine.outputNode.presentationLatency * 1000)
+    }
+
+    private func installStopMeter() {
+        let mixer = engine.mainMixerNode
+        let format = mixer.outputFormat(forBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: 256, format: format) { [weak self] buffer, time in
+            guard let self, let data = buffer.floatChannelData?[0] else { return }
+            var last = -1
+            for i in stride(from: Int(buffer.frameLength) - 1, through: 0, by: -1) where abs(data[i]) > 1e-3 {
+                last = i
+                break
+            }
+            guard last >= 0, time.isHostTimeValid else { return }
+            let at = AVAudioTime.seconds(forHostTime: time.hostTime) + Double(last) / format.sampleRate
+            self.lastLoud.withLock { $0 = at }
+        }
     }
 
     public var fence: TurnID { state.withLock { $0.fence } }

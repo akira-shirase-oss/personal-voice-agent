@@ -161,6 +161,24 @@ settled it, it is listed under **Open questions** rather than guessed.
   speaker is never retained or used for a profile — no audio is retained
   at all in the first release.
 
+- **D-024 — Warm, reused speech output.** One long-lived `AVSpeechSynthesizer`, one
+  utterance at a time, warmed with a short phrase at start. Probed on this Mac: a fresh
+  synthesizer took ~520 ms to its first buffer, a warm reused one ~15 ms; in the end-to-end
+  bench synthesis first audio fell from ~1.2 s to p50 19 ms. Trade-off: a cancelled utterance
+  stops the shared synthesizer, so utterances are serialized (they already are, per turn).
+- **D-025 — A fresh model session per turn with a bounded recap.** Each turn gets a new,
+  prewarmed `LanguageModelSession` whose prompt carries only the last two exchanges, each side
+  cut to 300 characters, instead of one session growing with the whole conversation. The
+  first bench (one growing session) showed model latency rising across rounds and 6 of 21
+  turns missing the 6 s first-output deadline. Trade-off: the model forgets anything older
+  than two exchanges; long-term memory is V3's reviewed store, not the model's context.
+- **D-026 — Offline rendering is the deterministic playback test bed.** Playback tests and the
+  bench render the player with AVAudioEngine manual offline rendering, so nothing plays on the
+  speakers and every sample is inspectable. Two behaviours found by probing are part of the
+  contract of those tests: `prepare()` before an offline start makes the first quantum
+  silent, and a buffer scheduled on a running node can start a few quanta late — so tests
+  render until sound appears and prove silence over windows longer than the audio in question.
+
 ## Open questions
 
 - **Channels for external actions** — V4's contract must name them (email?

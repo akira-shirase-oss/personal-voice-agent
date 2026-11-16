@@ -18,13 +18,26 @@ public protocol SpeechSynthesizing: Sendable {
 }
 
 /// The system's standard voice for a language — the first release's only voice (D-004).
-public struct SystemVoiceSynthesizer: SpeechSynthesizing {
+///
+/// One long-lived synthesizer, used for one utterance at a time and warmed at start: a
+/// fresh `AVSpeechSynthesizer` took ~520 ms to its first buffer on this Mac, a warm reused
+/// one ~15 ms (probed 2026-11-16, 6 runs each).
+public final class SystemVoiceSynthesizer: SpeechSynthesizing, @unchecked Sendable {
     public let language: String
+    private let synthesizer = AVSpeechSynthesizer()
+    private let gate = Gate()
+
     public init(language: String = "en-US") { self.language = language }
+
+    /// Synthesizes a short phrase and discards it, so the first real reply is not cold.
+    public func warmUp() async {
+        try? await synthesize("Ready.", voice: .standard) { _ in }
+    }
 
     public func synthesize(_ text: String, voice: Voice, onBuffer: @escaping @Sendable (PCM) -> Void) async throws {
         guard let systemVoice = AVSpeechSynthesisVoice(language: language) else { throw SynthesizerError.noVoice }
-        let synthesizer = AVSpeechSynthesizer()
+        try await gate.acquire()
+        defer { Task { await gate.release() } }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = systemVoice
         let box = SynthesisBox(synthesizer)
@@ -42,6 +55,22 @@ public struct SystemVoiceSynthesizer: SpeechSynthesizing {
             }
         } onCancel: {
             box.finish(SynthesizerError.cancelled)
+        }
+    }
+
+    /// One utterance at a time on the shared synthesizer; waiters queue in order.
+    actor Gate {
+        private var busy = false
+        private var waiters: [CheckedContinuation<Void, Error>] = []
+        func acquire() async throws {
+            if !busy {
+                busy = true
+                return
+            }
+            try await withCheckedThrowingContinuation { waiters.append($0) }
+        }
+        func release() {
+            if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
         }
     }
 }

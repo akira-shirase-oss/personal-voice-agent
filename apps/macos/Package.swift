@@ -13,6 +13,8 @@ let package = Package(
     targets: [
         .target(name: "VoiceCore"),
         .executableTarget(name: "VoiceAgent", dependencies: ["VoiceCore"]),
+        // End-to-end latency bench on this Mac (scripts/bench-e2e.sh records its runs).
+        .executableTarget(name: "VoiceBench", dependencies: ["VoiceCore"]),
         .testTarget(name: "VoiceCoreTests", dependencies: ["VoiceCore"]),
     ],
     swiftLanguageModes: [.v6]

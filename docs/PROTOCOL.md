@@ -53,6 +53,11 @@ durations only, never content (D-011).
           {"name":"to","kind":"recipient","value":"Priya"}]}
 ```
 
+A provider that streams sends every reply sentence (`lm_sentence`, indexes 0, 1, …) before
+`lm_done`; the service then records `lm_done`'s reply as inferred and does not speak it
+again. A provider that does not stream sends only `lm_done`, and the service speaks its
+reply sentence by sentence. An action's reply is never spoken.
+
 Slot kinds: `amount`, `datetime`, `person`, `recipient`, `text`.
 Provider failure reasons: `unavailable`, `model_not_ready`,
 `assets_missing`, `context_window`, `guardrail`, `audio_format`,

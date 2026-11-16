@@ -1,7 +1,10 @@
 # Personal Voice Agent
 
-> **Status — building the first release (V0–V2).** See `docs/ROADMAP.md`
-> for what is done, with its evidence, and what is owed.
+> **Status — first release (V0–V2) built and tested on this Mac; not yet
+> shippable.** The live microphone drills, the human evaluation set and the
+> million-scale load runs are owed, and the on-device model misses the
+> latency budget. `docs/ROADMAP.md` lists what is done, with its evidence,
+> and what is owed.
 
 A voice interface that learns your style without taking uncontrolled
 actions in your name. Push-to-talk conversations on macOS: a Swift/SwiftUI
@@ -24,6 +27,18 @@ audio.
   release); V3 memory + personal voice, V4 controlled tools (later)
 - `docs/DECISIONS.md` — native client, on-device Apple providers, child
   process over stdio, append-only local records, honest deletion scope
+
+## Try it
+
+```
+scripts/check.sh                 # Rust + Swift gates (what CI runs)
+scripts/bundle-app.sh            # build/VoiceAgent.app with the service inside
+open build/VoiceAgent.app        # hold Space to talk, Esc to stop
+scripts/bench-e2e.sh --rounds 3  # end-to-end latency on this Mac, recorded
+scripts/perf.sh turns --events 1000000   # service load run, recorded
+```
+
+`docs/DRILLS.md` walks through the live checks a person has to do.
 
 ## Requirements
 
