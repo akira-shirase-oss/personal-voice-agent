@@ -3,98 +3,148 @@
 **A voice interface that learns your style without taking uncontrolled
 actions in your name.**
 
-A personal assistant on Apple platforms: push-to-talk conversations with
+A personal assistant on macOS: push-to-talk conversations with
 interruption, a transcript that separates what was heard from what was
-inferred from what executed, bounded tool actions — and, only under explicit
-recorded consent, a voice profile that speaks like you. The default posture
-is private conversation and draft responses; speaking or sending on your
-behalf is a separate, explicit authorization boundary with disclosure to the
-recipient.
+inferred from what executed, and — in later, separately contracted
+releases — reviewed memory, bounded tool actions and a consented voice
+profile. The default posture is private conversation and draft
+responses; speaking or sending on your behalf is a separate, explicit
+authorization boundary with disclosure to the recipient.
 
-## In scope (the first useful release)
+All speech recognition, language and speech synthesis run **on the Mac**
+through Apple's frameworks (D-014). No audio, transcript or prompt
+leaves the machine, and there are no provider keys.
+
+## The first useful release (V0–V2)
+
+The guide's first release, and nothing more (D-012):
 
 - Push-to-talk conversation with interruption: bounded audio capture,
-  streaming responses, a live transcript, clear errors, a **standard voice**.
+  streaming responses, a live transcript, clear errors and a
+  **standard system voice**.
 - A turn ledger separating what the recognizer heard, what the assistant
-  inferred, and what actually executed — a spoken "done" requires tool-result
-  evidence, never a model prediction.
-- Editable long-term memory: user-reviewable, sourced, deletable; no
-  recording retention unless explicitly enabled.
-- One reversible local tool; then reviewed external actions with an audit
-  record.
-- Consent records with deletion scope for any enrolled voice; an explicitly
-  authorized **personal-voice profile** added only after the pipeline works
-  and the model's usage rights are understood.
+  inferred and what actually executed. A spoken "done" requires
+  tool-result evidence, never a model prediction.
+- Offline/degraded states when an on-device model is unavailable,
+  stalls or fails — never an invented answer.
+- The consent and authorization model the later releases depend on:
+  capture consent, the personal-voice gate (closed in this release) and
+  the external-action boundary (closed in this release).
+
+## Later contracts (not in the first release)
+
+Each starts only after the first release passes its gate, with its own
+proof gate in `ROADMAP.md`:
+
+- **V3 — memory and personal voice.** Editable long-term memory
+  (user-reviewable, sourced, deletable) and, only after a recorded
+  usage-rights review (D-020), a consented personal-voice profile.
+- **V4 — controlled tools.** One reversible local tool, then reviewed
+  external actions with an audit record. The V4 contract must name the
+  external channels (email, messages, …) before any is built; outbound
+  calls are not in scope.
 
 ## Out of scope (exclusions are contract, not backlog)
 
-- Covert recording, voice authentication, unapproved outbound calls, a fully
-  autonomous identity substitute — **excluded by the guide; never features.**
-- Training a custom voice or language model — a separate later experiment.
-  The availability of a voice-cloning model is **not assumed**; existing
-  speech-to-text, language and voice-synthesis models come first, chosen by
-  recorded evaluations, rights and latency.
-- iPhone companion — deferred; macOS is the proposed first target.
-- Server-side multi-device state — PostgreSQL enters only if that requirement
-  becomes real.
+- Covert recording, voice authentication, unapproved outbound calls, a
+  fully autonomous identity substitute — **excluded by the guide; never
+  features.**
+- Training a custom voice or language model — a separate later
+  experiment. The availability of a voice-cloning model is **not
+  assumed**.
+- Cloud speech, language or voice providers (D-014).
+- Apple Personal Voice in the first release: its terms limit it to
+  personal, non-commercial use, and it belongs to V3's rights review.
+- iPhone companion — deferred; macOS is the first target.
+- Server-side multi-device state — PostgreSQL enters only if that
+  requirement becomes real.
+
+## Definitions the gates depend on (D-013)
+
+- **Consequential** — a proposed action whose tool has an external
+  effect or an irreversible local effect, **or** that carries any slot of
+  type amount, date/time, person or recipient.
+- **Ambiguous** — the recognizer's lowest per-segment confidence for the
+  turn is below the threshold (0.80 initially), **or** the recognizer
+  reported no confidence, **or** any slot value is not literally present
+  in the heard transcript after normalization (case, punctuation,
+  currency symbols, digit grouping, English number words → digits).
+- **Rule** — every consequential or ambiguous action proposal goes to
+  confirmation, and the confirmation shows the preserved heard
+  transcript verbatim. A confirmation binds to the proposal's digest; a
+  confirmation for any other digest or turn is refused. An unconfirmed
+  proposal expires; it never executes.
+- **External actions** are refused in the first release even when
+  confirmed: no external authorization can be granted before V4.
 
 ## Non-negotiable invariants
 
-1. **Consent before a profile.** Enroll only your own voice or a speaker with
-   explicit rights; consent and deletion scope are recorded. Revocation stops
-   capture/playback and prevents any further use of the revoked profile.
-2. **Heard ≠ inferred ≠ executed.** The transcript keeps the recognizer's
-   output, the assistant's inference and tool-result evidence separate.
-   Ambiguous or consequential requests are confirmed against the preserved
-   original transcript.
+1. **Consent before capture and before any profile.** Capture happens only
+   while push-to-talk is held and capture consent is granted. Enroll only
+   your own voice or a speaker with explicit rights; consent and deletion
+   scope are recorded. Revocation stops capture/playback immediately and
+   prevents any further use of the revoked scope.
+2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
+   recognizer's output, the assistant's inference and tool-result
+   evidence. The ledger is what happened; the model's narration is not.
 3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
-   interruption playback stops and downstream work is cancelled where
-   possible; a late text/audio chunk from an old turn can never play over a
-   new one; actions already sent keep an honest `uncertain` state — never a
-   fabricated result.
-4. **Actions need their permission.** Retrieved text, audio and tool results
-   are data, never instructions: adversarial input cannot elevate permissions
-   or invoke a tool silently. External actions carry their explicit
-   authorization plus recipient disclosure of synthetic speech, and produce
-   an audit record.
-5. **Memory is controllable.** User-reviewable, sourced and deletable;
-   recordings encrypted at rest with working deletion controls; model keys in
-   the system credential store or server secret manager; private speech is
-   not a training dataset by default.
-6. **Bounded everything.** Every provider call has a deadline; a stall or
-   dropped connection surfaces an offline/degraded state — the system stops
-   waiting and says so, it never invents an execution result.
+   interruption playback stops and downstream work is cancelled; a late
+   text/audio chunk from an old turn can never play over a new one; an
+   action already sent keeps an honest `uncertain` state and is
+   reconciled from later evidence — never reported done or undone.
+4. **Actions need their permission.** Transcripts, model output and tool
+   results are data, never instructions: nothing they contain can elevate
+   permissions or invoke a tool without the policy's decision.
+5. **Data stays local and its deletion is described honestly (D-018).**
+   No audio is retained. The ledger and consent log are local files
+   (mode 0600, excluded from Time Machine). Deleting them removes them
+   from the live file system; copies can survive in APFS local snapshots
+   or backups made before the exclusion, until those expire — the docs
+   never claim more. V3 adds per-item encryption with keys in the
+   Keychain so that deleting an item destroys its key ("unrecoverable
+   after key destruction", a claim a test can check). No third-party
+   provider holds audio or transcripts in this design.
+6. **Bounded everything.** Every provider call has a deadline (D-019);
+   every queue, line and buffer has a bound; a stall or failure surfaces
+   an offline/degraded state — the system stops waiting and says so.
 
-## Required failure cases
+## Required failure cases (automated tests, not intentions)
 
 | Trigger | Required result |
 |---|---|
-| Recognition mistakes an amount/name | Request confirmation before a consequential action; preserve the original transcript |
+| Recognition mistakes an amount/name | Confirmation before a consequential action, heard transcript shown verbatim; the original transcript preserved in the ledger |
 | Provider stalls or connection drops | Stop waiting at the deadline, show offline/degraded state, never invent an execution result |
-| User interrupts or revokes consent | Discard stale turn output, stop capture/playback, prevent further use of the revoked profile |
+| User interrupts or revokes consent mid-turn | Discard stale turn output, stop capture/playback, prevent further use of the revoked scope |
 | Adversarial audio/tool result | Retrieved text/audio cannot elevate permissions or silently invoke tools |
+| Session service crashes | Restart without losing durable ledger records; open turns are closed as abandoned; sent tool calls become `uncertain` |
 
-## Ship gate
+## Ship gate (first release)
 
-Ship for personal use when **conversations are interruptible, memory is
-controllable, and no external action happens without its required
-permission** — and the recorded evaluations, data-deletion tests and consent
-records exist as stored evidence.
+Ship V0–V2 for personal use when **conversations are interruptible**
+(stop-playback p95 measured, zero stale chunks played across the soak
+sessions), **every failure case above has a passing automated test**,
+and **no action executes without its required permission** — with the
+evidence stored under `perf/results/` and `evals/`.
 
 ## Evidence plan
 
-Per the guide: **100 consented utterances** in quiet and noisy conditions and
-**three one-hour sessions**. Measure end-of-turn→first-audio p50/p95,
-transcription error, interruption delay and total provider cost. Proposed
-local stop-playback target: **under 200 ms** after an interrupt event —
-network/model latency is reported separately, and no universal voice-latency
-claim is made. CPU, audio glitches and memory are profiled on the actual
-target Mac.
-
-Per the workspace load standard, full runs are million-scale in the
-equivalent unit — **turns and interrupt events through the session service**
-— executed against stub providers so the run is deterministic and
-cost-bounded. Real-provider evaluation volume is bounded by cost and is a
-quality measurement, not a load substitute. Results commit with machine +
-commit; misses are kept, not rerun until green. Laptop numbers are
-development observations, never production capacity.
+- **Stop-playback**, defined for measurement (D-021): from the interrupt
+  event's timestamp to the last non-silent sample rendered by the output
+  node. Proposed target **under 200 ms** — a target to measure against,
+  never a claim. Measured deterministically by offline rendering in tests
+  and on the live device in the manual drill.
+- **End-of-turn → first audio** p50/p95, split by stage (recognizer
+  finalize, model first sentence, synthesis first buffer), on this Mac.
+- **Transcription error** on committed fixture utterances now, and on
+  **100 consented utterances** (quiet and noisy) plus **three one-hour
+  sessions** recorded by the maintainer — owed to a human with a
+  microphone.
+- **Load:** the session service runs million-scale simulated turn events
+  and ledger appends against stub providers (cheap regressions with p99
+  recorded). For a single-user local app the evidence that matters is the
+  audio soak and interrupt storms; the million-scale runs do not replace
+  them.
+- Results commit with machine + commit. Misses are kept, not rerun until
+  green. Laptop numbers are development observations; no universal
+  voice-latency claim is made. There is no provider cost: every model is
+  on-device.

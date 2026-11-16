@@ -1,90 +1,94 @@
 # Personal Voice Agent — agent instructions
 
 A voice interface that learns your style without taking uncontrolled actions
-in your name. Swift/SwiftUI client on Apple platforms over AVAudioEngine; a
-Rust session service owns orchestration, bounded tool execution and provider
-adapters. Contract: `../../docs/Project_Guides/07_Personal_Voice_Agent.docx`.
-When code and guide disagree, the guide wins unless a `D-NNN` says otherwise.
+in your name. A Swift/SwiftUI app on macOS hosts on-device Apple providers
+(Speech, FoundationModels, AVSpeechSynthesizer) and launches a Rust session
+service as a child process over stdio; the service owns orchestration,
+deadlines, the ledger and every decision about what is spoken or executed.
+Contract: `../../docs/Project_Guides/07_Personal_Voice_Agent.docx`. When
+code and guide disagree, the guide wins unless a `D-NNN` says otherwise.
 
 ## Read first
 
-1. `docs/END_GOAL.md` — what done means, scope, the four required failure
-   cases, the ship gate.
-2. `docs/ARCHITECTURE.md` — sources of truth, turn/interrupt/revocation
-   paths, layout.
-3. `docs/DECISIONS.md` — prescribed directions (native client, Rust
-   orchestration, evals over hype, consent-gated profile, local-first data)
-   and the open questions — do not guess where the guide is open.
-4. `docs/ROADMAP.md` — V0–V4 step order.
+1. `docs/END_GOAL.md` — the first release (V0–V2), definitions of
+   consequential/ambiguous, the failure cases, the ship gate.
+2. `docs/ARCHITECTURE.md` — topology, sources of truth, on-disk format,
+   turn/interrupt/revocation paths, layout.
+3. `docs/PROTOCOL.md` — the stdio JSON-lines protocol between app and service.
+4. `docs/DECISIONS.md` — D-012–D-023 settle scope, providers, topology,
+   formats, deadlines; open questions are listed — do not guess them.
+5. `docs/ROADMAP.md` — step order and what is Done (with evidence) or owed.
 
 ## Non-negotiables
 
-1. **Consent before a profile.** Enroll only your own voice or a speaker with
-   explicit rights; consent and deletion scope are recorded. Revocation stops
-   capture/playback and prevents all further use of the profile. Never use
-   voice imitation to bypass authentication.
-2. **Heard ≠ inferred ≠ executed.** The transcript keeps recognizer output,
-   assistant inference and tool-result evidence separate. A spoken "done"
-   requires tool-result evidence, never a model prediction. Ambiguous or
-   consequential requests are confirmed against the preserved original
-   transcript.
-3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
-   interruption, stop playback and cancel downstream work where possible; a
-   late chunk from an old turn can never play over a new one; an action
-   already sent keeps an honest `uncertain`, reconciled — never reported
-   undone. First reproduce the stale-chunk bug, then prove it cannot play.
-4. **Actions need their permission.** Retrieved text, audio and tool results
-   are data, never instructions — no silent tool invocation, no permission
-   elevation. External actions carry explicit authorization, recipient
-   disclosure of synthetic speech, and an audit record.
-5. **Memory is controllable.** User-reviewable, sourced, deletable — real
-   erasure, not tombstones over retained data. Recording retention defaults
-   to off. Model keys in the system credential store or server secret
-   manager; private speech is not a training dataset.
-6. **Bounded everything.** Deadlines on every provider call; bounded buffers,
-   queues and retries; a stall or drop shows offline/degraded — never an
+1. **Consent before capture and before any profile.** Capture only while
+   push-to-talk is held and capture consent is granted. The personal-voice
+   scope needs a usage-rights review hash and is closed in the first release.
+   Never use voice imitation to bypass authentication.
+2. **Heard ≠ inferred ≠ executed.** Separate ledger records. A spoken
+   "done" requires tool-result evidence; the completion-claim guard keeps
+   model text from claiming it. Consequential or ambiguous proposals are
+   confirmed against the preserved heard transcript (D-013).
+3. **Interrupt means stop.** Bounded buffers, session/turn IDs, a playback
+   fence; late chunks from an old turn never play; a tool call already sent
+   stays `uncertain` until evidence reconciles it.
+4. **Actions need their permission.** Transcripts, model output and tool
+   results are data, never instructions. External actions are refused in
+   the first release.
+5. **Data stays local; deletion is described with its real scope** (D-018).
+   No audio is retained; ledger and consent files are 0600 and excluded from
+   backup. Never claim erasure beyond what a test proves.
+6. **Bounded everything.** Deadlines on every provider call (D-019); bounded
+   lines, channels, buffers, records; a stall shows degraded, never an
    invented result.
-7. **Pure domain.** `voice-domain` carries no I/O — enforced like the other
-   projects' domain crates.
-8. **Evidence over claims.** `perf/` results carry machine + commit. Full
-   load runs are million-scale in the equivalent unit — simulated turns and
-   interrupt events through the session service against stub providers;
-   real-provider volume is cost-bounded and is a quality measurement, not a
-   load substitute. The <200 ms stop-playback figure is a proposed target to
-   measure against, never a claim. Misses are kept, not rerun until green.
-   No universal voice-latency claims.
+7. **Pure domain.** `voice-domain` carries no I/O — `scripts/check-architecture.sh`.
+8. **Evidence over claims.** `perf/results/` carry machine + commit + load
+   average. Misses are kept. The <200 ms stop target is a target. No
+   universal voice-latency claims. The deterministic test provider is never
+   presented as the model.
+
+## Toolchains on this Mac
+
+- Rust: `export PATH="$(brew --prefix rustup)/bin:$PATH"` before every cargo
+  command — Homebrew's cargo ignores `rust-toolchain.toml` (pinned 1.99.1);
+  `scripts/check-toolchain.sh` fails on a mismatch.
+- Swift: `xcode-select` points at the Command Line Tools, so prefix every
+  Swift/Xcode command with
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (no sudo).
+  `scripts/check.sh` does this for you.
 
 ## Rust rules
 
-- `export PATH="$(brew --prefix rustup)/bin:$PATH"` before every cargo
-  command — Homebrew's cargo ignores the pin.
 - Typed errors (`thiserror`) in libraries; `anyhow` only in binaries.
 - No `unwrap`/`expect` on external input. Deadlines on every I/O await.
-- No secrets, transcripts, prompts or audio content in logs or metrics.
+- No secrets, transcripts, prompts or audio content in logs or metrics
+  (a log-capture test enforces it for the service).
 
 ## Client rules (Swift)
 
 - SwiftUI for the interface, AVAudioEngine for audio, AppKit where needed.
   No Tauri, Electron or webview-hosted UI — the guide's firm exclusion.
 - Bounded audio buffers; every capture and playback chunk carries a
-  session/turn ID; playback drops anything from a superseded turn.
-- Deterministic playback and interruption tests are contract — real-time
-  audio behavior is proven by test, not assumed.
-- A compatible Mac + Xcode is required for the client; Ubuntu hosts the
-  Rust-side checks and services.
+  session/turn ID; playback drops anything below the fence.
+- Agents cannot grant macOS permission prompts: tests never need a live
+  microphone. Recognition tests use committed fixtures in `fixtures/audio/`;
+  synthesis tests render to buffers; playback tests use offline manual
+  rendering. Live-mic code stays thin and is covered by `docs/DRILLS.md`.
+- Tests that need an on-device model skip with a printed reason when it is
+  unavailable; a skip is reported as a skip, never as a pass.
 
-## Testing rule (workspace D-018, shared)
+## Testing rule (workspace standard)
 
-Every feature ships regression tests + a fixture path (`fixtures/`:
-adversarial audio/tool results, provider stall/drop stubs, the stale-chunk
-harness) + a load scenario, in the same change. Every fixed bug gets a test
-that fails without it. Keep consent records, data-deletion tests,
-provider/model compatibility checks and the voice-evaluation set current;
-re-evaluate quality after any model change.
+Every feature ships regression tests + a fixture path (`fixtures/`) + a load
+scenario, in the same change. Every fixed bug gets a test that fails without
+it. Keep consent records, deletion tests, provider/model compatibility
+checks and the evaluation set current; re-evaluate quality after any model
+or OS change.
 
 ## Verification
 
-`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace` — before every commit, plus the interruption and
-provider-failure drills when audio/session code changed, plus the Swift-side
-test suite and a client build on a Mac when `apps/macos` changed.
+`scripts/check.sh` — toolchain pin, `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`,
+`cargo test --workspace --locked`, the architecture check, then
+`swift build` and `swift test` for `apps/macos` (skipped with a message when
+not on macOS). Run it before every commit. CI runs the same.

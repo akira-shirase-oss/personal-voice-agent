@@ -1,9 +1,9 @@
 # Decisions
 
-Deliberate choices, newest last. D-NNN numbering continues the workspace
-convention; these seed the contract's prescribed directions. Where the guide
-leaves a choice open, it is listed under **Open questions** rather than
-guessed.
+Deliberate choices, newest last. D-001–D-011 seeded the contract's
+prescribed directions; later entries amend them explicitly rather than
+rewriting them. Where the guide leaves a choice open and no decision has
+settled it, it is listed under **Open questions** rather than guessed.
 
 - **D-001 — Native Apple client, no webview.** Swift + SwiftUI with
   AVAudioEngine for audio and AppKit where needed; no Tauri, Electron or
@@ -13,10 +13,12 @@ guessed.
   real control over capture, buffering and interruption semantics that a
   webview cannot guarantee.
 - **D-002 — Rust session service owns orchestration.** Conversation state,
-  bounded tool execution and provider adapters live in a Rust service, not in
-  the Swift app. Trade-off: an extra process boundary and protocol; buys a
-  deterministic, testable core, one enforcement point for permissions and
-  deadlines, and a place secrets can live off the client.
+  bounded tool execution and provider adapters live in a Rust service, not
+  in the Swift app. Trade-off: an extra process boundary and protocol; buys
+  a deterministic, testable core, one enforcement point for permissions and
+  deadlines, and a place secrets can live off the client. *Refined by
+  D-015/D-016: the providers themselves run in the app; the service owns
+  their deadlines, cancellation and every decision.*
 - **D-003 — Existing models first, chosen by recorded evaluation.**
   Speech-to-text, language and voice-synthesis models are selected on
   recorded evaluations, usage rights and latency — not on reputation.
@@ -25,9 +27,7 @@ guessed.
 - **D-004 — Standard voice before personal voice.** The first useful release
   ships a standard voice. A personal-voice profile is added only after the
   pipeline works *and* the model's usage rights are understood — and only
-  under an explicit consent record. Trade-off: the headline feature arrives
-  late; the alternative is an uncontrolled impersonation surface, which the
-  guide excludes.
+  under an explicit consent record.
 - **D-005 — Drafting ≠ acting.** Private conversation and draft responses are
   the default posture. Speaking or sending on your behalf is a separate,
   explicit authorization boundary; synthetic speech is disclosed to
@@ -37,12 +37,12 @@ guessed.
   locally; recordings are encrypted at rest with working deletion controls,
   and recording retention defaults to off. PostgreSQL enters only if
   server-side multi-device state becomes a real requirement — it is not
-  pre-built.
+  pre-built. *Amended by D-018: the first release retains no audio at all,
+  and deletion is described with its real scope.*
 - **D-007 — Memory is reviewable, sourced, deletable.** Every memory entry
   carries its source; the user can inspect, edit and delete; private speech
-  is not a training dataset by default. Trade-off: no silent "the agent just
-  knows me" personalization — context selection draws only on approved
-  memory, never raw recordings.
+  is not a training dataset by default. Context selection draws only on
+  approved memory, never raw recordings.
 - **D-008 — Heard / inferred / executed are separate records.** The turn
   ledger keeps the recognizer's output, the assistant's inference and
   tool-result evidence apart; a spoken "done" requires the third, never the
@@ -50,9 +50,9 @@ guessed.
   can be confirmed against what was actually heard.
 - **D-009 — Turn IDs make stale audio unplayable.** Bounded buffers plus
   session/turn IDs: on interruption, playback stops, downstream work is
-  cancelled where the API allows, and any late chunk from an older turn is
-  dropped. An action already sent keeps an `uncertain` state and is
-  reconciled — cancellation is never reported as undo.
+  cancelled, and any late chunk from an older turn is dropped. An action
+  already sent keeps an `uncertain` state and is reconciled — cancellation
+  is never reported as undo.
 - **D-010 — External actions are reviewed and audited.** The first tool is
   reversible and local; external actions require their explicit review and
   write an audit record. Retrieved text, audio and tool results are data,
@@ -61,19 +61,111 @@ guessed.
 - **D-011 — Keys in the credential store, not in the app.** Model keys live in
   the system credential store or a server secret manager. Private speech,
   transcripts, prompts and audio content stay out of logs and metrics.
+  *Amended by D-014: the first release has no provider keys at all; logs
+  carry codes, IDs, counts and durations only, enforced by a log-capture
+  test.*
 
-## Open questions (the guide leaves these open — do not guess)
+### 2026-11-16 — first build
 
-- **Provider/model selection** — decided by recorded evaluations in V2/V3,
-  not chosen up front.
-- **Session-service topology** — the guide implies local-first ("PostgreSQL
-  only if server-side multi-device state is required") but also names a
-  "server secret manager" and keeps Ubuntu useful for Rust services. Working
-  assumption: a local process on the Mac; revisit when a second device or a
-  server deployment becomes real.
-- **Consent-record format and storage** — the contract requires recording
-  consent and deletion scope; the representation is an implementation choice
-  owed to V3.
-- **Usage-rights review artifact** — the guide requires that a personal-voice
-  profile waits until "the model's usage rights are understood"; where that
-  review is recorded (with the consent record vs. in `evals/`) is open.
+- **D-012 — The first release is V0–V2.** The guide's first useful release
+  is "push-to-talk conversation with interruption, a transcript, clear
+  errors and a standard voice". Memory, tools and the personal voice are
+  the guide's *full direction*, so they move to V3/V4 as later contracts
+  with their own gates. Trade-off: the first release does less; it can be
+  finished and proven.
+- **D-013 — "Consequential" and "ambiguous" are defined, not judged.** As
+  in END_GOAL §Definitions: consequential = external or irreversible
+  effect, or any amount/date/person/recipient slot; ambiguous = lowest
+  segment confidence below 0.80, no confidence reported, or a slot value
+  not literally in the normalized heard text. Either routes to a
+  confirmation that shows the heard text verbatim and binds to the
+  proposal digest. Trade-off: more confirmations than a model's judgement
+  would ask for; in exchange the rule is testable and cannot be talked
+  out of by the model.
+- **D-014 — Providers: Apple on-device frameworks only.** Recognition with
+  Speech's `SpeechAnalyzer` + `SpeechTranscriber` (the newest analyzer API
+  on macOS 26+; this Mac runs 27.2.1); speech output with
+  `AVSpeechSynthesizer` system voices; language with FoundationModels
+  `LanguageModelSession` and guided generation. No cloud providers and no
+  API keys. FoundationModels can be unavailable at runtime (Apple
+  Intelligence off, device not eligible, model not ready): the app checks
+  availability and shows that state as degraded. A deterministic test
+  provider sits behind the same protocol for tests and CI; it is labelled
+  as such and is never presented as the model. Apple Personal Voice is out
+  of the first release (personal, non-commercial terms; V3's rights
+  review). Trade-off: on-device model quality and a 4,096-token context
+  window, macOS 26+ only; in exchange no audio or transcript leaves the
+  Mac, there is no provider cost, and provider-side retention questions
+  disappear. Probes on 2026-11-16 on this Mac: file transcription of a
+  2.6 s utterance in 0.33 s; synthesis first buffer 0.67–1.06 s; model
+  first structured snapshot 1.78 s.
+- **D-015 — The session service is a child process over stdio.** The app
+  spawns `voice-session` and speaks versioned JSON lines (`docs/PROTOCOL.md`)
+  over its stdin/stdout. No TCP or Unix socket: no other process or web
+  page can drive tools or read transcripts. EOF on stdin ends the service.
+  Trade-off: one service per app instance, no long-lived daemon; acceptable
+  for single-user, single-device use. This settles the topology question
+  for the first release: local process; revisit only with a second device.
+- **D-016 — Providers run in the app; the service orchestrates them.**
+  Apple's frameworks are Swift-only, so the app hosts the recognizer,
+  model and synthesizer behind Swift protocols. The service sends each
+  provider request with a deadline, cancels it, drops late replies, and is
+  the only place that decides what is spoken or executed. Audio never
+  crosses the boundary. Trade-off: the provider boundary is a process
+  hop (sub-millisecond on a pipe); the gain is that the enforcement point
+  stays in the tested Rust core.
+- **D-017 — Consent and ledger records: append-only, versioned, local.**
+  One line per record, `<crc32> <json>`, `v: 1`, monotonic `seq`; one
+  writer thread with group-commit `sync_data`; torn tails truncated and
+  recorded, earlier corruption refused (ARCHITECTURE §On-disk format).
+  Consent records carry scope, speaker, the rights-review hash (personal
+  voice only) and deletion scope. Trade-off: a hand-rolled format instead
+  of SQLite; it is small, inspectable with standard tools, and its crash
+  behaviour is fully tested here.
+- **D-018 — Deletion scope is stated honestly.** Deleting a file on APFS
+  does not erase its blocks from local snapshots or earlier backups, and
+  SQLite-style freelists keep bytes too. So: the data directory is
+  excluded from Time Machine when created; docs say "removed from the live
+  file system" and name snapshots and backups as residual copies; no
+  third-party provider holds audio or transcripts (D-014). Real erasure for
+  memory and any voice data comes in V3 by crypto-shredding: per-item keys
+  in the Keychain, deletion destroys the key, and a test proves the item
+  is unrecoverable afterwards.
+- **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
+  after release 3 s; model first output 6 s; model complete 20 s;
+  synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;
+  confirmation 60 s; capture held at most 60 s. Set from the D-014 probes
+  with headroom for a cold model; the V2 latency run re-evaluates them and
+  any change gets a new entry with the run that justified it.
+- **D-020 — The usage-rights artifact is required before any personal-voice
+  feature.** `evals/rights/<provider>-<model>-<date>.md` covers voice
+  rights *and* data use; the consent record references it by hash, so a
+  model change forces a new review. Until one exists, the personal-voice
+  scope cannot be granted (enforced in the domain).
+- **D-021 — "Stop" is defined for measurement.** Stop-playback latency is
+  from the interrupt event's timestamp to the last non-silent sample
+  rendered by the output node. Tests measure it by offline rendering
+  (frames after the stop call); the live figure comes from the manual
+  drill. The app stops its player locally on the interrupt key before the
+  service round trip, and the service's fence makes stale chunks
+  unplayable regardless of ordering.
+- **D-022 — The load unit is turn events and ledger appends.** Full runs are
+  1,000,000 turn events through the session service against the stub
+  client and 1,000,000 ledger appends with append-to-durable p99. They are
+  cheap regressions; for a single-user local app the evidence that matters
+  is the audio soak and interrupt storms, owed to the live sessions.
+- **D-023 — Barge-in stops playback before capture.** Push-to-talk during
+  playback interrupts first, so the microphone does not hear the
+  assistant; live capture enables voice processing (echo cancellation)
+  where the device supports it. Audio from people other than an enrolled
+  speaker is never retained or used for a profile — no audio is retained
+  at all in the first release.
+
+## Open questions
+
+- **Channels for external actions** — V4's contract must name them (email?
+  messages?) and how recipients are told speech is synthetic. Outbound
+  calls stay excluded.
+- **Personal-voice provider** — evaluate Apple Personal Voice first in V3
+  (OS-managed consent, personal non-commercial terms) against the
+  rights-review artifact; nothing is assumed.
