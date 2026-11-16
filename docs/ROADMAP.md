@@ -21,6 +21,10 @@ the live drills (`docs/DRILLS.md`: push-to-talk, the live stop figure, barge-in,
 crash, model unavailable), 100 consented utterances quiet/noisy, and three one-hour
 sessions with stop-playback p95 and zero stale chunks.
 
+**Owed in code:** one shared audio engine for capture and playback, so echo cancellation
+can reference the assistant's output (D-023 limitation); the model's first-sentence latency
+(`docs/LATENCY.md`).
+
 **Owed to a quiet machine:** `scripts/perf.sh ledger --records 1000000` and
 `scripts/perf.sh turns --events 1000000 --interrupt-every 10 --stall-every 100`.
 
