@@ -34,3 +34,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: scripts/check-architecture.sh
+
+  swift:
+    name: swift (apps/macos build and tests, macOS SDK 26+ only)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+      - name: Build the session service the app launches
+        run: cargo build --locked -p voice-session
+      - run: scripts/ci-swift.sh

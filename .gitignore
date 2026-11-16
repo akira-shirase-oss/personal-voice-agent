@@ -14,3 +14,4 @@ apps/macos/.swiftpm/
 
 # Local runtime data (ledger, consent log) — never committed
 /var/
+swift-test.log
