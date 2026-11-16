@@ -1,6 +1,9 @@
 //! `voice-session --data-dir <dir>`: the app's child process. Speaks JSON lines on
 //! stdin/stdout (docs/PROTOCOL.md) and logs content-free lines to stderr.
 //!
+//! `--limit name=value` (repeatable) overrides one field of `voice_domain::Limits`, e.g.
+//! `--limit lm_first_ms=200` for drills and integration tests that need short deadlines.
+//!
 //! Exit codes: 0 session ended, 2 usage, 3 ledger damaged, 4 ledger I/O, 5 runtime.
 
 use std::path::PathBuf;
@@ -12,16 +15,37 @@ use voice_session::tools::NoTools;
 use voice_session::{Config, ServiceError, run};
 
 fn usage() -> ExitCode {
-    eprintln!("usage: voice-session --data-dir <dir>");
+    eprintln!("usage: voice-session --data-dir <dir> [--limit name=value]...");
     ExitCode::from(2)
+}
+
+/// Applies `name=value` to the limits through their serialized form, so every field is
+/// settable by its own name and an unknown name or a bad value is refused, not ignored.
+fn apply_limit(limits: &mut voice_domain::Limits, spec: &str) -> Result<(), String> {
+    let (name, value) = spec
+        .split_once('=')
+        .ok_or_else(|| format!("expected name=value, got {spec}"))?;
+    let mut fields = serde_json::to_value(&*limits).map_err(|e| e.to_string())?;
+    let slot = fields.get_mut(name).ok_or_else(|| format!("unknown limit {name}"))?;
+    *slot = serde_json::from_str(value).map_err(|_| format!("bad value for {name}: {value}"))?;
+    *limits = serde_json::from_value(fields).map_err(|_| format!("bad value for {name}: {value}"))?;
+    Ok(())
 }
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut data_dir: Option<PathBuf> = None;
+    let mut limits = voice_domain::Limits::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
+            "--limit" => {
+                let Some(spec) = args.next() else { return usage() };
+                if let Err(e) = apply_limit(&mut limits, &spec) {
+                    eprintln!("error: {e}");
+                    return usage();
+                }
+            }
             "--version" => {
                 println!(
                     "voice-session {} (protocol {})",
@@ -41,7 +65,8 @@ fn main() -> ExitCode {
         return ExitCode::from(5);
     };
     let log = Log::stderr();
-    let config = Config::new(data_dir, NoTools, log);
+    let mut config = Config::new(data_dir, NoTools, log);
+    config.limits = limits;
     let result = runtime.block_on(run(tokio::io::stdin(), tokio::io::stdout(), config));
     // Tokio's stdin read sits on a blocking thread; do not wait for it at exit.
     runtime.shutdown_timeout(Duration::from_millis(100));
@@ -50,5 +75,23 @@ fn main() -> ExitCode {
         Err(ServiceError::Store(StoreError::Corrupt { .. })) => ExitCode::from(3),
         Err(ServiceError::Store(StoreError::Io { .. })) => ExitCode::from(4),
         Err(ServiceError::Join) => ExitCode::from(5),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_limit;
+    use voice_domain::Limits;
+
+    #[test]
+    fn limits_are_set_by_name_and_bad_specs_are_refused() {
+        let mut l = Limits::default();
+        apply_limit(&mut l, "lm_first_ms=200").unwrap();
+        apply_limit(&mut l, "min_confidence=0.9").unwrap();
+        assert_eq!((l.lm_first_ms, l.min_confidence), (200, 0.9));
+        assert!(apply_limit(&mut l, "no_such=1").is_err());
+        assert!(apply_limit(&mut l, "lm_first_ms=-5").is_err());
+        assert!(apply_limit(&mut l, "lm_first_ms").is_err());
+        assert_eq!(l.lm_first_ms, 200, "a refused spec changes nothing");
     }
 }
