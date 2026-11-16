@@ -5,6 +5,7 @@
 #
 #   scripts/bench-e2e.sh --rounds 3          # warm (prewarmed model, warmed voice)
 #   scripts/bench-e2e.sh --rounds 1 --cold
+#   scripts/bench-e2e.sh player-storm --cycles 100000   # interrupt storm through the player
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Homebrew cargo ignores rust-toolchain.toml; use rustup's proxies when present.
@@ -19,12 +20,15 @@ out="$(PVA_SESSION_BINARY="$PWD/target/release/voice-session" apps/macos/.build/
 status=$?
 set -e
 load_after="$(uptime | sed 's/.*load average[s]*: //')"
-label="$(echo "$*" | tr -d ' -' )"
-file="perf/results/$(date +%Y-%m-%d-%H%M%S)-e2e-latency-${label:-default}.md"
+scenario=e2e-latency
+title="End-to-end latency on this Mac"
+if [ "${1:-}" = "player-storm" ]; then scenario=player-storm; title="Interrupt storm through the turn-fenced player"; fi
+label="$(echo "$*" | sed 's/player-storm//' | tr -d ' -' )"
+file="perf/results/$(date +%Y-%m-%d-%H%M%S)-${scenario}-${label:-default}.md"
 result=PASS
 [ "$status" -eq 0 ] || result=FAIL
 cat > "$file" <<MD
-# End-to-end latency on this Mac — ${result}
+# ${title} — ${result}
 
 - Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Machine: $(sysctl -n machdep.cpu.brand_string), $(($(sysctl -n hw.memsize) / 1073741824)) GB, $(sysctl -n hw.ncpu) cores
@@ -45,6 +49,6 @@ development observations, not a latency claim.
 ${out}
 \`\`\`
 MD
-echo "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ("first_turn_ms","steady_state","outcomes","interrupt_drill")}, indent=1))' || true
+echo "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({k: v for k, v in d.items() if k != "turns"}, indent=1))' || true
 echo "recorded: $file ($result)"
 exit "$status"

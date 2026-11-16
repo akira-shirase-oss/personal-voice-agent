@@ -7,10 +7,79 @@
 // Each round speaks all six fixtures, then runs an interrupt drill. Nothing is played on the
 // speakers. Live device latency (output buffer, Bluetooth) is not included: see DRILLS.md.
 
+import Darwin
 import Foundation
 import VoiceCore
 
 let args = CommandLine.arguments
+
+/// Resident memory of this process, in MB (for soak runs).
+func residentMB() -> Double {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count) }
+    }
+    return kr == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : -1
+}
+
+/// Resident memory of another process, in MB, via ps.
+func residentMB(pid: Int32) -> Double {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/ps")
+    p.arguments = ["-o", "rss=", "-p", "\(pid)"]
+    let out = Pipe()
+    p.standardOutput = out
+    try? p.run()
+    p.waitUntilExit()
+    let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    return (Double(text) ?? -1024) / 1024
+}
+
+/// `player-storm --cycles N`: N interrupt cycles through the turn-fenced player, offline.
+/// Each cycle schedules a chunk for turn k, renders a little, stops with fence k+1, then
+/// offers a late chunk of turn k, which must be refused. Times every stop().
+if args.dropFirst().first == "player-storm" {
+    let cycles = args.firstIndex(of: "--cycles").flatMap { Int(args[$0 + 1]) } ?? 100_000
+    let format = Audio.monoFloat(22_050)
+    let player = try TurnFencedPlayer(format: format, offline: true)
+    let tone = Audio.tone(seconds: 0.05, format: format)
+    var stops: [Double] = []
+    stops.reserveCapacity(cycles)
+    var accepted = 0
+    let memBefore = residentMB()
+    let clock = ContinuousClock()
+    let t0 = clock.now
+    var memSamples: [Double] = []
+    for k in 1...cycles {
+        // A pool per cycle, as a run loop would drain one per event: without it, objects
+        // AVFoundation autoreleases pile up for the whole loop and look like a leak.
+        try autoreleasepool {
+            let turn = TurnID(UInt64(k))
+            player.enqueue(AudioChunk(turn: turn, seq: 0, pcm: tone))
+            _ = try player.render(frames: 256)
+            let d = player.stop(fence: TurnID(UInt64(k + 1)))
+            stops.append(Double(d.components.seconds) * 1e6 + Double(d.components.attoseconds) / 1e12)
+            if player.enqueue(AudioChunk(turn: turn, seq: 1, pcm: tone)) != .droppedStale { accepted += 1 }
+        }
+        if k % (cycles / 10) == 0 { memSamples.append(residentMB()) }
+    }
+    let elapsed = clock.now - t0
+    let silentAfter = Audio.peak(try player.render(frames: 22_050)) < 1e-4
+    stops.sort()
+    func p(_ q: Double) -> Double { stops[min(stops.count - 1, Int(Double(stops.count - 1) * q))] }
+    let out: [String: Any] = [
+        "scenario": "player-storm", "cycles": cycles, "elapsed_s": Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18,
+        "late_chunks_accepted": accepted, "silent_after_storm": silentAfter,
+        "stop_call_us": ["p50": p(0.5), "p99": p(0.99), "p999": p(0.999), "max": stops.last ?? 0],
+        "resident_mb": ["before": memBefore, "after": residentMB(), "every_tenth": memSamples],
+        "stats": ["scheduled": player.stats.scheduled, "dropped_stale": player.stats.droppedStale, "stops": player.stats.stops],
+        "pass": accepted == 0 && silentAfter,
+    ]
+    print(String(decoding: try JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+    exit(accepted == 0 && silentAfter ? 0 : 1)
+}
+
 func flag(_ name: String) -> Bool { args.contains(name) }
 func value(_ name: String, _ fallback: Int) -> Int { args.firstIndex(of: name).flatMap { Int(args[$0 + 1]) } ?? fallback }
 
@@ -83,6 +152,7 @@ var e2e: [Double] = [], stt: [Double] = [], lm: [Double] = [], tts: [Double] = [
 var firstTurn: [String: Double]?
 var outcomes: [String: Int] = [:]
 var stopTails: [Double] = []
+var memory: [[String: Double]] = [["round": 0, "bench_mb": residentMB(), "service_mb": residentMB(pid: await conversation.servicePID ?? 0)]]
 var audioAfterStop = 0
 let started = ContinuousClock.now
 
@@ -124,6 +194,7 @@ for round in 1...rounds {
         if tail > 100 { audioAfterStop += 1 }
     }
     outcomes["interrupted_drill", default: 0] += 1
+    memory.append(["round": Double(round), "bench_mb": residentMB(), "service_mb": residentMB(pid: await conversation.servicePID ?? 0)])
 }
 
 let result: [String: Any] = [
@@ -140,6 +211,7 @@ let result: [String: Any] = [
         "last_audio_after_interrupt": summary(stopTails),
         "stale_chunks_refused_by_player": conversation.player.stats.droppedStale,
     ],
+    "resident_memory": memory,
     "turns": turns,
 ]
 pump.stop()
