@@ -192,7 +192,8 @@ pub fn lm_done(call: CallId, proposal: Proposal) -> C {
 }
 
 /// Streams a reply of `sentences`, plays every chunk, and waits for the turn to close.
-/// Returns the turn's closing message.
+/// Returns the turn's closing message — early, if the service closes the turn first (a
+/// deadline expired), so a scripted client never waits for speech that will not come.
 pub async fn reply_turn(stub: &mut Stub, heard_text: &str, sentences: &[&str]) -> S {
     let (_, lm) = heard(stub, heard_text, 0.97).await;
     stub.send(&C::LmKind {
@@ -208,9 +209,14 @@ pub async fn reply_turn(stub: &mut Stub, heard_text: &str, sentences: &[&str]) -
             text: (*s).into(),
         })
         .await;
-        let (m, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await;
-        let S::TtsRequest { call, .. } = m else { unreachable!() };
-        chunks.push(call);
+        match stub
+            .until(|m| matches!(m, S::TtsRequest { .. } | S::TurnClosed { .. }))
+            .await
+            .0
+        {
+            S::TtsRequest { call, .. } => chunks.push(call),
+            closed => return closed,
+        }
     }
     stub.send(&lm_done(
         lm,
