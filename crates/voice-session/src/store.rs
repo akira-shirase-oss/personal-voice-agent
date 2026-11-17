@@ -22,6 +22,10 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Largest encoded record. The domain's content bounds keep real records far below it.
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_BATCH: usize = 1_024;
+/// The writer syncs before its unsynced bytes pass this, so after a power loss at most this
+/// much (plus one record) of a log can be an unsynced, possibly scrambled tail.
+const MAX_BATCH_BYTES: usize = 1024 * 1024;
+const MAX_UNSYNCED_TAIL: u64 = (MAX_BATCH_BYTES + MAX_RECORD_BYTES) as u64;
 const QUEUE: usize = 4_096;
 
 #[derive(Debug, thiserror::Error)]
@@ -155,7 +159,14 @@ pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&
             Some("torn line")
         };
         if let Some(why) = problem {
-            if offset < len {
+            // A torn last write is an ordinary torn tail. A zero-filled hole is a power loss's
+            // unsynced batch only if everything after it fits that story; else it is damage.
+            let torn = if buf.contains(&0) {
+                unsynced_batch_after(&file, start, len, scan.last_seq)
+            } else {
+                offset >= len
+            };
+            if !torn {
                 return Err(StoreError::Corrupt {
                     path: path.to_owned(),
                     line: line_no,
@@ -170,6 +181,39 @@ pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&
         }
     }
     Ok(scan)
+}
+
+/// Whether the bytes from `start` to the end look like one unsynced batch a power loss left
+/// behind: short enough to be one batch, and every line in it that decodes carries a sequence
+/// number after `last_seq` (zero-filled holes are skipped). Anything else is real damage.
+fn unsynced_batch_after(file: &File, start: u64, len: u64, last_seq: u64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    if len - start > MAX_UNSYNCED_TAIL {
+        return false;
+    }
+    let mut rest = Vec::new();
+    let mut f = file;
+    if f.seek(SeekFrom::Start(start)).is_err() || f.read_to_end(&mut rest).is_err() {
+        return false;
+    }
+    let lines: Vec<&[u8]> = rest.split(|&b| b == b'\n').collect();
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw
+            .iter()
+            .position(|&b| b != 0)
+            .map_or(&raw[raw.len()..], |p| &raw[p..]);
+        if line.is_empty() {
+            continue;
+        }
+        match decode::<serde_json::Value>(line) {
+            Ok(env) if env.seq <= last_seq => return false,
+            Ok(_) => {}
+            // A garbled line is acceptable only as part of a hole or as the very last write.
+            Err(_) if raw.contains(&0) || i + 1 == lines.len() => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 fn create_dir(path: &Path) -> Result<(), StoreError> {
@@ -580,16 +624,30 @@ fn writer_thread<T: Serialize>(
     let mut acks: Vec<(Ack, Result<u64, WriteError>)> = Vec::new();
     let mut failed: Option<WriteError> = None;
     let mut written: u64 = 0;
-    while let Some(first) = rx.blocking_recv() {
+    let mut carry: std::collections::VecDeque<Req<T>> = std::collections::VecDeque::new();
+    loop {
+        let Some(first) = carry.pop_front().or_else(|| rx.blocking_recv()) else {
+            break;
+        };
         let mut closing: Option<Ack> = None;
-        let mut pending = vec![first];
-        while pending.len() < MAX_BATCH
-            && let Ok(req) = rx.try_recv()
-        {
-            pending.push(req);
+        let mut pending = std::collections::VecDeque::from([first]);
+        while pending.len() < MAX_BATCH {
+            match carry.pop_front().map_or_else(|| rx.try_recv().ok(), Some) {
+                Some(req) => pending.push_back(req),
+                None => break,
+            }
         }
         let mut batch_acks: Vec<(Ack, u64)> = Vec::new();
-        for req in pending {
+        while let Some(req) = pending.pop_front() {
+            if buf.len() >= MAX_BATCH_BYTES {
+                // Sync before the unsynced bytes pass the bound; the rest waits for the next batch.
+                // Order is kept: what is left of this batch goes before anything carried over.
+                pending.push_front(req);
+                pending.extend(carry.drain(..));
+                carry = pending;
+                pending = std::collections::VecDeque::new();
+                break;
+            }
             match req {
                 Req::Append(rec, ack) => {
                     if let Some(e) = failed {
@@ -717,6 +775,79 @@ mod tests {
         f.write_all(b"00000000 {}\n").unwrap();
         drop(f);
         assert!(scan_and_repair::<Record>(&path, |_| {}).unwrap().torn_bytes.is_some());
+    }
+
+    /// Power loss can persist an unsynced batch out of order: a zero-filled hole, then valid
+    /// lines. Nothing in that batch was acknowledged, so it is a torn tail, not damage.
+    #[test]
+    fn a_zeroed_hole_in_the_last_batch_is_a_torn_tail() {
+        let dir = temp_dir("hole");
+        let path = dir.join("a.log");
+        let good = [
+            Record::TurnOpened { turn: TurnId(1) },
+            Record::TurnOpened { turn: TurnId(2) },
+        ];
+        write_lines(&path, &good);
+        let good_len = fs::metadata(&path).unwrap().len();
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        f.write_all(&encode(4, "s", &Record::TurnOpened { turn: TurnId(4) }).unwrap())
+            .unwrap();
+        f.write_all(&encode(5, "s", &Record::TurnOpened { turn: TurnId(5) }).unwrap())
+            .unwrap();
+        drop(f);
+        let scan = scan_and_repair::<Record>(&path, |_| {}).unwrap();
+        assert_eq!(scan.records, 2);
+        assert!(scan.torn_bytes.is_some());
+        assert_eq!(fs::metadata(&path).unwrap().len(), good_len);
+    }
+
+    #[test]
+    fn a_hole_followed_by_an_old_sequence_number_is_damage() {
+        let dir = temp_dir("hole-old-seq");
+        let path = dir.join("a.log");
+        write_lines(
+            &path,
+            &[
+                Record::TurnOpened { turn: TurnId(1) },
+                Record::TurnOpened { turn: TurnId(2) },
+            ],
+        );
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        f.write_all(&encode(1, "s", &Record::TurnOpened { turn: TurnId(9) }).unwrap())
+            .unwrap();
+        drop(f);
+        assert!(matches!(
+            scan_and_repair::<Record>(&path, |_| {}),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn a_hole_followed_by_more_than_one_batch_is_damage() {
+        let dir = temp_dir("hole-long");
+        let path = dir.join("a.log");
+        write_lines(&path, &[Record::TurnOpened { turn: TurnId(1) }]);
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        for seq in 3..700_u64 {
+            let rec = Record::Heard {
+                turn: TurnId(1),
+                call: voice_domain::CallId(seq),
+                text: "z".repeat(2_000),
+                min_confidence: None,
+            };
+            f.write_all(&encode(seq, "s", &rec).unwrap()).unwrap();
+        }
+        drop(f);
+        assert!(
+            matches!(
+                scan_and_repair::<Record>(&path, |_| {}),
+                Err(StoreError::Corrupt { .. })
+            ),
+            "1.4 MB after a hole is not one unsynced batch"
+        );
     }
 
     #[test]
@@ -860,6 +991,38 @@ mod tests {
         assert!(!opened.consent_state.capture);
         assert_eq!(opened.recovered.torn_tails, 1);
         assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
+    }
+
+    /// Batches are cut at 1 MiB (so a power loss leaves at most that much unsynced), and the
+    /// records carried over to the next batch keep their order.
+    #[tokio::test]
+    async fn large_bursts_are_split_into_bounded_batches_in_order() {
+        let dir = temp_dir("batches");
+        let opened = open(&dir, 1_000_000).unwrap();
+        let w = opened.ledger;
+        let wait = Duration::from_secs(10);
+        for i in 0..2_000_u64 {
+            let rec = Record::Heard {
+                turn: TurnId(i),
+                call: voice_domain::CallId(i),
+                text: "y".repeat(2_000),
+                min_confidence: None,
+            };
+            w.append(rec, wait).await.unwrap();
+        }
+        w.flush(wait).await.unwrap();
+        let _ = w.close(wait).await;
+        let turns: Vec<u64> = read_all(&opened.ledger_path)
+            .iter()
+            .filter_map(|r| {
+                if let Record::Heard { turn, .. } = r {
+                    Some(turn.0)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(turns, (0..2_000).collect::<Vec<_>>());
     }
 
     #[tokio::test]
