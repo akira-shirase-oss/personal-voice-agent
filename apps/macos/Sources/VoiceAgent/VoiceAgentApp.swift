@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Second guard behind F_SETNOSIGPIPE on the service pipe: no write may kill the app.
+        signal(SIGPIPE, SIG_IGN)
         // An unbundled development run still gets a Dock icon and keyboard focus.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()

@@ -55,6 +55,9 @@ public final class SessionProcess: @unchecked Sendable {
             continuation.yield(.exited(p.terminationStatus))
             continuation.finish()
         }
+        // A write to a child that just died must fail with EPIPE, not kill the app with
+        // SIGPIPE: the exit is only noticed later, by the termination handler.
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         do { try process.run() } catch { throw SessionProcessError.launchFailed }
         alive.set(true)
         startReading()
@@ -102,8 +105,15 @@ public final class SessionProcess: @unchecked Sendable {
         guard isRunning else { throw SessionProcessError.notRunning }
         let line = try LineCodec.encode(message)
         let handle = stdin.fileHandleForWriting
+        let alive = self.alive
         writes.async {
-            try? handle.write(contentsOf: line)
+            do {
+                try handle.write(contentsOf: line)
+            } catch {
+                // EPIPE (or any write error): the service is down. The termination handler
+                // reports the exit; from now on sends are refused.
+                alive.set(false)
+            }
         }
     }
 
