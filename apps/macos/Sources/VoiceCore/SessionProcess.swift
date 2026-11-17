@@ -229,7 +229,12 @@ public enum ConsentToken {
             }
             return true
         }
-        return chmod(path, 0) == 0
+        // The mode is the file's own metadata: change and sync it through the file (a directory
+        // sync does not cover it), opened while it is still readable.
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { return chmod(path, 0) == 0 }
+        defer { close(fd) }
+        return fchmod(fd, 0) == 0 && fsync(fd) == 0
     }
 }
 
