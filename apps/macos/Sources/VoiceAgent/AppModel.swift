@@ -45,6 +45,8 @@ final class AppModel {
     var confirmation: PendingConfirmation?
     var banner: String?
     var holding = false
+    /// The microphone is actually capturing (the service said `capture on` while the key is held).
+    var micOn = false
     var installingSpeech = false
 
     private var conversation: Conversation?
@@ -162,6 +164,7 @@ final class AppModel {
         Task { for await pcm in stream { await conversation.feed(pcm) } }
         do {
             try capture.start { pcm in continuation.yield(pcm) }
+            micOn = true
         } catch {
             banner = micGranted ? "The microphone could not start." : "Microphone access is off. Allow it to talk."
             continuation.finish()
@@ -169,6 +172,7 @@ final class AppModel {
     }
 
     private func stopMicrophone() {
+        micOn = false
         capture.stop()
         feeder?.finish()
         feeder = nil
@@ -215,6 +219,7 @@ final class AppModel {
         case .notice(let code):
             if code == "consent_required" { banner = "Turn on “Listen while I hold Space” to talk." }
             if code == "forget_refused_turn_active" { banner = "Finish or stop the current turn, then delete history." }
+            if code == "service_not_running" { banner = "The session is restarting; press Space again in a moment." }
         case .serviceExited:
             service = .restarting(0)
             stopMicrophone()
@@ -229,6 +234,7 @@ final class AppModel {
             banner = "The window fell behind and missed \(n) update(s); what it shows may be out of date."
         case .serviceUnresponsive:
             stopMicrophone()
+            service = .restarting(0)
             banner = "The session stopped responding; it is being restarted. Nothing was done."
         case .serviceFailed(let code):
             stopMicrophone()

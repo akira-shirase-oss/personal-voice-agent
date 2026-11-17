@@ -120,7 +120,11 @@ failure, not an answer.
 
 **Service failure:** the app watches the child process; on an unexpected
 exit it shows degraded, restarts it with bounded backoff, and the new
-process runs recovery before it reports `ready`.
+process runs recovery before it reports `ready`. A service that stops
+answering without exiting is found by `ping`: once it is ready, every
+second while a turn is open or the key is held, every five seconds between
+turns, and on every key press; a ping unanswered for 3 s (30 s behind a
+`forget`) stops the microphone and playback and replaces the service.
 
 ## Consistency
 

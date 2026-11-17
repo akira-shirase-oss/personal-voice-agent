@@ -83,6 +83,10 @@ Hold Space and, while holding, run `pkill -STOP -f 'VoiceAgent.app/Contents/MacO
 - Expect: within about 3 seconds the microphone indicator goes off although Space is still
   held, the app says the session stopped responding, and a new session becomes ready (the
   stopped service is killed by the app; no `pkill -CONT` is needed).
+- Then, between turns: run the same `pkill -STOP` with nothing held and wait. Within about
+  8 seconds the app says the session stopped responding and restarts it. Repeat, and this time
+  press Space within a second of the `pkill`: the talk bar shows "Waiting for the session…",
+  the microphone indicator never comes on, and within about 3 seconds the same banner appears.
 
 ## Drill 10 — delete history
 

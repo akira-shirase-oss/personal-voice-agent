@@ -283,6 +283,71 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    func hungConfig(_ name: String, idle: Duration) throws -> ConversationConfig {
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: try tempDataDir(name),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hello", minConfidence: 0.95)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.heartbeatInterval = .milliseconds(200)
+        config.heartbeatTimeout = .milliseconds(800)
+        config.idleHeartbeatInterval = idle
+        return config
+    }
+
+    /// A service that hangs between turns (SIGSTOP while idle, no key pressed) is found by the
+    /// idle heartbeat and replaced; the turn after the replacement is served.
+    @Test("a service hung between turns is detected and replaced without a key press")
+    func hungBetweenTurns() async throws {
+        let c = try Conversation(try hungConfig("hung-idle", idle: .milliseconds(400)))
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil, "a first turn completes")
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        let stopped = ContinuousClock.now
+        let found = await r.next(timeout: .seconds(4)) { if case .serviceUnresponsive = $0 { true } else { false } }
+        #expect(found != nil, "the idle service's hang is noticed")
+        #expect(ContinuousClock.now - stopped < .seconds(3))
+        #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
+        try await talk(c, r)
+        let (_, outcome, _) = try #require(await r.next { closed($0) != nil }.flatMap(closed))
+        #expect(outcome == .completed, "the next turn is served")
+        await c.shutdown()
+    }
+
+    /// Pressing Space on a service that hung while idle: the press pings it, the missed pong is
+    /// reported within the timeout (the app shows it), the microphone never opens, and a new
+    /// service is started.
+    @Test("a key press on a service hung between turns is answered, never silently ignored")
+    func keyPressOnHungService() async throws {
+        let c = try Conversation(try hungConfig("hung-press", idle: .seconds(60)))
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        try await Task.sleep(for: .milliseconds(300))
+        let pressed = ContinuousClock.now
+        await c.pushToTalkDown()
+        let found = await r.next(timeout: .seconds(4)) { if case .serviceUnresponsive = $0 { true } else { false } }
+        #expect(found != nil, "the press finds the hang")
+        #expect(ContinuousClock.now - pressed < .seconds(2))
+        #expect(!(await r.seen.contains(where: isCaptureOn)), "the microphone never opened")
+        #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
+        await c.pushToTalkUp()
+        try await talk(c, r)
+        let (_, outcome, _) = try #require(await r.next { closed($0) != nil }.flatMap(closed))
+        #expect(outcome == .completed, "the next press is served")
+        await c.shutdown()
+    }
+
     /// A turn interrupted while capturing must release its recognizer (a `SpeechAnalyzer` keeps
     /// its model for the process lifetime and would otherwise wait forever).
     @Test("an interrupted capture releases its recognition session")
