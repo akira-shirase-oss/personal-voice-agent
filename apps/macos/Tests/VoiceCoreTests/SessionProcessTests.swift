@@ -3,8 +3,10 @@ import Synchronization
 import Testing
 @testable import VoiceCore
 
-@Suite("The session process boundary", .serialized, .enabled("voice-session is built (cargo build -p voice-session)") { haveBinary })
+@Suite("The session process boundary", .serialized)
 struct SessionProcessTests {
+    @Test("the session service binary is built") func binaryPresent() { #expect(haveBinary, binaryMissing) }
+
     /// A reader that falls so far behind that the bounded event buffer fills: the session is
     /// treated as dead (killed, stream ended, overflow reported), never silently thinned out.
     @Test("an overflowing event buffer ends the session instead of dropping messages")

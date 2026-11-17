@@ -4,8 +4,19 @@ import Synchronization
 import Testing
 @testable import VoiceCore
 
-let sessionBinary = repoRoot.appending(path: "target/debug/voice-session")
+/// The service binary the tests drive: `PVA_SESSION_BINARY`, else `$CARGO_TARGET_DIR/debug`,
+/// else the repository's `target/debug`. Tests that need it fail without it, never skip.
+let sessionBinary: URL = {
+    let env = ProcessInfo.processInfo.environment
+    if let path = env["PVA_SESSION_BINARY"], !path.isEmpty { return URL(fileURLWithPath: path) }
+    if let dir = env["CARGO_TARGET_DIR"], !dir.isEmpty {
+        let target = dir.hasPrefix("/") ? URL(fileURLWithPath: dir) : repoRoot.appending(path: dir)
+        return target.appending(path: "debug/voice-session")
+    }
+    return repoRoot.appending(path: "target/debug/voice-session")
+}()
 var haveBinary: Bool { FileManager.default.isExecutableFile(atPath: sessionBinary.path) }
+let binaryMissing: Comment = "voice-session not found at \(sessionBinary.path): run cargo build -p voice-session, or set PVA_SESSION_BINARY"
 
 func tempDataDir(_ name: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appending(path: "pva-swift-\(name)-\(UUID().uuidString)")
@@ -146,8 +157,10 @@ final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
     }
 }
 
-@Suite("Conversation through the real session service", .serialized, .enabled("voice-session is built (cargo build -p voice-session)") { haveBinary })
+@Suite("Conversation through the real session service", .serialized)
 struct ConversationTests {
+    @Test("the session service binary is built") func binaryPresent() { #expect(haveBinary, binaryMissing) }
+
     @Test("a reply turn is heard, spoken and closed, with timing")
     func replyTurn() async throws {
         let (c, r, pump) = try makeConversation("reply")
@@ -683,7 +696,7 @@ struct ModelTests {
 
     static var available: Bool { FoundationModelsProvider().availability() == .available }
 
-    @Test("FoundationModels streams kind first, then sentences, then the proposal", .enabled("FoundationModels is available") { ModelTests.available })
+    @Test("FoundationModels streams kind first, then sentences, then the proposal", .enabled("on-device: FoundationModels is available") { ModelTests.available })
     func streams() async throws {
         let events = Mutex<[LMEvent]>([])
         let clock = ContinuousClock()
@@ -710,8 +723,8 @@ struct ModelTests {
         print("METRIC lm_first_event_ms=\(first.withLock { $0 }.map { Double($0.components.attoseconds) / 1e15 + Double($0.components.seconds) * 1000 } ?? -1)")
     }
 
-    @Test("end to end on this Mac: fixture audio → recognizer → service → model → voice", .enabled("speech assets, FoundationModels and a system voice") {
-        await OnDevice.speechReady() && ModelTests.available && OnDevice.systemVoice && haveBinary
+    @Test("end to end on this Mac: fixture audio → recognizer → service → model → voice", .enabled("on-device: speech assets, FoundationModels and a system voice") {
+        await OnDevice.speechReady() && ModelTests.available && OnDevice.systemVoice
     })
     func endToEnd() async throws {
         // Deadlines long enough that machine load cannot expire them: this test proves the
