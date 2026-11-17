@@ -19,3 +19,4 @@
 {"type":"flush"}
 {"type":"shutdown"}
 {"type":"ping","seq":7}
+{"type":"forget","scope":"capture"}

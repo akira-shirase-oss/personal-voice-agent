@@ -262,6 +262,7 @@ impl Session {
             ClientMessage::Hello { .. }
             | ClientMessage::Flush
             | ClientMessage::Ping { .. }
+            | ClientMessage::Forget { .. }
             | ClientMessage::Shutdown => {
                 return Err(Refused::ShellMessage);
             }

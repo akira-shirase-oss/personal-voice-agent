@@ -39,6 +39,18 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
+    /// Heard transcripts were deleted on request (`forget`): the first record of the fresh log.
+    HistoryDeleted {
+        scope: crate::consent::ConsentScope,
+        files: u32,
+        bytes: u64,
+    },
+    /// Closed sessions past the retention period were deleted at start.
+    HistoryExpired {
+        files: u32,
+        bytes: u64,
+        retention_days: u32,
+    },
     /// What was sent to synthesis, exactly: what the assistant said, interrupted or not.
     /// `index` is the model's sentence number (none for session-authored text); `model_text`
     /// is the model's sentence when the session replaced it.

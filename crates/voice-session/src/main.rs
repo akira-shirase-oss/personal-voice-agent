@@ -1,7 +1,8 @@
 //! `voice-session --data-dir <dir>`: the app's child process. Speaks JSON lines on
 //! stdin/stdout (docs/PROTOCOL.md) and logs content-free lines to stderr.
 //!
-//! `--limit name=value` (repeatable) overrides one field of `voice_domain::Limits`, e.g.
+//! `--retention-days N` deletes closed session logs older than N days at start (default 30;
+//! 0 keeps none). `--limit name=value` (repeatable) overrides one field of `voice_domain::Limits`, e.g.
 //! `--limit lm_first_ms=200` for drills and integration tests that need short deadlines.
 //!
 //! Exit codes: 0 session ended, 2 usage, 3 ledger damaged, 4 ledger I/O, 5 runtime,
@@ -16,7 +17,7 @@ use voice_session::tools::NoTools;
 use voice_session::{Config, ServiceError, run};
 
 fn usage() -> ExitCode {
-    eprintln!("usage: voice-session --data-dir <dir> [--limit name=value]...");
+    eprintln!("usage: voice-session --data-dir <dir> [--retention-days N] [--limit name=value]...");
     ExitCode::from(2)
 }
 
@@ -37,9 +38,14 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut data_dir: Option<PathBuf> = None;
     let mut limits = voice_domain::Limits::default();
+    let mut retention_days: Option<u64> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
+            "--retention-days" => match args.next().and_then(|v| v.parse().ok()) {
+                Some(days) => retention_days = Some(days),
+                None => return usage(),
+            },
             "--limit" => {
                 let Some(spec) = args.next() else { return usage() };
                 if let Err(e) = apply_limit(&mut limits, &spec) {
@@ -68,6 +74,9 @@ fn main() -> ExitCode {
     let log = Log::stderr();
     let mut config = Config::new(data_dir, NoTools, log);
     config.limits = limits;
+    if let Some(days) = retention_days {
+        config.retention = Some(Duration::from_secs(days.saturating_mul(86_400)));
+    }
     let result = runtime.block_on(run(tokio::io::stdin(), tokio::io::stdout(), config));
     // Tokio's stdin read sits on a blocking thread; do not wait for it at exit.
     runtime.shutdown_timeout(Duration::from_millis(100));

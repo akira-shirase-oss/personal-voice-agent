@@ -151,7 +151,7 @@ public struct Recovered: Codable, Equatable, Sendable {
 enum Field: String, CodingKey {
     case type, `protocol`, client, turn, call, text, kind, index, proposal, model, instructions, reason, digest
     case approve, scope, grant, session, consent, recovered, on, heard, seq, voice, fence, tool, slots, reasons
-    case outcome, stage, code, detail, capture
+    case outcome, stage, code, detail, capture, files, bytes
     case minConfidence = "min_confidence"
     case rightsReview = "rights_review"
     case deadlineMs = "deadline_ms"
@@ -178,6 +178,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case consent(scope: ConsentScope, grant: Bool, rightsReview: String?)
     case flush
     case ping(seq: UInt64)
+    case forget(scope: ConsentScope)
     case shutdown
 
     public var type: String {
@@ -199,6 +200,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .consent: "consent"
         case .flush: "flush"
         case .ping: "ping"
+        case .forget: "forget"
         case .shutdown: "shutdown"
         }
     }
@@ -212,6 +214,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try c.encode(client, forKey: .client)
         case .pttDown, .interrupt, .flush, .shutdown: break
         case .ping(let seq): try c.encode(seq, forKey: .seq)
+        case .forget(let scope): try c.encode(scope, forKey: .scope)
         case .pttUp(let turn): try c.encode(turn, forKey: .turn)
         case .sttFinal(let call, let text, let confidence):
             try c.encode(call, forKey: .call)
@@ -279,6 +282,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
                 rightsReview: try c.decodeIfPresent(String.self, forKey: .rightsReview))
         case "flush": self = .flush
         case "ping": self = .ping(seq: try c.decode(UInt64.self, forKey: .seq))
+        case "forget": self = .forget(scope: try c.decode(ConsentScope.self, forKey: .scope))
         case "shutdown": self = .shutdown
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message type")
         }
@@ -303,6 +307,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
     case notice(code: String, turn: TurnID?)
     case flushed(seq: UInt64)
     case pong(seq: UInt64)
+    case forgotten(scope: ConsentScope, files: UInt32, bytes: UInt64)
     case error(code: String, detail: String)
 
     public var type: String {
@@ -322,6 +327,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case .notice: "notice"
         case .flushed: "flushed"
         case .pong: "pong"
+        case .forgotten: "forgotten"
         case .error: "error"
         }
     }
@@ -364,6 +370,10 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case "notice": self = .notice(code: try c.decode(String.self, forKey: .code), turn: try c.decodeIfPresent(TurnID.self, forKey: .turn))
         case "flushed": self = .flushed(seq: try c.decode(UInt64.self, forKey: .seq))
         case "pong": self = .pong(seq: try c.decode(UInt64.self, forKey: .seq))
+        case "forgotten":
+            self = .forgotten(
+                scope: try c.decode(ConsentScope.self, forKey: .scope), files: try c.decode(UInt32.self, forKey: .files),
+                bytes: try c.decode(UInt64.self, forKey: .bytes))
         case "error": self = .error(code: try c.decode(String.self, forKey: .code), detail: try c.decode(String.self, forKey: .detail))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown service message type")
         }
@@ -421,6 +431,10 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
             try c.encode(code, forKey: .code)
             try c.encode(turn, forKey: .turn)
         case .flushed(let seq), .pong(let seq): try c.encode(seq, forKey: .seq)
+        case .forgotten(let scope, let files, let bytes):
+            try c.encode(scope, forKey: .scope)
+            try c.encode(files, forKey: .files)
+            try c.encode(bytes, forKey: .bytes)
         case .error(let code, let detail):
             try c.encode(code, forKey: .code)
             try c.encode(detail, forKey: .detail)

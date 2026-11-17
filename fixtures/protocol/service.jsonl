@@ -15,3 +15,4 @@
 {"type":"flushed","seq":42}
 {"type":"error","code":"bad_message","detail":"malformed line"}
 {"type":"pong","seq":7}
+{"type":"forgotten","scope":"capture","files":3,"bytes":40960}

@@ -125,6 +125,11 @@ final class AppModel {
         Task { await conversation.setCaptureConsent(grant) }
     }
 
+    func deleteHistory() {
+        guard let conversation else { return }
+        Task { await conversation.forgetHistory() }
+    }
+
     func requestMicrophone() async {
         micGranted = await MicrophoneCapture.requestPermission()
     }
@@ -209,6 +214,7 @@ final class AppModel {
             consent = state
         case .notice(let code):
             if code == "consent_required" { banner = "Turn on “Listen while I hold Space” to talk." }
+            if code == "forget_refused_turn_active" { banner = "Finish or stop the current turn, then delete history." }
         case .serviceExited:
             service = .restarting(0)
             stopMicrophone()
@@ -216,6 +222,9 @@ final class AppModel {
             service = .restarting(attempt)
         case .serviceGaveUp:
             service = .stopped("The session service keeps stopping. Quit and reopen the app.")
+        case .forgotten(let files, _):
+            turns.removeAll()
+            banner = "History deleted: \(files) session log(s) removed from this Mac (backups made earlier are not touched)."
         case .serviceUnresponsive:
             stopMicrophone()
             banner = "The session stopped responding; it is being restarted. Nothing was done."

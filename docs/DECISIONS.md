@@ -137,7 +137,14 @@ settled it, it is listed under **Open questions** rather than guessed.
   third-party provider holds audio or transcripts (D-014). Real erasure for
   memory and any voice data comes in V3 by crypto-shredding: per-item keys
   in the Keychain, deletion destroys the key, and a test proves the item
-  is unrecoverable afterwards.
+  is unrecoverable afterwards. *Amended 2026-11-16 (review): heard
+  transcripts now have controls. "Delete history" (`forget` with scope
+  `capture`, acting on that consent's deletion scope) deletes every session
+  log, the live one included (rotated into a fresh log that records the
+  deletion), and closed logs older than 30 days are deleted at start
+  (`--retention-days`). Both are tested: a sentinel transcript is found
+  nowhere under the data directory afterwards. Copies in snapshots or
+  backups made before the exclusion are not reached.*
 - **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
   after release 3 s; model first output 6 s; model complete 20 s;
   synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;

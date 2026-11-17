@@ -585,6 +585,93 @@ async fn what_was_spoken_is_ledgered() {
     );
 }
 
+/// Deletion (D-018): forgetting capture's data removes every heard transcript from the live
+/// file system — closed sessions and the current one — and the session carries on.
+#[tokio::test]
+async fn forgetting_capture_data_deletes_every_transcript() {
+    let c = config("forget");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let secret = "TANGERINE-HARBOUR-4417";
+    reply_turn(&mut stub, &format!("remember {secret}"), &["Okay."]).await;
+    shutdown(stub, handle).await;
+    // A second session, with the first one's transcript closed on disk.
+    let mut c = config("forget-2");
+    c.data_dir.clone_from(&dir);
+    let (mut stub, _, handle) = start(c).await;
+    reply_turn(&mut stub, &format!("and again {secret}"), &["Sure."]).await;
+    stub.send(&C::Forget {
+        scope: ConsentScope::Capture,
+    })
+    .await;
+    let (m, _) = stub.until(|m| matches!(m, S::Forgotten { .. })).await;
+    let S::Forgotten { files, .. } = m else { unreachable!() };
+    assert!(files >= 2, "both sessions' logs were deleted ({files})");
+    // The session carries on, recording into a fresh log.
+    reply_turn(&mut stub, "what time is it", &["Late."]).await;
+    shutdown(stub, handle).await;
+    let mut leftovers = Vec::new();
+    for entry in walk(&dir) {
+        if std::fs::read(&entry)
+            .unwrap()
+            .windows(secret.len())
+            .any(|w| w == secret.as_bytes())
+        {
+            leftovers.push(entry);
+        }
+    }
+    assert!(leftovers.is_empty(), "the transcript survives in {leftovers:?}");
+    let recs = ledger(&dir);
+    assert!(
+        recs.iter().any(|r| r["kind"] == "history_deleted"),
+        "the deletion is on record"
+    );
+    assert!(
+        recs.iter()
+            .any(|r| r["kind"] == "heard" && r["text"] == "what time is it"),
+        "later turns are kept"
+    );
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Retention (D-018): closed session logs older than the retention period are deleted at start.
+#[tokio::test]
+async fn closed_sessions_past_retention_are_deleted_at_start() {
+    let dir = voice_testkit::temp_data_dir("retention");
+    std::fs::create_dir_all(dir.join("ledger")).unwrap();
+    let old = dir.join("ledger").join("0001.closed.log");
+    let recent = dir.join("ledger").join("0002.closed.log");
+    for p in [&old, &recent] {
+        std::fs::write(p, b"").unwrap();
+    }
+    let forty_days = std::time::SystemTime::now() - Duration::from_hours(40 * 24);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(forty_days)
+        .unwrap();
+    let mut c = config("retention");
+    c.data_dir.clone_from(&dir);
+    let (stub, _, handle) = start(c).await;
+    shutdown(stub, handle).await;
+    assert!(!old.exists(), "a 40-day-old session is past the 30-day default");
+    assert!(recent.exists(), "a recent session is kept");
+}
+
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.
 #[tokio::test]
 async fn logs_carry_no_transcript_or_reply_content() {

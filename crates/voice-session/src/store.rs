@@ -344,9 +344,7 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         mark_closed(&path)?;
     }
 
-    let session = uuid::Uuid::now_v7().to_string();
-    let ledger_path = ledger_dir.join(format!("{session}.log"));
-    let ledger = LogWriter::start(open_append(&ledger_path, true)?, session.clone(), 0, max_records)?;
+    let (session, ledger_path, ledger) = new_session_log(dir, max_records)?;
     let consent = LogWriter::start(
         open_append(&consent_path, false)?,
         session.clone(),
@@ -363,6 +361,49 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         consent_state,
         recovered,
     })
+}
+
+/// Starts a new session log (`ledger/<uuid v7>.log`) and its writer.
+pub fn new_session_log(dir: &Path, max_records: u64) -> Result<(String, PathBuf, LogWriter<Record>), StoreError> {
+    let session = uuid::Uuid::now_v7().to_string();
+    let path = dir.join("ledger").join(format!("{session}.log"));
+    let writer = LogWriter::start(open_append(&path, true)?, session.clone(), 0, max_records)?;
+    Ok((session, path, writer))
+}
+
+/// Deletes every session log except `keep` (the live one), then syncs the directory.
+/// Returns the files and bytes removed. D-018: this removes them from the live file system;
+/// copies in APFS snapshots or backups made before the data directory's exclusion remain.
+pub fn delete_history(dir: &Path, keep: &Path) -> Result<(u32, u64), StoreError> {
+    remove_logs(dir, |p| p != keep)
+}
+
+/// Deletes closed session logs last modified more than `older_than` ago.
+pub fn expire_history(dir: &Path, older_than: Duration) -> Result<(u32, u64), StoreError> {
+    let cutoff = SystemTime::now().checked_sub(older_than).unwrap_or(UNIX_EPOCH);
+    remove_logs(dir, |p| {
+        p.to_string_lossy().ends_with(".closed.log")
+            && fs::metadata(p).and_then(|m| m.modified()).is_ok_and(|t| t < cutoff)
+    })
+}
+
+fn remove_logs(dir: &Path, select: impl Fn(&Path) -> bool) -> Result<(u32, u64), StoreError> {
+    let ledger = dir.join("ledger");
+    let (mut files, mut bytes) = (0, 0);
+    for entry in fs::read_dir(&ledger).map_err(io_err(&ledger))? {
+        let path = entry.map_err(io_err(&ledger))?.path();
+        if !select(&path) {
+            continue;
+        }
+        let len = fs::metadata(&path).map_or(0, |m| m.len());
+        fs::remove_file(&path).map_err(io_err(&path))?;
+        files += 1;
+        bytes += len;
+    }
+    File::open(&ledger)
+        .and_then(|d| d.sync_all())
+        .map_err(io_err(&ledger))?;
+    Ok((files, bytes))
 }
 
 /// Renames `<id>.log` to `<id>.closed.log` once its `session_closed` is durable, so later

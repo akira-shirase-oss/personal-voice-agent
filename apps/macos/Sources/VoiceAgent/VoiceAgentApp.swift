@@ -105,6 +105,9 @@ struct StatusBar: View {
             HStack(spacing: 16) {
                 Toggle("Listen while I hold Space", isOn: Binding(get: { model.consent.capture }, set: { model.setConsent($0) }))
                     .disabled(model.service != .ready)
+                Button("Delete history") { model.deleteHistory() }
+                    .disabled(model.service != .ready)
+                    .help("Deletes every heard transcript kept on this Mac")
                 if !model.micGranted {
                     Button("Allow microphone") { Task { await model.requestMicrophone() } }
                 }

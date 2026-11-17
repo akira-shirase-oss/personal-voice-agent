@@ -26,6 +26,8 @@ public enum ConversationEvent: Sendable {
     case serviceFailed(String)
     /// The service stopped answering while a turn was open; it is being replaced.
     case serviceUnresponsive
+    /// A `forget` was carried out (D-018): how many session logs and bytes were deleted.
+    case forgotten(files: UInt32, bytes: UInt64)
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -288,6 +290,9 @@ public actor Conversation {
 
     public func flush() { send(.flush) }
 
+    /// Deletes every heard transcript (capture consent's deletion scope). Refused mid-turn.
+    public func forgetHistory() { send(.forget(scope: .capture)) }
+
     private func send(_ m: ClientMessage) {
         do { try process?.send(m) } catch { emit.yield(.notice("service_not_running")) }
     }
@@ -362,6 +367,8 @@ public actor Conversation {
             emit.yield(.notice("flushed"))
         case .pong(let seq):
             if pendingPing?.seq == seq { pendingPing = nil }
+        case .forgotten(_, let files, let bytes):
+            emit.yield(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }
             emit.yield(.notice(code))
