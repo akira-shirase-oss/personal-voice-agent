@@ -350,6 +350,7 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         session.clone(),
         consent_scan.last_seq,
         u64::MAX,
+        None,
     )?;
     Ok(Opened {
         lock,
@@ -367,7 +368,13 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
 pub fn new_session_log(dir: &Path, max_records: u64) -> Result<(String, PathBuf, LogWriter<Record>), StoreError> {
     let session = uuid::Uuid::now_v7().to_string();
     let path = dir.join("ledger").join(format!("{session}.log"));
-    let writer = LogWriter::start(open_append(&path, true)?, session.clone(), 0, max_records)?;
+    let writer = LogWriter::start(
+        open_append(&path, true)?,
+        session.clone(),
+        0,
+        max_records,
+        Some(|bytes| Record::RecordTooLarge { bytes }),
+    )?;
     Ok((session, path, writer))
 }
 
@@ -456,12 +463,20 @@ pub struct LogWriter<T> {
 }
 
 impl<T: Serialize + Send + 'static> LogWriter<T> {
-    fn start(file: File, session: String, seq: u64, max_records: u64) -> Result<Self, StoreError> {
+    /// `placeholder` builds the record written in place of one over `MAX_RECORD_BYTES`, so an
+    /// oversized record leaves a visible mark instead of vanishing.
+    fn start(
+        file: File,
+        session: String,
+        seq: u64,
+        max_records: u64,
+        placeholder: Option<fn(u64) -> T>,
+    ) -> Result<Self, StoreError> {
         let (tx, rx) = mpsc::channel(QUEUE);
         let (fault_tx, fault) = watch::channel(None);
         let thread = std::thread::Builder::new()
             .name("ledger-writer".into())
-            .spawn(move || writer_thread(file, &session, seq, max_records, rx, &fault_tx))
+            .spawn(move || writer_thread(file, &session, seq, max_records, placeholder, rx, &fault_tx))
             .map_err(|e| StoreError::Io {
                 path: PathBuf::from("ledger-writer"),
                 source: e,
@@ -557,6 +572,7 @@ fn writer_thread<T: Serialize>(
     session: &str,
     mut seq: u64,
     max_records: u64,
+    placeholder: Option<fn(u64) -> T>,
     mut rx: mpsc::Receiver<Req<T>>,
     fault: &watch::Sender<Option<Fault>>,
 ) {
@@ -599,7 +615,15 @@ fn writer_thread<T: Serialize>(
                                 batch_acks.push((ack, seq));
                             }
                         }
-                        _ => {
+                        other => {
+                            let bytes = other.map_or(0, |l| l.len() as u64);
+                            if let Some(make) = placeholder
+                                && let Ok(line) = encode(seq + 1, session, &make(bytes))
+                            {
+                                seq += 1;
+                                written += 1;
+                                buf.extend_from_slice(&line);
+                            }
                             if let Some(ack) = ack {
                                 acks.push((ack, Err(WriteError::TooLarge)));
                             }
@@ -836,6 +860,27 @@ mod tests {
         assert!(!opened.consent_state.capture);
         assert_eq!(opened.recovered.torn_tails, 1);
         assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
+    }
+
+    #[tokio::test]
+    async fn a_record_too_large_to_store_leaves_a_mark() {
+        let dir = temp_dir("too-large");
+        let opened = open(&dir, 100).unwrap();
+        let w = opened.ledger;
+        let wait = Duration::from_secs(5);
+        let huge = Record::Heard {
+            turn: TurnId(1),
+            call: voice_domain::CallId(1),
+            text: "x".repeat(70_000),
+            min_confidence: None,
+        };
+        assert_eq!(w.append_durable(huge, wait).await, Err(WriteError::TooLarge));
+        let _ = w.close(wait).await;
+        let recs = read_all(&opened.ledger_path);
+        assert!(
+            matches!(recs.as_slice(), [Record::RecordTooLarge { bytes }] if *bytes > 70_000),
+            "{recs:?}"
+        );
     }
 
     #[tokio::test]

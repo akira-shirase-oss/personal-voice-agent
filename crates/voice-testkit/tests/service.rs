@@ -585,6 +585,49 @@ async fn what_was_spoken_is_ledgered() {
     );
 }
 
+/// An oversized proposal is still on record (bounded), never silently missing: the line fits
+/// the 64 KiB limit but the record built from it would not.
+#[tokio::test]
+async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
+    let c = tool_config("oversized", FixtureTools::default(), Limits::default());
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "note this", 0.99).await;
+    let mut value = String::new();
+    let line = loop {
+        let proposal = Proposal::Action {
+            reply: "r".repeat(4_000),
+            tool: "fixture.note".into(),
+            slots: vec![Slot {
+                name: "text".into(),
+                kind: SlotKind::Text,
+                value: value.clone(),
+            }],
+        };
+        let line = serde_json::to_string(&lm_done(lm, proposal)).unwrap();
+        if line.len() >= 65_500 {
+            break line;
+        }
+        value.push_str(&"x".repeat((65_500 - line.len()).max(1)));
+    };
+    assert!(line.len() <= 65_536, "the line itself is within the protocol limit");
+    stub.send_raw(format!("{line}\n").as_bytes()).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let recs = ledger(&dir);
+    let inferred = recs
+        .iter()
+        .find(|r| r["kind"] == "inferred")
+        .expect("the proposal is on record");
+    let kept = inferred["proposal"]["slots"][0]["value"].as_str().unwrap().len();
+    assert!(kept <= 200, "the recorded slot is bounded ({kept} chars)");
+    assert!(
+        recs.iter()
+            .any(|r| r["kind"] == "decided" && r["decision"]["refusal"] == "slot_too_long")
+    );
+}
+
 /// Deletion (D-018): forgetting capture's data removes every heard transcript from the live
 /// file system — closed sessions and the current one — and the session carries on.
 #[tokio::test]

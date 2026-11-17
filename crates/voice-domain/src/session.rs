@@ -9,7 +9,7 @@ use crate::guard;
 use crate::ids::{CallId, Digest, TurnId};
 use crate::limits::Limits;
 use crate::policy::{self, Decision, Heard, Refusal};
-use crate::proposal::{Action, Proposal, ProposalKind};
+use crate::proposal::{Action, Proposal, ProposalKind, Slot};
 use crate::protocol::{ClientMessage, FailureReason, Outcome, ServiceMessage, Stage};
 use crate::record::Record;
 use crate::tools::{ToolOutcome, ToolRegistry, UncertainReason};
@@ -721,7 +721,8 @@ impl Session {
         out.push(Output::Record(Record::Inferred {
             turn,
             call,
-            proposal: proposal.clone(),
+            // Bounded for the record; the policy below still judges the proposal as received.
+            proposal: bounded(&proposal, &self.limits),
             model: model.chars().take(max_name).collect(),
             instructions: instructions.chars().take(max_name).collect(),
         }));
@@ -1072,6 +1073,28 @@ fn late(call: CallId, message: &str, out: &mut Vec<Output>) {
         call,
         message: message.to_owned(),
     }));
+}
+
+/// A proposal cut to the limits, for the ledger: at most `max_slots` slots, each name and value
+/// cut to its limit, the tool name cut to `max_name_chars`. Replies are already bounded.
+fn bounded(p: &Proposal, limits: &Limits) -> Proposal {
+    let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    match p {
+        Proposal::Reply { reply } => Proposal::Reply { reply: reply.clone() },
+        Proposal::Action { reply, tool, slots } => Proposal::Action {
+            reply: reply.clone(),
+            tool: cut(tool, limits.max_name_chars),
+            slots: slots
+                .iter()
+                .take(limits.max_slots)
+                .map(|s| Slot {
+                    name: cut(&s.name, limits.max_name_chars),
+                    kind: s.kind,
+                    value: cut(&s.value, limits.max_slot_value_chars),
+                })
+                .collect(),
+        },
+    }
 }
 
 fn bound_outcome(outcome: ToolOutcome, max: usize) -> ToolOutcome {

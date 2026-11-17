@@ -39,6 +39,10 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
+    /// Written in place of a record too large to store (over 64 KiB): never silently missing.
+    RecordTooLarge {
+        bytes: u64,
+    },
     /// Heard transcripts were deleted on request (`forget`): the first record of the fresh log.
     HistoryDeleted {
         scope: crate::consent::ConsentScope,
