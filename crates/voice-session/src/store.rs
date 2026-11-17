@@ -34,6 +34,8 @@ pub enum StoreError {
         line: u64,
         why: &'static str,
     },
+    #[error("another session service is using {path}")]
+    Locked { path: PathBuf },
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> StoreError + '_ {
@@ -251,6 +253,8 @@ impl ConsentTokens {
 }
 
 pub struct Opened {
+    /// Held for the life of the process: one service per data directory.
+    pub lock: File,
     pub tokens: ConsentTokens,
     pub session: String,
     pub ledger_path: PathBuf,
@@ -260,10 +264,30 @@ pub struct Opened {
     pub recovered: Recovered,
 }
 
+/// One service per data directory, taken before anything is read: a second instance would
+/// otherwise "recover" the first one's live session and write the consent log with its own
+/// sequence counter. The lock lives as long as the returned file (the process).
+fn lock_dir(dir: &Path) -> Result<File, StoreError> {
+    let path = dir.join("lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io_err(&path))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked { path: dir.to_owned() }),
+        Err(fs::TryLockError::Error(e)) => Err(io_err(&path)(e)),
+    }
+}
+
 /// Opens the data directory: repairs and folds the consent log, closes every session a crash
 /// left open, and starts a new session log. Blocking: call from `spawn_blocking`.
 pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     create_dir(dir)?;
+    let lock = lock_dir(dir)?;
     let ledger_dir = dir.join("ledger");
     create_dir(&ledger_dir)?;
     let mut recovered = Recovered::default();
@@ -330,6 +354,7 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         u64::MAX,
     )?;
     Ok(Opened {
+        lock,
         tokens,
         session,
         ledger_path,

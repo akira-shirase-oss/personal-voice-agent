@@ -21,6 +21,9 @@ public enum ConversationEvent: Sendable {
     case serviceExited(Int32)
     case serviceRestarting(attempt: Int)
     case serviceGaveUp
+    /// The service refused to start for a reason a restart cannot fix: `already_running`
+    /// (another copy owns the data directory), `store_corrupt` or `store_io`.
+    case serviceFailed(String)
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -112,6 +115,9 @@ public actor Conversation {
     /// turns from 1 again) is never confused with the one that died.
     private var epoch: UInt64 = 0
     private var stopping = false
+    /// Set when the service reported an error a restart cannot fix.
+    private var fatal: String?
+    static let fatalCodes: Set<String> = ["already_running", "store_corrupt", "store_io"]
     private static let maxPendingBuffers = 512
 
     public init(_ config: ConversationConfig) throws {
@@ -165,6 +171,10 @@ public actor Conversation {
         if let c = capturing { stopMicrophone(c) }
         currentTurn = nil
         guard !stopping else { return }
+        if let fatal {
+            emit.yield(.serviceFailed(fatal))
+            return
+        }
         guard restarts < config.maxRestarts else {
             emit.yield(.serviceGaveUp)
             return
@@ -308,6 +318,7 @@ public actor Conversation {
         case .flushed:
             emit.yield(.notice("flushed"))
         case .error(let code, _):
+            if Self.fatalCodes.contains(code) { fatal = code }
             emit.yield(.notice(code))
         }
     }

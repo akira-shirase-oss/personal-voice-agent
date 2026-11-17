@@ -216,6 +216,15 @@ final class AppModel {
             service = .restarting(attempt)
         case .serviceGaveUp:
             service = .stopped("The session service keeps stopping. Quit and reopen the app.")
+        case .serviceFailed(let code):
+            stopMicrophone()
+            let why: String =
+                switch code {
+                case "already_running": "Another copy of the app is already running."
+                case "store_corrupt": "The session record is damaged and was not changed. See docs/DRILLS.md."
+                default: "The session record could not be opened (disk full or unreadable)."
+                }
+            service = .stopped(why)
         }
     }
 

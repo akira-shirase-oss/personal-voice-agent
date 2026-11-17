@@ -236,6 +236,32 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// A second app on the same data directory: its service refuses to start, and the app says
+    /// so instead of restarting it in a loop.
+    @Test("a second instance reports 'already running' and does not restart its service")
+    func secondInstance() async throws {
+        let dir = try tempDataDir("second")
+        func make() throws -> (Conversation, Recorder) {
+            var config = ConversationConfig(
+                binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+                model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+            config.offlinePlayback = true
+            let c = try Conversation(config)
+            return (c, Recorder(c.events))
+        }
+        let (first, r1) = try make()
+        try await first.start()
+        #expect(await r1.next(isReady) != nil)
+        let (second, r2) = try make()
+        try await second.start()
+        #expect(await r2.next { if case .notice("already_running") = $0 { true } else { false } } != nil)
+        #expect(await r2.next { if case .serviceExited = $0 { true } else { false } } != nil)
+        let restarted = await r2.next(timeout: .seconds(1)) { if case .serviceRestarting = $0 { true } else { false } }
+        #expect(restarted == nil, "the refused service is not restarted")
+        await second.shutdown()
+        await first.shutdown()
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")

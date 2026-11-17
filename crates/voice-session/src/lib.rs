@@ -126,11 +126,23 @@ async fn open_store(
     let opened = tokio::task::spawn_blocking(move || store::open(&data_dir, max_records))
         .await
         .map_err(|_| ServiceError::Join)?;
+    if let Ok(o) = &opened {
+        let r = o.recovered;
+        log.event(
+            "store_opened",
+            &[
+                ("recovered_sessions", r.sessions.into()),
+                ("abandoned_turns", r.abandoned_turns.into()),
+                ("uncertain_calls", r.uncertain_calls.into()),
+                ("torn_tails", r.torn_tails.into()),
+            ],
+        );
+    }
     opened.map_err(|e| {
-        let code = if matches!(e, StoreError::Corrupt { .. }) {
-            "store_corrupt"
-        } else {
-            "store_io"
+        let code = match e {
+            StoreError::Corrupt { .. } => "store_corrupt",
+            StoreError::Locked { .. } => "already_running",
+            StoreError::Io { .. } => "store_io",
         };
         log.event("store_failed", &[("code", code.into())]);
         let _ = out.try_send(ServiceMessage::Error {
@@ -169,6 +181,7 @@ where
         }
     };
     let store::Opened {
+        lock: _lock,
         tokens,
         session: session_id,
         ledger_path,
@@ -177,16 +190,6 @@ where
         consent_state,
         recovered,
     } = opened;
-    log.event(
-        "store_opened",
-        &[
-            ("recovered_sessions", recovered.sessions.into()),
-            ("abandoned_turns", recovered.abandoned_turns.into()),
-            ("uncertain_calls", recovered.uncertain_calls.into()),
-            ("torn_tails", recovered.torn_tails.into()),
-        ],
-    );
-
     let (in_tx, mut in_rx) = mpsc::channel(IN_QUEUE);
     let reader_task = tokio::spawn(framing::read_loop(reader, in_tx, framing::MAX_LINE));
     let (tool_tx, mut tool_rx) = mpsc::channel(TOOL_QUEUE);

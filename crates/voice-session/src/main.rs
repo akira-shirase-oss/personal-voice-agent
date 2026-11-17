@@ -4,7 +4,8 @@
 //! `--limit name=value` (repeatable) overrides one field of `voice_domain::Limits`, e.g.
 //! `--limit lm_first_ms=200` for drills and integration tests that need short deadlines.
 //!
-//! Exit codes: 0 session ended, 2 usage, 3 ledger damaged, 4 ledger I/O, 5 runtime.
+//! Exit codes: 0 session ended, 2 usage, 3 ledger damaged, 4 ledger I/O, 5 runtime,
+//! 6 another service is already using the data directory.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(ServiceError::Store(StoreError::Corrupt { .. })) => ExitCode::from(3),
         Err(ServiceError::Store(StoreError::Io { .. })) => ExitCode::from(4),
+        Err(ServiceError::Store(StoreError::Locked { .. })) => ExitCode::from(6),
         Err(ServiceError::Join) => ExitCode::from(5),
     }
 }
