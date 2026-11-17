@@ -327,8 +327,10 @@ impl<E: ToolExecutor> Actor<E> {
     }
 
     /// Carries out a consent scope's deletion scope now (D-018). For capture: every heard
-    /// transcript, closed or live. The live log is rotated: a fresh one is opened first, the old
-    /// writer is closed, then every other log is deleted.
+    /// transcript, closed or live. The live log is closed, every log is deleted (an unlink needs
+    /// no free space, so a full disk cannot stop it), and only then is a fresh log opened to
+    /// record the deletion. If no fresh log can be created the deletion still stands: the app is
+    /// told what was removed, and the ledger is reported unavailable.
     async fn forget(&mut self, scope: voice_domain::consent::ConsentScope) -> Result<(), Stop> {
         if self.session.active_turn().is_some() {
             let turn = self.session.active_turn();
@@ -349,30 +351,49 @@ impl<E: ToolExecutor> Actor<E> {
                 })
                 .await;
         }
-        let (dir, max) = (self.data_dir.clone(), self.max_records);
-        let Ok(Ok((session, path, writer))) =
-            tokio::task::spawn_blocking(move || store::new_session_log(&dir, max)).await
-        else {
-            return self.error("forget_failed", "a new log could not be started").await;
-        };
-        let old = std::mem::replace(&mut self.ledger, writer);
-        self.ledger_faults = self.ledger.faults();
-        self.ledger_path.clone_from(&path);
-        self.summary.session = session;
+        let old = std::mem::replace(&mut self.ledger, LogWriter::closed());
         let _ = old.close(self.io_timeout).await;
         let dir = self.data_dir.clone();
-        let deleted = tokio::task::spawn_blocking(move || store::delete_history(&dir, &path)).await;
+        let deleted = tokio::task::spawn_blocking(move || store::delete_history(&dir)).await;
+        let fresh = self.open_fresh_log().await;
         let Ok(Ok((files, bytes))) = deleted else {
-            return self.error("forget_failed", "some history could not be deleted").await;
+            self.log.event("forget_failed", &[("fresh_log", fresh.into())]);
+            self.error("forget_failed", "some history could not be deleted").await?;
+            return self.drain_faults().await;
         };
-        self.record(Record::SessionOpened {
-            protocol: PROTOCOL_VERSION,
-            client: "after-forget".into(),
-        })
-        .await;
-        self.record(Record::HistoryDeleted { scope, files, bytes }).await;
-        self.log.event("history_deleted", &[("files", files.into())]);
-        self.send(ServiceMessage::Forgotten { scope, files, bytes }).await
+        if fresh {
+            self.record(Record::SessionOpened {
+                protocol: PROTOCOL_VERSION,
+                client: "after-forget".into(),
+            })
+            .await;
+            self.record(Record::HistoryDeleted { scope, files, bytes }).await;
+        }
+        self.log.event(
+            "history_deleted",
+            &[("files", files.into()), ("fresh_log", fresh.into())],
+        );
+        self.send(ServiceMessage::Forgotten { scope, files, bytes }).await?;
+        self.drain_faults().await
+    }
+
+    /// Opens a new session log in place of the closed one; false (and the ledger down) if it
+    /// cannot be created.
+    async fn open_fresh_log(&mut self) -> bool {
+        let (dir, max) = (self.data_dir.clone(), self.max_records);
+        if let Ok(Ok((session, path, writer))) =
+            tokio::task::spawn_blocking(move || store::new_session_log(&dir, max)).await
+        {
+            self.ledger = writer;
+            self.ledger_faults = self.ledger.faults();
+            self.ledger_path = path;
+            self.summary.session = session;
+            true
+        } else {
+            self.ledger_faults = self.ledger.faults();
+            self.ledger_down(FailureReason::LedgerIo);
+            false
+        }
     }
 
     async fn handshake(

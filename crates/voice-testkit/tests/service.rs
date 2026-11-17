@@ -746,6 +746,38 @@ async fn forgetting_capture_data_deletes_every_transcript() {
     );
 }
 
+/// A forget that cannot delete everything says so (`forget_failed`), never `forgotten`, and the
+/// session carries on in a fresh log.
+#[tokio::test]
+async fn a_forget_that_cannot_delete_everything_says_so() {
+    let c = config("forget-fails");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    reply_turn(&mut stub, "remember the blue door", &["Okay."]).await;
+    // An entry `remove_file` cannot delete: a directory inside the ledger.
+    let stuck = dir.join("ledger").join("stuck.closed.log");
+    std::fs::create_dir_all(stuck.join("inner")).unwrap();
+    stub.send(&C::Forget {
+        scope: ConsentScope::Capture,
+    })
+    .await;
+    let (m, skipped) = stub.until(|m| matches!(m, S::Error { .. } | S::Forgotten { .. })).await;
+    assert!(
+        matches!(&m, S::Error { code, .. } if code == "forget_failed"),
+        "a partial deletion is reported as failed: {m:?} after {skipped:?}"
+    );
+    reply_turn(&mut stub, "what time is it", &["Late."]).await;
+    shutdown(stub, handle).await;
+    std::fs::remove_dir_all(stuck).unwrap();
+    assert!(
+        ledger(&dir)
+            .iter()
+            .any(|r| r["kind"] == "heard" && r["text"] == "what time is it"),
+        "the session carried on in a fresh log"
+    );
+}
+
 fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).unwrap() {

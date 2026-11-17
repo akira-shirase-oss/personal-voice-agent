@@ -32,6 +32,8 @@ public enum ConversationEvent: Sendable {
     case eventsDropped(Int)
     /// A `forget` was carried out (D-018): how many session logs and bytes were deleted.
     case forgotten(files: UInt32, bytes: UInt64)
+    /// A `forget` could not delete everything: some heard transcripts may remain.
+    case forgetFailed
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -485,8 +487,12 @@ public actor Conversation {
             publish(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }
-            if code == "forget_failed" { forgetPending = false }
-            publish(.notice(code))
+            if code == "forget_failed" {
+                forgetPending = false
+                publish(.forgetFailed)
+            } else {
+                publish(.notice(code))
+            }
         }
     }
 

@@ -575,6 +575,27 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// A failed deletion is shown, never silent: the service's `forget_failed` reaches the app as
+    /// its own event (the window shows a banner for it).
+    @Test("a deletion that fails is reported to the app")
+    func forgetFailureIsReported() async throws {
+        let dir = try tempDataDir("forget-fails")
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await startWithConsent(c, r)
+        // An entry the service cannot delete: a directory inside the ledger.
+        let stuck = dir.appending(path: "ledger/stuck.closed.log/inner")
+        try FileManager.default.createDirectory(at: stuck, withIntermediateDirectories: true)
+        await c.forgetHistory()
+        #expect(await r.ever(timeout: .seconds(5)) { "\($0)".hasPrefix("forgetFailed") }, "the failure reaches the app as its own event")
+        #expect(await !(r.seen.contains { if case .forgotten = $0 { true } else { false } }), "nothing is reported deleted")
+        await c.shutdown()
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")

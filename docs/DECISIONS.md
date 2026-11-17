@@ -147,7 +147,10 @@ settled it, it is listed under **Open questions** rather than guessed.
   backups made before the exclusion are not reached. "Delete history" and a
   capture revocation also clear the model's in-memory recap (D-025), so deleted
   speech never reaches the next prompt; a turn still finishing when history is
-  deleted cannot add its text back (tested, second review N3).*
+  deleted cannot add its text back (tested, second review N3). The deletion
+  comes before the fresh log is created, so a full disk cannot stop it (it did:
+  `tests/disk_full.rs` on full HFS+ and APFS images), and a deletion that fails
+  is shown to the user (N4).*
 - **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
   after release 3 s; model first output 6 s; model complete 20 s;
   synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;

@@ -53,7 +53,7 @@ durations only, never content (D-011).
 | `consent` | `scope` (`capture`/`personal_voice`), `grant` (bool), `rights_review` (string or null) | Grant or revoke |
 | `flush` | — | Barrier: answered by `flushed` once every earlier record is durable |
 | `ping` | `seq` | Liveness: answered by `pong` at once, without touching the ledger |
-| `forget` | `scope` | Carry out that consent scope's deletion scope now (capture: every heard transcript); refused while a turn is open |
+| `forget` | `scope` | Carry out that consent scope's deletion scope now (capture: every heard transcript); refused while a turn is open. Every log is deleted before the fresh one is created (no free space needed); answered by `forgotten`, or by `error` `forget_failed` if anything could not be deleted |
 | `shutdown` | — | End the session cleanly |
 
 `proposal`:

@@ -461,11 +461,12 @@ pub fn new_session_log(dir: &Path, max_records: u64) -> Result<(String, PathBuf,
     Ok((session, path, writer))
 }
 
-/// Deletes every session log except `keep` (the live one), then syncs the directory.
-/// Returns the files and bytes removed. D-018: this removes them from the live file system;
-/// copies in APFS snapshots or backups made before the data directory's exclusion remain.
-pub fn delete_history(dir: &Path, keep: &Path) -> Result<(u32, u64), StoreError> {
-    remove_logs(dir, |p| p != keep)
+/// Deletes every session log, the live one included (its writer must be closed first), then
+/// syncs the directory. Needs no free space. Returns the files and bytes removed. D-018: this
+/// removes them from the live file system; copies in APFS snapshots or backups made before the
+/// data directory's exclusion remain.
+pub fn delete_history(dir: &Path) -> Result<(u32, u64), StoreError> {
+    remove_logs(dir, |_| true)
 }
 
 /// Deletes closed session logs last modified more than `older_than` ago.
@@ -642,6 +643,19 @@ impl<T: Serialize + Send + 'static> LogWriter<T> {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
         result
+    }
+
+    /// A writer with no file that refuses every record (`Closed`): what the session holds
+    /// between closing its log for `forget` and opening the fresh one, or instead of a fresh one
+    /// that could not be created.
+    pub fn closed() -> Self {
+        let (tx, _) = mpsc::channel(1);
+        let (_, fault) = watch::channel(Some(Fault::Io));
+        Self {
+            tx,
+            fault,
+            thread: None,
+        }
     }
 
     /// Resolves when the writer reports a fault (an I/O error or the record cap).

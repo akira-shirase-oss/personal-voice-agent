@@ -231,6 +231,8 @@ final class AppModel {
         case .forgotten(let files, _):
             turns.removeAll()
             banner = "History deleted: \(files) session log(s) removed from this Mac (backups made earlier are not touched)."
+        case .forgetFailed:
+            banner = "History could not be deleted completely; some of what you said may still be on this Mac. Try again."
         case .eventsDropped(let n):
             banner = "The window fell behind and missed \(n) update(s); what it shows may be out of date."
         case .serviceUnresponsive:
