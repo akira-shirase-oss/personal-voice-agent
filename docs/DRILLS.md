@@ -88,6 +88,16 @@ Hold Space and, while holding, run `pkill -STOP -f 'VoiceAgent.app/Contents/MacO
   press Space within a second of the `pkill`: the talk bar shows "Waiting for the session…",
   the microphone indicator never comes on, and within about 3 seconds the same banner appears.
 
+## Drill 11 — quit and relaunch with a hung or orphaned service
+
+Run `pkill -STOP -f 'VoiceAgent.app/Contents/MacOS/voice-session'`, then quit the app (⌘Q) and
+reopen it at once. Then force-quit the app itself (`pkill -9 -f 'VoiceAgent.app/Contents/MacOS/VoiceAgent$'`),
+stop the service it leaves behind as above, and reopen the app.
+
+- Expect: the first quit takes at most about 3 seconds and the relaunch becomes ready; after
+  the force quit the relaunched app says a session left running by an earlier run was stopped,
+  and becomes ready. Neither shows "Another copy of the app is using its data".
+
 ## Drill 10 — delete history
 
 Talk for a few turns, then click **Delete history**.

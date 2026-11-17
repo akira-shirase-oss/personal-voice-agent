@@ -28,7 +28,10 @@ public final class SessionProcess: @unchecked Sendable {
     private let stdout = Pipe()
     private let stderr = Pipe()
     private let writes = DispatchQueue(label: "voice.session.stdin")
+    /// Accepting writes: false once the child exited or a write to it failed.
     private let alive = Flag()
+    /// Set only by the termination handler: the child is really gone.
+    private let ended = Flag()
 
     /// A shareable atomic flag (Atomic itself is non-copyable and cannot be captured).
     final class Flag: Sendable {
@@ -50,8 +53,10 @@ public final class SessionProcess: @unchecked Sendable {
         process.standardError = stderr
         let continuation = self.continuation
         let alive = self.alive
+        let ended = self.ended
         process.terminationHandler = { p in
             alive.set(false)
+            ended.set(true)
             continuation.yield(.exited(p.terminationStatus))
             continuation.finish()
         }
@@ -67,6 +72,8 @@ public final class SessionProcess: @unchecked Sendable {
 
     public var pid: Int32 { process.processIdentifier }
     public var isRunning: Bool { alive.isSet }
+    /// The child has exited (a failed write alone does not mean that).
+    public var hasExited: Bool { ended.isSet }
     /// Set when the event buffer overflowed: the session was ended rather than thinned out.
     public var overflowed: Bool { overflow.isSet }
     private let overflow = Flag()
@@ -131,12 +138,77 @@ public final class SessionProcess: @unchecked Sendable {
         writes.sync { try? stdin.fileHandleForWriting.close() }
     }
 
-    /// For crash drills only: SIGKILL, no shutdown path.
+    /// SIGKILL, no shutdown path: crash drills, a hung service, the last step of `stop`.
     public func kill() {
-        if isRunning { Foundation.kill(process.processIdentifier, SIGKILL) }
+        if !hasExited { Foundation.kill(process.processIdentifier, SIGKILL) }
     }
 
     public func waitUntilExit() { process.waitUntilExit() }
+
+    /// Waits at most `timeout` for the child to exit; true if it did.
+    public func waitForExit(_ timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !hasExited && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        return hasExited
+    }
+
+    /// Ends the child within a bound, whatever state it is in: stdin is closed (the service
+    /// closes its session and exits), then SIGTERM after `grace`, then SIGKILL after `term`
+    /// (a stopped process ignores everything but SIGKILL). True once it has exited.
+    @discardableResult
+    public func stop(grace: Duration = .seconds(1), term: Duration = .milliseconds(500)) async -> Bool {
+        close()
+        if await waitForExit(grace) { return true }
+        if !hasExited { Foundation.kill(process.processIdentifier, SIGTERM) }
+        if await waitForExit(term) { return true }
+        kill()
+        return await waitForExit(.seconds(1))
+    }
+}
+
+/// The data directory's lock (one service per directory). Its holder writes its process ID
+/// into it, so the app can tell a stale orphan of its own — the same `voice-session` binary,
+/// left behind when an earlier app process died (its parent is now launchd) — from another copy
+/// of the app that is still running and must be left alone.
+public enum ServiceLock {
+    public static func holder(dataDir: URL) -> Int32? {
+        guard let text = try? String(contentsOf: dataDir.appending(path: "lock"), encoding: .utf8),
+            let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0
+        else { return nil }
+        return pid
+    }
+
+    /// Whether `pid` is alive, runs exactly `binary`, and has lost its parent app.
+    public static func isStaleOrphan(_ pid: Int32, binary: URL) -> Bool {
+        guard pid > 0, pid != getpid(), Foundation.kill(pid, 0) == 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_ppid == 1 else { return false }
+        var path = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let n = path.withUnsafeMutableBytes { proc_pidpath(pid, $0.baseAddress, UInt32($0.count)) }
+        guard n > 0 else { return false }
+        return realPath(String(decoding: path.prefix(Int(n)), as: UTF8.self)) == realPath(binary.path)
+    }
+
+    /// SIGTERM, a bounded wait, then SIGKILL. True once the process is gone.
+    public static func terminate(_ pid: Int32, grace: Duration = .seconds(1)) async -> Bool {
+        func gone() -> Bool { Foundation.kill(pid, 0) != 0 && errno == ESRCH }
+        func wait(_ d: Duration) async -> Bool {
+            let deadline = ContinuousClock.now + d
+            while !gone() && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+            return gone()
+        }
+        Foundation.kill(pid, SIGTERM)
+        if await wait(grace) { return true }
+        Foundation.kill(pid, SIGKILL)
+        return await wait(.seconds(1))
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
 }
 
 /// Where the app finds `voice-session`: next to its own executable (a bundled app), then

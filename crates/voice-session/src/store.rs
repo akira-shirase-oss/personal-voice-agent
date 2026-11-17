@@ -39,7 +39,7 @@ pub enum StoreError {
         why: &'static str,
     },
     #[error("another session service is using {path}")]
-    Locked { path: PathBuf },
+    Locked { path: PathBuf, holder: Option<u32> },
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> StoreError + '_ {
@@ -330,21 +330,40 @@ pub struct Opened {
 
 /// One service per data directory, taken before anything is read: a second instance would
 /// otherwise "recover" the first one's live session and write the consent log with its own
-/// sequence counter. The lock lives as long as the returned file (the process).
+/// sequence counter. The lock lives as long as the returned file (the process). The holder
+/// writes its process ID into the file (never truncated before the lock is held), so a relaunched
+/// app can tell a stale orphan of its own from another running copy.
 fn lock_dir(dir: &Path) -> Result<File, StoreError> {
     let path = dir.join("lock");
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
+        .read(true)
         .write(true)
         .mode(0o600)
         .open(&path)
         .map_err(io_err(&path))?;
     match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked { path: dir.to_owned() }),
+        Ok(()) => {
+            let mut holder = &lock;
+            holder
+                .set_len(0)
+                .and_then(|()| holder.write_all(format!("{}\n", std::process::id()).as_bytes()))
+                .and_then(|()| holder.sync_data())
+                .map_err(io_err(&path))?;
+            Ok(lock)
+        }
+        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked {
+            path: dir.to_owned(),
+            holder: lock_holder(dir),
+        }),
         Err(fs::TryLockError::Error(e)) => Err(io_err(&path)(e)),
     }
+}
+
+/// The process ID the data directory's lock holder wrote, if any.
+pub fn lock_holder(dir: &Path) -> Option<u32> {
+    fs::read_to_string(dir.join("lock")).ok()?.trim().parse().ok()
 }
 
 /// Opens the data directory: repairs and folds the consent log, closes every session a crash

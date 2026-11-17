@@ -46,6 +46,11 @@ fn a_second_instance_on_the_same_data_directory_refuses_to_start() {
     let _ = std::fs::remove_dir_all(&dir);
     let (mut a, mut a_in, a_rx) = start(&dir);
     assert_eq!(next(&a_rx)["type"], "ready");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("lock")).unwrap().trim(),
+        a.id().to_string(),
+        "the lock names its holder, so a relaunched app can tell a stale orphan from another copy"
+    );
     let live: Vec<_> = std::fs::read_dir(dir.join("ledger"))
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -58,6 +63,11 @@ fn a_second_instance_on_the_same_data_directory_refuses_to_start() {
         "the second instance must not become ready: {first}"
     );
     assert_eq!(first["code"], "already_running");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("lock")).unwrap().trim(),
+        a.id().to_string(),
+        "the refused instance did not overwrite the holder's process ID"
+    );
     assert_eq!(
         b.wait().unwrap().code(),
         Some(6),

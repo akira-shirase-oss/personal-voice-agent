@@ -220,6 +220,7 @@ final class AppModel {
             if code == "consent_required" { banner = "Turn on “Listen while I hold Space” to talk." }
             if code == "forget_refused_turn_active" { banner = "Finish or stop the current turn, then delete history." }
             if code == "service_not_running" { banner = "The session is restarting; press Space again in a moment." }
+            if code == "stale_service_stopped" { banner = "A session left running by an earlier run of the app was stopped." }
         case .serviceExited:
             service = .restarting(0)
             stopMicrophone()
@@ -240,7 +241,7 @@ final class AppModel {
             stopMicrophone()
             let why: String =
                 switch code {
-                case "already_running": "Another copy of the app is already running."
+                case "already_running": "Another copy of the app is using its data; this one takes over when that one quits."
                 case "store_corrupt": "The session record is damaged and was not changed. See docs/DRILLS.md."
                 default: "The session record could not be opened (disk full or unreadable)."
                 }

@@ -21,8 +21,9 @@ public enum ConversationEvent: Sendable {
     case serviceExited(Int32)
     case serviceRestarting(attempt: Int)
     case serviceGaveUp
-    /// The service refused to start for a reason a restart cannot fix: `already_running`
-    /// (another copy owns the data directory), `store_corrupt` or `store_io`.
+    /// The service refused to start: `store_corrupt` or `store_io` (a restart cannot fix them),
+    /// or `already_running` (another running copy owns the data directory; the app keeps
+    /// retrying and takes over when it is free).
     case serviceFailed(String)
     /// The service stopped answering (during a turn, between turns or on a key press); it is
     /// being replaced.
@@ -69,6 +70,12 @@ public struct ConversationConfig: Sendable {
     public var idleHeartbeatInterval: Duration = .seconds(5)
     /// How long a ping may wait behind a `forget`, which deletes files before it answers.
     public var forgetTimeout: Duration = .seconds(30)
+    /// On quit, how long the service has to close its session after stdin closes before it
+    /// gets SIGTERM (then SIGKILL): the app never leaves a child holding the data directory.
+    public var shutdownGrace: Duration = .seconds(1)
+    /// While another running copy holds the data directory, retry after 250 ms, doubling up to
+    /// this cap, for as long as it takes.
+    public var blockedRetryCap: Duration = .seconds(5)
     /// Bound on conversation events waiting for the app to read them.
     public var eventBuffer = 4_096
 
@@ -137,8 +144,10 @@ public actor Conversation {
     /// turns from 1 again) is never confused with the one that died.
     private var epoch: UInt64 = 0
     private var stopping = false
-    /// Set when the service reported an error a restart cannot fix.
+    /// Set when the service reported an error a plain restart cannot fix.
     private var fatal: String?
+    /// Consecutive launches refused with `already_running`.
+    private var blockedAttempts = 0
     /// The heartbeat ping awaiting its pong, if any.
     private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
     private var pingSeq: UInt64 = 0
@@ -216,12 +225,16 @@ public actor Conversation {
         send(.ping(seq: pingSeq))
     }
 
-    public func shutdown() {
+    /// Ends the session and does not return until the service has exited: `shutdown`, then
+    /// stdin closed, SIGTERM after `shutdownGrace`, SIGKILL last. A child left running (or hung)
+    /// would hold the data directory's lock, and the next launch would be refused.
+    public func shutdown() async {
         stopping = true
-        try? process?.send(.shutdown)
-        process?.close()
         for task in calls.values { task.cancel() }
         player.shutdown()
+        guard let p = process else { return }
+        try? p.send(.shutdown)
+        await p.stop(grace: config.shutdownGrace)
     }
 
     /// Crash drill: kills the child with SIGKILL; the conversation restarts it.
@@ -248,7 +261,8 @@ public actor Conversation {
     private func handleExit(_ status: Int32, of p: SessionProcess) {
         guard p === process, exitHandled != ObjectIdentifier(p) else { return }
         exitHandled = ObjectIdentifier(p)
-        publish(.serviceExited(status))
+        let blocked = fatal == "already_running"
+        if !blocked || blockedAttempts == 0 { publish(.serviceExited(status)) }
         // The session is gone: stop its audio and drop all of its call state. The next
         // session reuses turn and call numbers from 1, so nothing of this one may linger.
         player.stop(fence: TurnID(UInt64.max), epoch: epoch)
@@ -266,6 +280,10 @@ public actor Conversation {
         currentTurn = nil
         sessionUp = false
         guard !stopping else { return }
+        if blocked {
+            fatal = nil
+            return waitForDataDirectory()
+        }
         if let fatal {
             publish(.serviceFailed(fatal))
             return
@@ -282,6 +300,34 @@ public actor Conversation {
             try? await Task.sleep(for: .milliseconds(100 << (attempt - 1)))
             try? await self?.start()
         }
+    }
+
+    /// `already_running`: another service holds the data directory. A stale orphan of this
+    /// app (its parent died; it still holds the lock, perhaps hung) is stopped and replaced at
+    /// once. Any other holder is another running copy: wait for it, with capped backoff, and
+    /// never give up — the refusal is reported, not made permanent.
+    private func waitForDataDirectory() {
+        blockedAttempts += 1
+        let attempt = blockedAttempts
+        if let pid = ServiceLock.holder(dataDir: config.dataDir), ServiceLock.isStaleOrphan(pid, binary: config.binary) {
+            publish(.notice("stale_service_stopped"))
+            Task { [weak self] in
+                _ = await ServiceLock.terminate(pid)
+                try? await self?.relaunch()
+            }
+            return
+        }
+        if attempt == 3 { publish(.serviceFailed("already_running")) }
+        let delay = min(Duration.milliseconds(250 << min(attempt - 1, 8)), config.blockedRetryCap)
+        Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            try? await self?.relaunch()
+        }
+    }
+
+    private func relaunch() throws {
+        guard !stopping else { return }
+        try start()
     }
 
     // MARK: User actions
@@ -368,6 +414,7 @@ public actor Conversation {
         case .ready(_, let session, let consent, let recovered):
             self.consent = consent
             sessionUp = true
+            blockedAttempts = 0
             publish(.ready(session: session, consent: consent, recovered: recovered))
         case .turnOpened(let turn):
             currentTurn = turn

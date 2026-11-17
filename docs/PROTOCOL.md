@@ -15,7 +15,14 @@ durations only, never content (D-011).
 - stdin EOF ends the session cleanly (`session_closed` is recorded).
 - A service that cannot open its data directory sends one `error` before exiting:
   `already_running` (another service holds the directory's lock; exit code 6),
-  `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for these.
+  `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for the last
+  two. The lock holder writes its process ID into `<data-dir>/lock`; on `already_running` the
+  app reads it, stops a stale orphan of its own (the same `voice-session` binary whose parent
+  app has died, so its parent is launchd: SIGTERM, then SIGKILL) and starts again, and
+  otherwise waits for the other copy, retrying after 250 ms, doubling to at most 5 s, for as
+  long as it takes.
+- On quit the app sends `shutdown` and closes stdin, then sends SIGTERM if the service has
+  not exited within 1 s and SIGKILL 0.5 s later, and quits only once it has exited.
 - Golden lines for both sides live in `fixtures/protocol/`; the Rust and
   Swift test suites both decode every one of them.
 

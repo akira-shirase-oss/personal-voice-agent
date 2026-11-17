@@ -25,6 +25,16 @@ actor Recorder {
         return nil
     }
 
+    /// Whether any event so far, or before the timeout, satisfies `match` (ignores the cursor).
+    func ever(timeout: Duration, _ match: @Sendable (ConversationEvent) -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if seen.contains(where: match) { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return seen.contains(where: match)
+    }
+
     /// The next event (after the previous match) satisfying `match`, or nil at the timeout.
     func next(timeout: Duration = .seconds(10), _ match: @Sendable (ConversationEvent) -> Bool) async -> ConversationEvent? {
         let deadline = ContinuousClock.now + timeout
@@ -422,9 +432,80 @@ struct ConversationTests {
         #expect(await r2.next { if case .notice("already_running") = $0 { true } else { false } } != nil)
         #expect(await r2.next { if case .serviceExited = $0 { true } else { false } } != nil)
         let restarted = await r2.next(timeout: .seconds(1)) { if case .serviceRestarting = $0 { true } else { false } }
-        #expect(restarted == nil, "the refused service is not restarted")
-        await second.shutdown()
+        #expect(restarted == nil, "the refused service is not restarted as if it had crashed")
+        #expect(await r2.ever(timeout: .seconds(3)) { if case .serviceFailed("already_running") = $0 { true } else { false } }, "the refusal is reported")
+        // The other copy is alive and has a live parent: never treated as an orphan.
+        let firstPID = try #require(await first.servicePID)
+        #expect(kill(firstPID, 0) == 0, "the running copy's service was left alone")
+        #expect(await !(r2.seen.contains { if case .notice("stale_service_stopped") = $0 { true } else { false } }))
+        // Not permanent: once the first copy quits, the second takes over.
         await first.shutdown()
+        #expect(await r2.next(timeout: .seconds(8), isReady) != nil, "the waiting copy becomes ready")
+        await second.shutdown()
+    }
+
+    /// Quitting while the service is hung (SIGSTOP): the app does not return from shutdown until
+    /// its child has exited, so the next launch on the same data directory is not refused.
+    @Test("quitting ends a hung service, and the next launch is not refused")
+    func quitEndsAHungChild() async throws {
+        let dir = try tempDataDir("quit-hung")
+        func make() throws -> (Conversation, Recorder) {
+            var config = ConversationConfig(
+                binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+                model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+            config.offlinePlayback = true
+            let c = try Conversation(config)
+            return (c, Recorder(c.events))
+        }
+        let (first, r1) = try make()
+        try await first.start()
+        #expect(await r1.next(isReady) != nil)
+        let pid = try #require(await first.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        let t0 = ContinuousClock.now
+        await first.shutdown()
+        #expect(ContinuousClock.now - t0 < .seconds(4), "quit is bounded")
+        #expect(kill(pid, 0) != 0, "the hung service is gone when quit returns")
+        let (next, r2) = try make()
+        try await next.start()
+        #expect(await r2.next(timeout: .seconds(5), isReady) != nil, "the relaunch is not refused")
+        #expect(await !(r2.seen.contains { if case .notice("already_running") = $0 { true } else { false } }))
+        await next.shutdown()
+    }
+
+    /// An earlier app process died and left its service behind, hung, holding the lock (its
+    /// parent is now launchd). The relaunched app recognises its own stale orphan, stops it and
+    /// starts normally instead of reporting "already running" forever.
+    @Test("a stale orphan holding the data directory is stopped and replaced")
+    func staleOrphanIsReplaced() async throws {
+        let dir = try tempDataDir("orphan")
+        // A background pipeline whose shell exits at once: the service is reparented to launchd.
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", "sleep 20 2>/dev/null | \"$0\" --data-dir \"$1\" >/dev/null 2>&1 & echo $!", sessionBinary.path, dir.path]
+        let out = Pipe()
+        sh.standardOutput = out
+        try sh.run()
+        sh.waitUntilExit()
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let orphan = try #require(Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { kill(orphan, SIGKILL) }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ServiceLock.holder(dataDir: dir) != orphan && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(ServiceLock.holder(dataDir: dir) == orphan, "the orphan holds the lock")
+        kill(orphan, SIGSTOP)  // hung: it would never let go
+        #expect(ServiceLock.isStaleOrphan(orphan, binary: sessionBinary), "recognised as a stale orphan of this app")
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await c.start()
+        #expect(await r.next(timeout: .seconds(6), isReady) != nil, "the relaunched app starts")
+        #expect(kill(orphan, 0) != 0, "the stale orphan was stopped")
+        await c.shutdown()
     }
 
     @Test("an action proposal is refused, not executed (no tools exist in this release)")

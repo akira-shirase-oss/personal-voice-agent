@@ -147,15 +147,21 @@ async fn open_store(
         );
     }
     opened.map_err(|e| {
-        let code = match e {
-            StoreError::Corrupt { .. } => "store_corrupt",
-            StoreError::Locked { .. } => "already_running",
-            StoreError::Io { .. } => "store_io",
+        let (code, detail) = match &e {
+            StoreError::Corrupt { .. } => ("store_corrupt", "the ledger could not be opened".to_owned()),
+            StoreError::Locked { holder, .. } => (
+                "already_running",
+                holder.map_or_else(
+                    || "another session service holds the data directory".to_owned(),
+                    |pid| format!("session service process {pid} holds the data directory"),
+                ),
+            ),
+            StoreError::Io { .. } => ("store_io", "the ledger could not be opened".to_owned()),
         };
         log.event("store_failed", &[("code", code.into())]);
         let _ = out.try_send(ServiceMessage::Error {
             code: code.into(),
-            detail: "the ledger could not be opened".into(),
+            detail,
         });
         ServiceError::Store(e)
     })
