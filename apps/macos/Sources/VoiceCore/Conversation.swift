@@ -23,7 +23,8 @@ public enum ConversationEvent: Sendable {
     case serviceGaveUp
     /// The service refused to start: `store_corrupt` or `store_io` (a restart cannot fix them),
     /// or `already_running` (another running copy owns the data directory; the app keeps
-    /// retrying and takes over when it is free).
+    /// retrying and takes over when it is free); or it could not be launched again:
+    /// `binary_missing`, or `launch_failed` once the restart budget is spent.
     case serviceFailed(String)
     /// The service stopped answering (during a turn, between turns or on a key press); it is
     /// being replaced.
@@ -290,6 +291,12 @@ public actor Conversation {
             publish(.serviceFailed(fatal))
             return
         }
+        scheduleRestart()
+    }
+
+    /// The next restart attempt with bounded backoff (100 ms, 200 ms, 400 ms, ...), or the end
+    /// of the restart budget.
+    private func scheduleRestart() {
         guard restarts < config.maxRestarts else {
             publish(.serviceGaveUp)
             return
@@ -298,9 +305,8 @@ public actor Conversation {
         let attempt = restarts
         publish(.serviceRestarting(attempt: attempt))
         Task { [weak self] in
-            // Bounded backoff: 100 ms, 200 ms, 400 ms, ...
             try? await Task.sleep(for: .milliseconds(100 << (attempt - 1)))
-            try? await self?.start()
+            await self?.relaunch()
         }
     }
 
@@ -315,7 +321,7 @@ public actor Conversation {
             publish(.notice("stale_service_stopped"))
             Task { [weak self] in
                 _ = await ServiceLock.terminate(pid)
-                try? await self?.relaunch()
+                await self?.relaunch()
             }
             return
         }
@@ -323,13 +329,26 @@ public actor Conversation {
         let delay = min(Duration.milliseconds(250 << min(attempt - 1, 8)), config.blockedRetryCap)
         Task { [weak self] in
             try? await Task.sleep(for: delay)
-            try? await self?.relaunch()
+            await self?.relaunch()
         }
     }
 
-    private func relaunch() throws {
+    /// Starts the service again. A launch that throws is never swallowed (the window would
+    /// say "restarting" forever): a missing binary is reported at once, any other launch
+    /// failure is retried within the restart budget and then reported.
+    private func relaunch() {
         guard !stopping else { return }
-        try start()
+        do {
+            try start()
+        } catch SessionProcessError.binaryMissing {
+            publish(.serviceFailed("binary_missing"))
+        } catch {
+            guard restarts < config.maxRestarts else {
+                publish(.serviceFailed("launch_failed"))
+                return
+            }
+            scheduleRestart()
+        }
     }
 
     // MARK: User actions

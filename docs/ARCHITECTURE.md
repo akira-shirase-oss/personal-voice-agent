@@ -120,7 +120,9 @@ failure, not an answer.
 
 **Service failure:** the app watches the child process; on an unexpected
 exit it shows degraded, restarts it with bounded backoff, and the new
-process runs recovery before it reports `ready`. A service that stops
+process runs recovery before it reports `ready`. A restart that cannot
+launch says why (`binary_missing` at once, `launch_failed` once the restart
+budget is spent) instead of showing "restarting" forever. A service that stops
 answering without exiting is found by `ping`: once it is ready, every
 second while a turn is open or the key is held, every five seconds between
 turns, and on every key press; a ping unanswered for 3 s (30 s behind a

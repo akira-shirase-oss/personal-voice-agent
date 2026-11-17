@@ -596,6 +596,38 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// A restart that cannot launch is reported, never left as "restarting" forever: a binary
+    /// that has gone missing, and one that can no longer be executed.
+    @Test("a restart that cannot launch the service reports why", arguments: ["missing", "broken"])
+    func restartFailureIsReported(_ how: String) async throws {
+        let copy = FileManager.default.temporaryDirectory.appending(path: "pva-swift-binary-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: sessionBinary, to: copy)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        var config = ConversationConfig(
+            binary: copy, dataDir: try tempDataDir("relaunch-\(how)"),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.maxRestarts = 2
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await c.start()
+        #expect(await r.next(isReady) != nil)
+        try FileManager.default.removeItem(at: copy)
+        if how == "broken" {
+            // Executable, but not a program: the launch itself fails.
+            try Data("not a program".utf8).write(to: copy)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+        }
+        await c.killServiceForDrill()
+        #expect(await r.next { if case .serviceRestarting(1) = $0 { true } else { false } } != nil)
+        let expected = how == "missing" ? "binary_missing" : "launch_failed"
+        let reported = await r.ever(timeout: .seconds(5)) { if case .serviceFailed(let code) = $0 { code == expected } else { false } }
+        let seen = await r.seen
+        #expect(reported, "the failed relaunch is reported as \(expected): \(seen)")
+        await c.shutdown()
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")

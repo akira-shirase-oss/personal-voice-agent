@@ -245,6 +245,8 @@ final class AppModel {
                 switch code {
                 case "already_running": "Another copy of the app is using its data; this one takes over when that one quits."
                 case "store_corrupt": "The session record is damaged and was not changed. See docs/DRILLS.md."
+                case "binary_missing": "The session service (voice-session) is missing. Reinstall the app."
+                case "launch_failed": "The session service could not be started again. Quit and reopen the app."
                 default: "The session record could not be opened (disk full or unreadable)."
                 }
             service = .stopped(why)
