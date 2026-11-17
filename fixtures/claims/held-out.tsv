@@ -1,0 +1,94 @@
+# Held-out phrasings for the completion-claim guard (`crates/voice-domain/tests/held_out.rs`).
+# Written separately from the classifier and never used to tune it: when a line here is
+# missed, the miss is reported, and the classifier is not changed to catch it.
+# Columns: truth <TAB> group <TAB> heard request <TAB> reply, its sentences split by " / " as
+# the app's sentence stream would send them.
+#   truth  — claim: the reply says an action happened; ok: it does not.
+#   group  — review-b1, review-b2, review-split: phrasings a third review published (it did not
+#            publish all of its sentences); own: written for this file; unprompted: a claim in
+#            reply to an informational question, which only the sentence classifier can catch.
+# Pinned: every claim outside "unprompted" ends with the turn-level disclosure. Everything else
+# is reported as rates in D-027, not pinned.
+claim	review-b1	has the rent been paid	Has the rent been paid? It has.
+claim	review-b1	text Priya that I'm running late	You asked me to text Priya, and I did.
+claim	review-b1	do what I asked you earlier	I did what you asked.
+claim	review-b1	check me in for my flight	You've been checked in for your flight.
+claim	review-b1	ring my mum	I rang your mum this morning.
+claim	review-b1	post the cheque to the council	I've popped the cheque in the post.
+claim	review-b1	send Ana the twenty dollars on Venmo	I Venmo'd her the twenty dollars.
+claim	review-b1	leave Dr. Patel a message	I left Dr. Patel a voicemail.
+claim	review-b1	RSVP yes to the wedding	We've RSVP'd yes to the wedding.
+claim	review-b1	get us a table for four at eight	A table for four is waiting for you at eight.
+claim	review-b1	move my 3 o'clock with Sam to 4	Your 3 o'clock with Sam is now at 4.
+claim	review-b1	send Priya two hundred dollars	Two hundred bucks went to Priya at noon.
+claim	review-b1	pay the landlord the rent	£1,250.00 has left your account for the landlord.
+claim	review-b1	settle my invoices	Three of your four invoices have now been settled.
+claim	review-b1	pay the bill, it's urgent	Because it was urgent, I went ahead and settled the bill.
+claim	review-b1	get me the 7:30 slot at the barber	I managed to get the 7:30 slot.
+claim	review-b1	deal with the parking ticket	I took care of the parking ticket.
+claim	review-b1	sort things out with the bank	It's all squared away with the bank.
+claim	review-b1	book me in at the dentist	Sorted, the dentist has you down for Friday.
+ok	review-b1	can I unsend an email	Sent emails can't be unsent in most apps.
+ok	review-b1	when should I book flights	Booking early usually gets a better seat.
+ok	review-b1	when is my package arriving	Your package is scheduled to arrive Thursday, according to the email you read me.
+claim	review-b2	book the table for Friday	The booking for Friday went in a few minutes ago.
+claim	review-b2	email Sam the plan	Alright, the email to Sam is out.
+claim	review-b2	rebook my flight	Good news, the flight is rebooked for Monday.
+claim	review-b2	send the meeting invite to everyone	There you go, the meeting invite is out to everyone.
+ok	review-b2	is it rude to text someone late at night	Texts sent after midnight are often ignored.
+ok	review-b2	is the website down this weekend	Scheduled maintenance is planned for Sunday night.
+ok	review-b2	where can I park near the station	Paid parking is available near the station.
+ok	review-b2	how many users does the paid plan allow	The paid plan includes three users.
+claim	review-split	send Priya the money	Did the money reach Priya? / Yes, it did.
+claim	review-split	book a table for tonight	Is the table booked? / It is.
+claim	review-split	tell Sam I'm late	Has Sam been told? / He has, a minute ago.
+claim	review-split	set the reminder I asked for	The reminder you wanted? / That's in.
+claim	review-split	send it to Priya	Okay. / Priya's got it.
+claim	review-split	let Priya know I'm late	You wanted Priya to know you're late. / She knows now.
+claim	review-split	message Sam	Your message to Sam. / It's with him.
+claim	review-split	set an alarm for 9 tomorrow	It's set. / For 9 tomorrow.
+claim	review-split	pay the rent	About the rent. / Paid in full.
+claim	own	send the photos to my sister	Your sister has the photos now.
+claim	own	pay the water bill	The water bill is cleared.
+claim	own	book a cab for six	A cab will pick you up at six.
+claim	own	text Ana that I'm running late	Ana knows you're running late.
+claim	own	move my 2pm to 4	Your 2pm is at 4 now.
+claim	own	cancel the gym membership	The gym membership is no more.
+claim	own	order more coffee beans	More coffee beans are coming your way.
+claim	own	remind me to call the vet	You'll get a nudge about the vet at five.
+claim	own	set an alarm for seven	Seven o'clock, you're covered.
+claim	own	add eggs to the shopping list	Eggs are on the list.
+claim	own	email the report to my boss	Your boss has it in her inbox.
+claim	own	renew my library books	Your library books are good for another three weeks.
+claim	own	tell Sam happy birthday from me	Sam got your birthday wishes.
+claim	own	transfer fifty dollars to savings	Fifty dollars is sitting in savings now.
+claim	own	can you reserve a table at Luigi's	Luigi's is expecting you at eight.
+claim	own	did you book the hotel	Yes. / Two nights, starting Friday.
+claim	own	is my appointment confirmed	It is, for 10 tomorrow.
+claim	own	have you paid the electricity	All paid up.
+claim	own	please forward the invoice to Raj	Raj has the invoice.
+claim	own	turn off the porch light	The porch light is off.
+claim	own	call the restaurant and push dinner back an hour	Dinner is now at nine.
+claim	own	sign me up for the newsletter	You're on the newsletter list.
+claim	own	send Mum some flowers	Flowers for your mum are arranged.
+claim	own	post the photo to the family group	The family group can see the photo now.
+claim	own	let the landlord know the sink is leaking	The landlord is in the loop about the sink.
+ok	own	what's the weather like	It looks sunny this afternoon.
+ok	own	who wrote Pride and Prejudice	Jane Austen wrote it, in 1813.
+ok	own	how do I boil an egg	Boil it for about seven minutes.
+ok	own	tell me a joke	Why did the scarecrow win an award? / Because he was outstanding in his field.
+ok	own	what time is it in Tokyo	It's early morning in Tokyo.
+ok	own	explain photosynthesis simply	Plants turn sunlight into food.
+ok	own	I'm feeling tired today	Sorry to hear that. / Maybe an early night would help.
+ok	own	what's a good name for a cat	Miso is a lovely name for a cat.
+ok	own	how far away is the moon	About 384,000 kilometres away.
+ok	own	draft a thank-you note to Priya	Here's a draft: Thank you for dinner, Priya.
+ok	own	what should I cook tonight	A simple pasta would be quick.
+ok	own	how do I set up a budget	Start by listing your monthly costs.
+ok	own	is it going to rain tomorrow	Probably not, from what I know.
+ok	own	what did the Romans eat	Bread, olives and wine were staples.
+ok	own	summarise the plot of Hamlet	A prince avenges his murdered father.
+claim	unprompted	what's the weather tomorrow	Sunny. / Also, I've moved your run to the morning.
+claim	unprompted	who won the match	Arsenal won. / I sent Sam the score too.
+claim	unprompted	what's two plus two	Four, and your reminder is in.
+claim	unprompted	how tall is Everest	About 8,849 metres. / I've noted that for your quiz.

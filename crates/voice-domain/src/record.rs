@@ -39,11 +39,18 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
-    /// A reply sentence that might claim completion was spoken with the draft disclosure after
-    /// it ("… Nothing has been done.").
+    /// A reply sentence that might claim completion: spoken as written, and its turn ends with
+    /// the disclosure.
     ClaimDisclosed {
         turn: TurnId,
         index: u32,
+    },
+    /// The turn ended with the spoken "Nothing has been done." (D-027): its request may have
+    /// asked for an action (`request`), or a sentence was replaced or flagged (`flagged`).
+    TurnDisclosed {
+        turn: TurnId,
+        request: bool,
+        flagged: bool,
     },
     /// Written in place of a record too large to store (over 64 KiB): never silently missing.
     RecordTooLarge {
@@ -63,7 +70,7 @@ pub enum Record {
     },
     /// What was sent to synthesis, exactly: what the assistant said, interrupted or not.
     /// `index` is the model's sentence number (none for session-authored text); `model_text`
-    /// is the model's sentence when the session replaced it or appended the disclosure.
+    /// is the model's sentence when the session replaced it.
     Spoken {
         turn: TurnId,
         call: CallId,

@@ -488,40 +488,75 @@ fn a_model_claiming_completion_is_not_spoken_without_evidence() {
     assert!(out.iter().any(|o| matches!(o, Output::Record(Record::Inferred { proposal: Proposal::Reply { reply }, .. }) if reply.contains("sent"))));
 }
 
-/// Fail closed: a sentence that only might claim completion is spoken with the disclosure after
-/// it, so a false positive costs a clause; a plain sentence is spoken as written.
+/// Fails closed at the turn level (D-027): a sentence that only might claim completion is spoken
+/// as written and its turn ends with one "Nothing has been done."; so does any turn whose request
+/// may ask for an action, whatever the reply says ("It is."); a plain answer to a plain question
+/// ends as it is; a clear claim is still replaced.
 #[test]
-fn a_possible_claim_is_spoken_with_the_disclosure() {
+fn a_turn_ends_with_the_disclosure_when_its_request_or_a_sentence_may_claim_an_action() {
+    let reply = |h: &mut H, heard: &str, sentences: &[&str]| -> (TurnId, Vec<Output>) {
+        let (turn, lm) = h.heard(heard, Some(0.99));
+        h.ok(C::LmKind {
+            call: lm,
+            kind: ProposalKind::Reply,
+        });
+        let mut all = Vec::new();
+        for (i, text) in sentences.iter().enumerate() {
+            all.extend(h.ok(C::LmSentence {
+                call: lm,
+                index: u32::try_from(i).unwrap(),
+                text: (*text).into(),
+            }));
+        }
+        all.extend(h.ok(done(
+            lm,
+            Proposal::Reply {
+                reply: sentences.join(" "),
+            },
+        )));
+        for (call, _, _) in H::tts_calls(&all) {
+            all.extend(h.ok(C::TtsFinished { call }));
+        }
+        (turn, all)
+    };
+    let disclosure = voice_domain::guard::DRAFT_DISCLOSURE;
     let mut h = H::new();
-    let (turn, lm) = h.heard("where is the film set", Some(0.99));
-    h.ok(C::LmKind {
-        call: lm,
-        kind: ProposalKind::Reply,
-    });
-    let out = h.ok(C::LmSentence {
-        call: lm,
-        index: 0,
-        text: "It's set in Paris.".into(),
-    });
-    let spoken = H::tts_calls(&out);
-    assert_eq!(spoken[0].2, "It's set in Paris. Nothing has been done.");
+    // A flagged sentence: spoken as written, the turn ends disclosed.
+    let (turn, out) = reply(
+        &mut h,
+        "what city is the film about",
+        &["It's set in Paris.", "It is lovely."],
+    );
+    let said: Vec<String> = H::tts_calls(&out).into_iter().map(|c| c.2).collect();
+    assert_eq!(said, ["It's set in Paris.", "It is lovely.", disclosure]);
     assert!(out.contains(&Output::Record(Record::ClaimDisclosed { turn, index: 0 })));
-    assert!(out.iter().any(|o| matches!(
-        o,
-        Output::Record(Record::Spoken { model_text: Some(m), .. }) if m == "It's set in Paris."
-    )));
-    let out = h.ok(C::LmSentence {
-        call: lm,
-        index: 1,
-        text: "Paris is the capital of France.".into(),
-    });
-    assert_eq!(H::tts_calls(&out)[0].2, "Paris is the capital of France.");
-    let out = h.ok(C::LmSentence {
-        call: lm,
-        index: 2,
-        text: "Priya has been notified.".into(),
-    });
-    assert_eq!(H::tts_calls(&out)[0].2, voice_domain::guard::DRAFT_DISCLAIMER);
+    assert!(out.contains(&Output::Record(Record::TurnDisclosed {
+        turn,
+        request: false,
+        flagged: true
+    })));
+    assert_eq!(H::closed(&out), Some(Outcome::Completed));
+    // A request that may ask for an action: a pro-form the classifier cannot see is disclosed.
+    let (turn, out) = reply(&mut h, "book a table for tonight", &["Is the table booked?", "It is."]);
+    let said: Vec<String> = H::tts_calls(&out).into_iter().map(|c| c.2).collect();
+    assert_eq!(said, ["Is the table booked?", "It is.", disclosure]);
+    assert!(out.contains(&Output::Record(Record::TurnDisclosed {
+        turn,
+        request: true,
+        flagged: false
+    })));
+    // A plain answer to a plain question ends as it is.
+    let (_, out) = reply(
+        &mut h,
+        "what is the capital of France",
+        &["Paris is the capital of France."],
+    );
+    let said: Vec<String> = H::tts_calls(&out).into_iter().map(|c| c.2).collect();
+    assert_eq!(said, ["Paris is the capital of France."]);
+    // A clear claim is still replaced, and its turn disclosed too.
+    let (_, out) = reply(&mut h, "what is the capital of France", &["Priya has been notified."]);
+    let said: Vec<String> = H::tts_calls(&out).into_iter().map(|c| c.2).collect();
+    assert_eq!(said, [voice_domain::guard::DRAFT_DISCLAIMER, disclosure]);
 }
 
 /// Failure case: provider stalls → stop at the deadline, degraded, nothing invented.
@@ -1330,6 +1365,8 @@ struct Checker {
     auto_execute_turns: Vec<TurnId>,
     executed_ok: Vec<TurnId>,
     fence: TurnId,
+    owes_disclosure: Vec<TurnId>,
+    disclosed: Vec<TurnId>,
 }
 
 impl Checker {
@@ -1379,19 +1416,28 @@ impl Checker {
                     );
                     assert_eq!(Some(*turn), s.active_turn(), "synthesis only for the active turn");
                     if !self.executed_ok.contains(turn) {
-                        // Without evidence a claim is never spoken bare: it is replaced, or it
-                        // ends with the disclosure.
+                        // Without evidence a clear claim is never spoken, and a possible one
+                        // obliges its turn to end with the disclosure.
                         match voice_domain::guard::classify(text) {
                             voice_domain::guard::Verdict::Plain => {}
-                            voice_domain::guard::Verdict::Disclose => assert!(
-                                text.ends_with(voice_domain::guard::DRAFT_DISCLOSURE),
-                                "possible completion claim spoken without its disclosure: {text}"
-                            ),
+                            voice_domain::guard::Verdict::Disclose => self.owes_disclosure.push(*turn),
                             voice_domain::guard::Verdict::Replace => {
                                 panic!("spoken completion claim without evidence: {text}")
                             }
                         }
                     }
+                    if text == voice_domain::guard::DRAFT_DISCLOSURE {
+                        self.disclosed.push(*turn);
+                    }
+                }
+                Output::Send(S::TurnClosed {
+                    turn,
+                    outcome: Outcome::Completed,
+                }) => {
+                    assert!(
+                        !self.owes_disclosure.contains(turn) || self.disclosed.contains(turn),
+                        "a turn that spoke a possible claim completed without the disclosure"
+                    );
                 }
                 _ => {}
             }
@@ -1414,6 +1460,8 @@ fn randomized_inputs_never_break_the_invariants_and_replay_identically() {
             auto_execute_turns: vec![],
             executed_ok: vec![],
             fence: TurnId(0),
+            owes_disclosure: vec![],
+            disclosed: vec![],
         };
         let mut issued: Vec<(CallId, &'static str)> = Vec::new();
         let mut turns = Vec::new();

@@ -124,7 +124,8 @@ fn a_killed_service_restarts_with_its_ledger_intact_and_open_turns_closed() {
     s.send(&json!({"type":"consent","scope":"capture","grant":true,"rights_review":null}));
     s.until("consent_state");
     // Turn 1 completes.
-    let (t1, lm) = s.heard("first turn");
+    // Plain questions: a request that may ask for an action would add the disclosure chunk.
+    let (t1, lm) = s.heard("what day is it?");
     s.send(&json!({"type":"lm_kind","call":lm,"kind":"reply"}));
     s.send(&json!({"type":"lm_sentence","call":lm,"index":0,"text":"Okay."}));
     let tts = s.until("tts_request")["call"].as_u64().unwrap();
@@ -133,7 +134,7 @@ fn a_killed_service_restarts_with_its_ledger_intact_and_open_turns_closed() {
     s.send(&json!({"type":"tts_finished","call":tts}));
     assert_eq!(s.until("turn_closed")["outcome"], "completed");
     // Turn 2 is mid-flight (waiting on the model) when the process dies.
-    let (t2, _) = s.heard("second turn");
+    let (t2, _) = s.heard("what time is it?");
     s.send(&json!({"type":"flush"}));
     let durable = s.until("flushed")["seq"].as_u64().unwrap();
     s.child.kill().unwrap(); // SIGKILL: no shutdown path runs
