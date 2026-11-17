@@ -494,6 +494,52 @@ async fn a_hung_tool_is_recorded_uncertain() {
     assert!(sent < exec);
 }
 
+/// A spoken "done" needs evidence: ordinary completion phrasings streamed by the model are
+/// never synthesized as they are when nothing executed (an independent review found 11 of
+/// these 12 spoken verbatim by the earlier phrase-list guard).
+#[tokio::test]
+async fn completion_claims_without_evidence_never_reach_synthesis() {
+    let claims = [
+        "Message sent to Priya.",
+        "Payment sent.",
+        "Sent!",
+        "Reminder set for nine.",
+        "I've added milk to your list.",
+        "I've texted Priya.",
+        "Your transfer is complete.",
+        "I've saved the note.",
+        "Okay, I've notified her.",
+        "Finished, the money is on its way.",
+        "I've moved the meeting to 3pm.",
+        "I've sent it.",
+    ];
+    let (mut stub, _, handle) = start(config("claims")).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "send Priya a message", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    for (i, claim) in claims.iter().enumerate() {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index: u32::try_from(i).unwrap(),
+            text: (*claim).into(),
+        })
+        .await;
+        let (S::TtsRequest { text, .. }, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await else {
+            unreachable!()
+        };
+        assert_eq!(
+            text,
+            voice_domain::guard::DRAFT_DISCLAIMER,
+            "spoken without evidence: {claim}"
+        );
+    }
+    shutdown(stub, handle).await;
+}
+
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.
 #[tokio::test]
 async fn logs_carry_no_transcript_or_reply_content() {

@@ -86,7 +86,15 @@ proof gate in `ROADMAP.md`:
    prevents any further use of the revoked scope.
 2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
    recognizer's output, the assistant's inference and tool-result
-   evidence. The ledger is what happened; the model's narration is not.
+   evidence. The ledger is what happened; the model's narration is not. A
+   reply is drafted text: a sentence that says an action happened is spoken
+   only when this turn has executed evidence, otherwise it is replaced by a
+   draft disclaimer. Claims are found by a structural classifier
+   (first-person, passive, headline and bare past forms of action verbs,
+   completion phrases; questions, negations, futures and conditionals
+   excluded), pinned by a phrasing corpus (`fixtures/claims/corpus.tsv`). A
+   classifier can miss an unusual phrasing, so what was spoken is recorded
+   too.
 3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
    interruption playback stops and downstream work is cancelled; a late
    text/audio chunk from an old turn can never play over a new one; an
