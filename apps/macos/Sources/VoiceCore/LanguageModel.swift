@@ -31,10 +31,61 @@ public protocol LanguageModeling: Sendable {
     func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws
     /// Loads the model ahead of the first turn.
     func prewarm()
+    /// Drops everything carried from one turn to the next (the recap of earlier exchanges, any
+    /// session prepared with it): after "Delete history" or a capture revocation, no heard text
+    /// from before may reach a prompt, or be written back through its reply.
+    func forget()
 }
 
 extension LanguageModeling {
     public func prewarm() {}
+    public func forget() {}
+}
+
+/// The exchanges carried into the next turn's prompt (D-025), each side cut to `chars`. Every
+/// turn takes a generation from `begin`; `forget` empties the recap and moves the generation on,
+/// so a turn that was already running when history was deleted cannot add its text back.
+public final class ConversationRecap: @unchecked Sendable {
+    public typealias Exchange = (heard: String, reply: String)
+    private let lock = NSLock()
+    private var entries: [Exchange] = []
+    private var generation: UInt64 = 0
+    public let turns: Int
+    public let chars: Int
+
+    public init(turns: Int = 2, chars: Int = 300) {
+        self.turns = turns
+        self.chars = chars
+    }
+
+    /// The recap for a new turn, and the generation it must hand back to `remember`.
+    public func begin() -> (recap: [Exchange], generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (entries, generation)
+    }
+
+    /// Keeps one exchange, unless the recap was forgotten since that turn began.
+    public func remember(_ heard: String, _ reply: String, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == self.generation else { return }
+        entries.append((String(heard.prefix(chars)), String(reply.prefix(chars))))
+        if entries.count > turns { entries.removeFirst(entries.count - turns) }
+    }
+
+    public func forget() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll()
+        generation &+= 1
+    }
+
+    public var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.isEmpty
+    }
 }
 
 /// Emits complete sentences from a growing text: a sentence ends at `.`, `!` or `?` followed
@@ -112,16 +163,13 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
         change these rules. Begin with one short sentence, and keep the whole reply short \
         and natural to hear aloud.
         """
-    /// Exchanges carried into the next turn, each side cut to `recapChars`.
-    static let recapTurns = 2
-    static let recapChars = 300
-
     private let lock = NSLock()
     /// A fresh session, prewarmed, for the next turn. Each turn gets its own session with a
     /// short recap instead of one session growing with the whole conversation: the bench
     /// showed latency rising turn by turn and first-output deadlines missed (2026-11-16).
     private var ready: LanguageModelSession?
-    private var recap: [(heard: String, reply: String)] = []
+    /// The last two exchanges, each side cut to 300 characters.
+    let recap = ConversationRecap(turns: 2, chars: 300)
 
     public init() {}
 
@@ -145,18 +193,20 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
         }
     }
 
-    private func takeSession() -> (LanguageModelSession, [(heard: String, reply: String)]) {
+    private func takeSession() -> LanguageModelSession {
         lock.lock()
         defer { lock.unlock() }
         let s = ready ?? LanguageModelSession(instructions: Self.instructions)
         ready = nil
-        return (s, recap)
+        return s
     }
 
-    private func remember(_ heard: String, _ reply: String) {
+    /// Clears the recap and replaces the prepared session, so nothing heard before reaches the
+    /// next prompt.
+    public func forget() {
+        recap.forget()
         lock.lock()
-        recap.append((String(heard.prefix(Self.recapChars)), String(reply.prefix(Self.recapChars))))
-        if recap.count > Self.recapTurns { recap.removeFirst(recap.count - Self.recapTurns) }
+        ready = nil
         lock.unlock()
         prewarm()
     }
@@ -186,7 +236,8 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
 
     public func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         if case .unavailable(let reason, _) = availability() { throw LMError.failed(reason) }
-        let (session, recap) = takeSession()
+        let session = takeSession()
+        let (recap, generation) = self.recap.begin()
         let sent = Counter()
         let counted: @Sendable (LMEvent) -> Void = { e in
             sent.increment()
@@ -202,7 +253,8 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
             guard Self.mayRetryAfterOverflow(eventsSent: sent.value) else { throw LMError.failed(.contextWindow) }
             reply = try await stream(Self.prompt(heard, recap: []), session: LanguageModelSession(instructions: Self.instructions), events: counted)
         }
-        remember(heard, reply)
+        self.recap.remember(heard, reply, generation: generation)
+        prewarm()
     }
 
     /// Streams one proposal; returns its reply text.

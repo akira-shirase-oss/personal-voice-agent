@@ -333,7 +333,11 @@ public actor Conversation {
     // MARK: User actions
 
     public func setCaptureConsent(_ grant: Bool) {
-        if !grant { stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) }) }
+        if !grant {
+            stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+            // Speech heard under the revoked consent must not reach a later prompt.
+            config.model.forget()
+        }
         send(.consent(scope: .capture, grant: grant, rightsReview: nil))
     }
 
@@ -391,6 +395,8 @@ public actor Conversation {
     /// Deletes every heard transcript (capture consent's deletion scope). Refused mid-turn.
     public func forgetHistory() {
         forgetPending = true
+        // The model's recap holds heard text too; it goes now, whatever the service answers.
+        config.model.forget()
         send(.forget(scope: .capture))
     }
 
@@ -475,6 +481,7 @@ public actor Conversation {
             if pendingPing?.seq == seq { pendingPing = nil }
         case .forgotten(_, let files, let bytes):
             forgetPending = false
+            config.model.forget()
             publish(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }

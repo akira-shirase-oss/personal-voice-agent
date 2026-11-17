@@ -144,7 +144,10 @@ settled it, it is listed under **Open questions** rather than guessed.
   deletion), and closed logs older than 30 days are deleted at start
   (`--retention-days`). Both are tested: a sentinel transcript is found
   nowhere under the data directory afterwards. Copies in snapshots or
-  backups made before the exclusion are not reached.*
+  backups made before the exclusion are not reached. "Delete history" and a
+  capture revocation also clear the model's in-memory recap (D-025), so deleted
+  speech never reaches the next prompt; a turn still finishing when history is
+  deleted cannot add its text back (tested, second review N3).*
 - **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
   after release 3 s; model first output 6 s; model complete 20 s;
   synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;
@@ -189,7 +192,8 @@ settled it, it is listed under **Open questions** rather than guessed.
   cut to 300 characters, instead of one session growing with the whole conversation. The
   first bench (one growing session) showed model latency rising across rounds and 6 of 21
   turns missing the 6 s first-output deadline. Trade-off: the model forgets anything older
-  than two exchanges; long-term memory is V3's reviewed store, not the model's context.
+  than two exchanges; long-term memory is V3's reviewed store, not the model's context. The
+  recap is cleared on "Delete history" and on a capture revocation (D-018).
 - **D-026 — Offline rendering is the deterministic playback test bed.** Playback tests and the
   bench render the player with AVAudioEngine manual offline rendering, so nothing plays on the
   speakers and every sample is inspectable. Two behaviours found by probing are part of the

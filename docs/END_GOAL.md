@@ -116,7 +116,8 @@ proof gate in `ROADMAP.md`:
 5. **Data stays local and its deletion is described honestly (D-018).**
    No audio is retained. The ledger and consent log are local files
    (mode 0600, excluded from Time Machine). Heard transcripts are kept 30
-   days by default, and "Delete history" removes every one at once. Either
+   days by default, and "Delete history" removes every one at once, and
+   clears the model's in-memory recap of the last two exchanges with them. Either
    deletion removes them from the live file system; copies can survive in APFS local snapshots
    or backups made before the exclusion, until those expire — the docs
    never claim more. V3 adds per-item encryption with keys in the

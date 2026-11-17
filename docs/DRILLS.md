@@ -103,7 +103,8 @@ stop the service it leaves behind as above, and reopen the app.
 Talk for a few turns, then click **Delete history**.
 
 - Expect: a banner says how many session logs were removed; `grep -r` for a phrase you said
-  finds nothing under `~/Library/Application Support/PersonalVoiceAgent`.
+  finds nothing under `~/Library/Application Support/PersonalVoiceAgent`; and asking "What did
+  I just say?" gets no quote of anything said before the deletion.
 
 ## Drill 7 — the 100 consented utterances and three one-hour sessions (ship gate)
 

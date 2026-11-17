@@ -115,6 +115,37 @@ final class StallOnceProvider: LanguageModeling, @unchecked Sendable {
     }
 }
 
+/// Hears a different phrase each turn (the last one repeats).
+final class SequenceRecognizer: SpeechRecognizing, @unchecked Sendable {
+    private let phrases: Mutex<[String]>
+    init(_ phrases: [String]) { self.phrases = Mutex(phrases) }
+    func begin() async throws -> any RecognitionSession {
+        let text = phrases.withLock { p in p.count > 1 ? p.removeFirst() : p[0] }
+        return try await ScriptedRecognizer(heard: HeardText(text: text, minConfidence: 0.95)).begin()
+    }
+}
+
+/// Builds each prompt exactly as the on-device provider does (its recap of the last two
+/// exchanges, then the heard text) and records it; answers like the test provider.
+final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
+    let modelID = "recap-probe-test-provider"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    let prompts = Mutex<[String]>([])
+    private let recap = Mutex<[(heard: String, reply: String)]>([])
+    func availability() -> LMAvailability { .available }
+    func forget() { recap.withLock { $0.removeAll() } }
+    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        let earlier = recap.withLock { $0 }
+        prompts.withLock { $0.append(FoundationModelsProvider.prompt(heard, recap: earlier)) }
+        try await DeterministicTestProvider().respond(to: heard, events: events)
+        recap.withLock { r in
+            r.append((heard, "You said: \(heard)"))
+            if r.count > 2 { r.removeFirst(r.count - 2) }
+        }
+    }
+}
+
 @Suite("Conversation through the real session service", .serialized, .enabled("voice-session is built (cargo build -p voice-session)") { haveBinary })
 struct ConversationTests {
     @Test("a reply turn is heard, spoken and closed, with timing")
@@ -508,6 +539,42 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// "Delete history" must reach the model too: its recap of the last two exchanges would
+    /// otherwise quote deleted speech in the next prompt, and the reply could write it back
+    /// into the new log. Revoking capture consent clears it as well.
+    @Test("deleting history, or revoking consent, leaves no earlier heard text in the next prompt")
+    func forgetClearsTheModelRecap() async throws {
+        let probe = RecapProbeProvider()
+        let secret = "my locker code is 4321"
+        let recognizer = SequenceRecognizer([secret, "what time is it", "what time is it", secret, "what time is it"])
+        let (c, r, pump) = try makeConversation("forget-recap", model: probe, recognizer: recognizer)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        for _ in 0..<2 {
+            try await talk(c, r)
+            #expect(await r.next { closed($0) != nil } != nil)
+        }
+        #expect(probe.prompts.withLock { $0.last?.contains("4321") } == true, "the recap carries the earlier turn")
+        await c.forgetHistory()
+        #expect(await r.next { if case .forgotten = $0 { true } else { false } } != nil)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        let afterForget = probe.prompts.withLock { $0.last ?? "" }
+        #expect(!afterForget.contains("4321"), "deleted speech reached the model: \(afterForget)")
+        // Revocation: speech heard before it must not reach a prompt after a re-grant.
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        await c.setCaptureConsent(false)
+        #expect(await r.next { if case .consent(let s) = $0 { !s.capture } else { false } } != nil)
+        await c.setCaptureConsent(true)
+        #expect(await r.next { if case .consent(let s) = $0 { s.capture } else { false } } != nil)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        let afterRevoke = probe.prompts.withLock { $0.last ?? "" }
+        #expect(!afterRevoke.contains("4321"), "speech from before the revocation reached the model: \(afterRevoke)")
+        await c.shutdown()
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")
@@ -530,6 +597,35 @@ struct ModelTests {
         #expect(FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 0))
         #expect(!FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 1))
         #expect(!FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 3))
+    }
+
+    @Test("the recap keeps two exchanges, and forget clears it and drops a turn still running")
+    func recapForget() {
+        let recap = ConversationRecap(turns: 2, chars: 300)
+        for i in 1...3 {
+            let g = recap.begin().generation
+            recap.remember("heard \(i)", "reply \(i)", generation: g)
+        }
+        #expect(recap.begin().recap.map(\.heard) == ["heard 2", "heard 3"])
+        let running = recap.begin().generation  // a turn starts, then history is deleted
+        recap.forget()
+        #expect(recap.isEmpty)
+        recap.remember("deleted speech", "its reply", generation: running)
+        #expect(recap.isEmpty, "a turn that began before the deletion cannot write it back")
+        let fresh = recap.begin()
+        #expect(fresh.recap.isEmpty)
+        #expect(FoundationModelsProvider.prompt("hi", recap: fresh.recap) == "The user said: «hi»")
+        recap.remember(String(repeating: "x", count: 400), "ok", generation: fresh.generation)
+        #expect(recap.begin().recap.first?.heard.count == 300)
+    }
+
+    @Test("the on-device provider's forget clears its recap")
+    func providerForget() {
+        let p = FoundationModelsProvider()
+        p.recap.remember("my locker code is 4321", "noted", generation: p.recap.begin().generation)
+        #expect(!p.recap.isEmpty)
+        p.forget()
+        #expect(p.recap.isEmpty)
     }
 
     static var available: Bool { FoundationModelsProvider().availability() == .available }
