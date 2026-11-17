@@ -774,10 +774,26 @@ mod tests {
     use voice_domain::protocol::Outcome;
     use voice_domain::record::CloseReason;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    /// Removed with its contents when dropped, also when an assertion fails.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(name: &str) -> TempDir {
         let dir = std::env::temp_dir().join(format!("pva-store-{name}-{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 
     fn write_lines(path: &Path, records: &[Record]) {
@@ -800,7 +816,7 @@ mod tests {
         let opened = open(&dir, 10).unwrap();
         let synced = SYNCED_DIRS.lock().unwrap().clone();
         assert!(
-            synced.contains(&dir),
+            synced.contains(&dir.0),
             "the new consent.log's entry in the data directory"
         );
         assert!(

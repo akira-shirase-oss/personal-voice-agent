@@ -27,7 +27,14 @@ note "Swift: $(basename "$xcode"), macOS SDK $sdk, $(sw_vers -productName) $(sw_
 target_dir="$(cargo metadata --format-version 1 --no-deps --locked | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
 export PVA_SESSION_BINARY="$target_dir/debug/voice-session"
 swift build --package-path apps/macos
+# Tests may leave no data directory (pva-*, can hold transcripts) behind.
+export TMPDIR="$(mktemp -d)/"
 swift test --package-path apps/macos 2>&1 | tee swift-test.log
+left="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -name 'pva-*')"
+if [ -n "$left" ]; then
+  note "FAIL: tests left data directories behind: $left"
+  exit 1
+fi
 if ! summary="$(scripts/swift-skips.sh swift-test.log)"; then
   note "$summary"
   exit 1

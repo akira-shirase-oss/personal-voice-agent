@@ -23,12 +23,14 @@ use voice_testkit::{
     FixtureTools, INJECTED_EVIDENCE, Stub, fixture_registry, grant_capture, heard, lm_done, reply_turn, start, talk,
 };
 
-fn config(name: &str) -> Config<NoTools> {
-    Config::new(voice_testkit::temp_data_dir(name), NoTools, Log::off())
+/// A config on `dir`; the test keeps `dir` (a `TempDir`) alive, so it is removed when the test
+/// ends, pass or fail.
+fn config(dir: &Path) -> Config<NoTools> {
+    Config::new(dir.to_path_buf(), NoTools, Log::off())
 }
 
-fn tool_config(name: &str, tools: FixtureTools, limits: Limits) -> Config<FixtureTools> {
-    let mut c = Config::new(voice_testkit::temp_data_dir(name), tools, Log::off());
+fn tool_config(dir: &Path, tools: FixtureTools, limits: Limits) -> Config<FixtureTools> {
+    let mut c = Config::new(dir.to_path_buf(), tools, Log::off());
     c.tools = fixture_registry();
     c.limits = limits;
     c
@@ -88,8 +90,8 @@ async fn shutdown(
 
 #[tokio::test]
 async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed() {
-    let c = config("reply");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("reply");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let closed = reply_turn(
@@ -138,9 +140,9 @@ async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed()
 /// degraded, and never invents a result — a late answer is dropped.
 #[tokio::test]
 async fn a_stalled_model_is_cut_off_at_its_deadline() {
-    let mut c = config("stall");
+    let dir = voice_testkit::temp_data_dir("stall");
+    let mut c = config(&dir);
     c.limits.lm_first_ms = 80;
-    let dir = c.data_dir.clone();
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "hello", 0.99).await;
@@ -200,7 +202,8 @@ async fn a_stalled_model_is_cut_off_at_its_deadline() {
 /// and no late chunk of the old turn is ever requested.
 #[tokio::test]
 async fn interrupting_mid_utterance_stops_and_drops_the_old_turn() {
-    let (mut stub, _, handle) = start(config("interrupt")).await;
+    let dir = voice_testkit::temp_data_dir("interrupt");
+    let (mut stub, _, handle) = start(config(&dir)).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "tell me a story", 0.99).await;
     stub.send(&C::LmKind {
@@ -254,8 +257,8 @@ async fn interrupting_mid_utterance_stops_and_drops_the_old_turn() {
 /// can start; the revocation is in the consent log.
 #[tokio::test]
 async fn revoking_consent_mid_turn_stops_capture_and_blocks_further_turns() {
-    let c = config("revoke");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("revoke");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     stub.send(&C::PttDown).await;
@@ -308,9 +311,7 @@ async fn revoking_consent_mid_turn_stops_capture_and_blocks_further_turns() {
         "append-only: the grant and the revocation are both kept"
     );
     // A new service start folds the log: consent stays revoked.
-    let mut c = config("revoke-restart");
-    c.data_dir = dir;
-    let (stub, ready, handle) = start(c).await;
+    let (stub, ready, handle) = start(config(&dir)).await;
     assert!(matches!(ready, S::Ready { consent, .. } if !consent.capture));
     shutdown(stub, handle).await;
 }
@@ -325,7 +326,8 @@ async fn ambiguous_requests_wait_for_confirmation_and_expire_unexecuted() {
         confirm_ms: 100,
         ..Limits::default()
     };
-    let (mut stub, _, handle) = start(tool_config("ambiguous", tools, limits)).await;
+    let dir = voice_testkit::temp_data_dir("ambiguous");
+    let (mut stub, _, handle) = start(tool_config(&dir, tools, limits)).await;
     grant_capture(&mut stub).await;
 
     // Low confidence: confirmation, then nobody answers.
@@ -397,7 +399,8 @@ async fn ambiguous_requests_wait_for_confirmation_and_expire_unexecuted() {
 async fn adversarial_tool_output_and_speech_cannot_invoke_tools() {
     let tools = FixtureTools::default();
     let runs = Arc::clone(&tools.runs);
-    let (mut stub, _, handle) = start(tool_config("adversarial", tools, Limits::default())).await;
+    let dir = voice_testkit::temp_data_dir("adversarial");
+    let (mut stub, _, handle) = start(tool_config(&dir, tools, Limits::default())).await;
     grant_capture(&mut stub).await;
 
     let (_, lm) = heard(&mut stub, "look up weather", 0.99).await;
@@ -458,8 +461,8 @@ async fn a_hung_tool_is_recorded_uncertain() {
         tool_ms: 80,
         ..Limits::default()
     };
-    let c = tool_config("hang", FixtureTools::default(), limits);
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("hang");
+    let c = tool_config(&dir, FixtureTools::default(), limits);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "hang on", 0.99).await;
@@ -515,7 +518,8 @@ async fn completion_claims_without_evidence_never_reach_synthesis() {
         "I've moved the meeting to 3pm.",
         "I've sent it.",
     ];
-    let (mut stub, _, handle) = start(config("claims")).await;
+    let dir = voice_testkit::temp_data_dir("claims");
+    let (mut stub, _, handle) = start(config(&dir)).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "send Priya a message", 0.99).await;
     stub.send(&C::LmKind {
@@ -563,8 +567,8 @@ async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_wo
         ("That's changed a lot since 2020.", "That's changed a lot since 2020."),
         ("I called it a day.", "I called it a day."),
     ];
-    let c = config("claims-fail-closed");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("claims-fail-closed");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "send Priya fifty dollars", 0.99).await;
@@ -615,8 +619,8 @@ async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_wo
 /// exact text, and a replaced claim keeps the model's original next to what was spoken.
 #[tokio::test]
 async fn what_was_spoken_is_ledgered() {
-    let c = config("spoken");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("spoken");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "tell me about Paris", 0.99).await;
@@ -658,8 +662,8 @@ async fn what_was_spoken_is_ledgered() {
 /// the 64 KiB limit but the record built from it would not.
 #[tokio::test]
 async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
-    let c = tool_config("oversized", FixtureTools::default(), Limits::default());
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("oversized");
+    let c = tool_config(&dir, FixtureTools::default(), Limits::default());
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "note this", 0.99).await;
@@ -701,17 +705,15 @@ async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
 /// file system — closed sessions and the current one — and the session carries on.
 #[tokio::test]
 async fn forgetting_capture_data_deletes_every_transcript() {
-    let c = config("forget");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("forget");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let secret = "TANGERINE-HARBOUR-4417";
     reply_turn(&mut stub, &format!("remember {secret}"), &["Okay."]).await;
     shutdown(stub, handle).await;
     // A second session, with the first one's transcript closed on disk.
-    let mut c = config("forget-2");
-    c.data_dir.clone_from(&dir);
-    let (mut stub, _, handle) = start(c).await;
+    let (mut stub, _, handle) = start(config(&dir)).await;
     reply_turn(&mut stub, &format!("and again {secret}"), &["Sure."]).await;
     stub.send(&C::Forget {
         scope: ConsentScope::Capture,
@@ -750,8 +752,8 @@ async fn forgetting_capture_data_deletes_every_transcript() {
 /// session carries on in a fresh log.
 #[tokio::test]
 async fn a_forget_that_cannot_delete_everything_says_so() {
-    let c = config("forget-fails");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("forget-fails");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     reply_turn(&mut stub, "remember the blue door", &["Okay."]).await;
@@ -808,9 +810,7 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
         .unwrap()
         .set_modified(forty_days)
         .unwrap();
-    let mut c = config("retention");
-    c.data_dir.clone_from(&dir);
-    let (stub, _, handle) = start(c).await;
+    let (stub, _, handle) = start(config(&dir)).await;
     shutdown(stub, handle).await;
     assert!(!old.exists(), "a 40-day-old session is past the 30-day default");
     assert!(recent.exists(), "a recent session is kept");
@@ -820,9 +820,9 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
 #[tokio::test]
 async fn logs_carry_no_transcript_or_reply_content() {
     let log = Log::memory();
-    let mut c = Config::new(voice_testkit::temp_data_dir("logs"), NoTools, log.clone());
+    let dir = voice_testkit::temp_data_dir("logs");
+    let mut c = Config::new(dir.to_path_buf(), NoTools, log.clone());
     c.limits.lm_first_ms = 60;
-    let dir = c.data_dir.clone();
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let secret = "PURPLE-ELEPHANT-7731";
@@ -855,7 +855,8 @@ async fn logs_carry_no_transcript_or_reply_content() {
 async fn the_protocol_refuses_garbage_without_dropping_the_session() {
     let (app, service) = tokio::io::duplex(64 * 1024);
     let (sr, sw) = tokio::io::split(service);
-    let handle = tokio::spawn(voice_session::run(sr, sw, config("protocol")));
+    let dir = voice_testkit::temp_data_dir("protocol");
+    let handle = tokio::spawn(voice_session::run(sr, sw, config(&dir)));
     let (ar, aw) = tokio::io::split(app);
     let mut w = aw;
     let mut r = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(ar));
@@ -887,7 +888,8 @@ async fn the_protocol_refuses_garbage_without_dropping_the_session() {
 async fn a_wrong_protocol_version_ends_the_handshake() {
     let (app, service) = tokio::io::duplex(64 * 1024);
     let (sr, sw) = tokio::io::split(service);
-    let handle = tokio::spawn(voice_session::run(sr, sw, config("version")));
+    let dir = voice_testkit::temp_data_dir("version");
+    let handle = tokio::spawn(voice_session::run(sr, sw, config(&dir)));
     let (ar, mut aw) = tokio::io::split(app);
     aw.write_all(b"{\"type\":\"hello\",\"protocol\":2,\"client\":\"future\"}\n")
         .await
@@ -900,8 +902,8 @@ async fn a_wrong_protocol_version_ends_the_handshake() {
 
 #[tokio::test]
 async fn closing_stdin_mid_turn_closes_the_turn_honestly() {
-    let c = config("eof");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("eof");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let _ = talk(&mut stub).await;

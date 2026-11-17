@@ -8,10 +8,35 @@
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
+
+/// A scratch data directory, removed with its contents when dropped (also on a failed assertion):
+/// data directories hold heard transcripts.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("pva-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 fn start(dir: &Path) -> (Child, ChildStdin, Receiver<Value>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_voice-session"))
@@ -42,8 +67,7 @@ fn next(rx: &Receiver<Value>) -> Value {
 
 #[test]
 fn a_second_instance_on_the_same_data_directory_refuses_to_start() {
-    let dir = std::env::temp_dir().join(format!("pva-lock-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("lock");
     let (mut a, mut a_in, a_rx) = start(&dir);
     assert_eq!(next(&a_rx)["type"], "ready");
     assert_eq!(
@@ -93,5 +117,4 @@ fn a_second_instance_on_the_same_data_directory_refuses_to_start() {
     assert_eq!(next(&c_rx)["type"], "ready");
     writeln!(c_in, "{}", json!({"type":"shutdown"})).unwrap();
     assert!(c.wait().unwrap().success());
-    let _ = std::fs::remove_dir_all(&dir);
 }

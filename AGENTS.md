@@ -84,7 +84,10 @@ code and guide disagree, the guide wins unless a `D-NNN` says otherwise.
 ## Testing rule (workspace standard)
 
 Every feature ships regression tests + a fixture path (`fixtures/`) + a load
-scenario, in the same change. Every fixed bug gets a test that fails without
+scenario, in the same change. A test's data directory holds heard transcripts,
+so it is removed when the test ends, pass or fail (`voice_testkit::TempDir`; in
+Swift, `tempDataDir` inside a `.removesScratch` suite); the gate fails if any
+`pva-*` entry is left behind. Every fixed bug gets a test that fails without
 it. Keep consent records, deletion tests, provider/model compatibility
 checks and the evaluation set current; re-evaluate quality after any model
 or OS change.

@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Tests make data directories (named pva-*) that hold heard transcripts. They run in a private
+# temp directory, and the gate fails if any is left behind there or in the user's temp directory.
+user_tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo "${TMPDIR:-/tmp}")"
+before="$(find "$user_tmp" -mindepth 1 -maxdepth 1 -name 'pva-*' -print 2>/dev/null | sort || true)"
+scratch="$(mktemp -d -t voice-agent-check)"
+trap 'rm -rf "$scratch"' EXIT
+export TMPDIR="$scratch/"
+
 scripts/check-toolchain.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -19,12 +27,20 @@ if [ -f apps/macos/Package.swift ]; then
     cargo build --locked -p voice-session
     export PVA_SESSION_BINARY="$target_dir/debug/voice-session"
     swift build --package-path apps/macos
-    log="$(mktemp -t voice-agent-swift-test)"
-    trap 'rm -f "$log"' EXIT
+    log="$scratch/swift-test.log"
     swift test --package-path apps/macos 2>&1 | tee "$log"
     scripts/swift-skips.sh "$log"
   else
     echo "skip: apps/macos needs macOS + Xcode (Swift build and tests not run here)"
   fi
+fi
+left="$(find "$scratch" -mindepth 1 -maxdepth 1 -name 'pva-*' -print | sed "s|^$scratch/||")"
+after="$(find "$user_tmp" -mindepth 1 -maxdepth 1 -name 'pva-*' -print 2>/dev/null | sort || true)"
+escaped="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
+if [ -n "$left$escaped" ]; then
+  echo "FAIL: tests left data directories behind (they can hold transcripts):"
+  [ -n "$left" ] && printf '  %s (removed now)\n' $left
+  [ -n "$escaped" ] && printf '  %s (outside the private temp directory)\n' $escaped
+  exit 1
 fi
 echo "check ok"

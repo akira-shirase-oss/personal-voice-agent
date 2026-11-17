@@ -3,7 +3,7 @@ import Synchronization
 import Testing
 @testable import VoiceCore
 
-@Suite("The session process boundary", .serialized)
+@Suite("The session process boundary", .serialized, .removesScratch)
 struct SessionProcessTests {
     @Test("the session service binary is built") func binaryPresent() { #expect(haveBinary, binaryMissing) }
 

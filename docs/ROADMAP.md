@@ -24,9 +24,8 @@ stop-playback p95 and zero stale chunks.
 
 **Owed from the reviews:** LOW19 (a flood of malformed lines stretches deadlines), LOW20 (V3
 consent hazards, PROTOCOL's nonexistent `external_effect` reason, the app's hard-coded
-"Executed" line), the residual case where both the consent token's unlink and the revocation's
-log write fail (a restart could come back granted), and the test suites leaving transcript-
-bearing `pva-*` directories in `$TMPDIR`.
+"Executed" line), and the residual case where both the consent token's unlink and the
+revocation's log write fail (a restart could come back granted).
 
 **Owed in code:** one shared audio engine for capture and playback, so echo cancellation can
 reference the assistant's output (D-023 limitation); the model's first-sentence latency

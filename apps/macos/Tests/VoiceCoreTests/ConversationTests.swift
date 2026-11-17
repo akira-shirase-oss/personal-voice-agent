@@ -18,9 +18,48 @@ let sessionBinary: URL = {
 var haveBinary: Bool { FileManager.default.isExecutableFile(atPath: sessionBinary.path) }
 let binaryMissing: Comment = "voice-session not found at \(sessionBinary.path): run cargo build -p voice-session, or set PVA_SESSION_BINARY"
 
+/// The temporary files and directories one test made; removed when that test ends.
+final class TestScratch: Sendable {
+    @TaskLocal static var current: TestScratch?
+    let urls = Mutex<[URL]>([])
+
+    /// `TMPDIR` when set (Foundation ignores it on macOS; `scripts/check.sh` gives the tests a
+    /// private one), else the user's temp directory.
+    static var root: URL {
+        if let dir = ProcessInfo.processInfo.environment["TMPDIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) }
+        return FileManager.default.temporaryDirectory
+    }
+
+    /// A path in the temp directory that is removed when the current test ends.
+    static func url(_ name: String) -> URL {
+        let url = root.appending(path: "pva-swift-\(name)-\(UUID().uuidString)")
+        if let scratch = current {
+            scratch.urls.withLock { $0.append(url) }
+        } else {
+            Issue.record("a temporary path outside a .removesScratch suite would outlive its test: \(name)")
+        }
+        return url
+    }
+}
+
+/// Every test in the suite gets its own scratch list, removed when the test ends, pass or fail:
+/// data directories hold heard transcripts, and `scripts/check.sh` fails if one is left.
+struct RemovesScratch: SuiteTrait, TestTrait, TestScoping {
+    var isRecursive: Bool { true }
+    func scopeProvider(for test: Test, testCase: Test.Case?) -> RemovesScratch? { testCase == nil ? nil : self }
+    func provideScope(for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void) async throws {
+        let scratch = TestScratch()
+        defer { for url in scratch.urls.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        try await TestScratch.$current.withValue(scratch) { try await function() }
+    }
+}
+
+extension Trait where Self == RemovesScratch {
+    static var removesScratch: Self { RemovesScratch() }
+}
+
 func tempDataDir(_ name: String) throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appending(path: "pva-swift-\(name)-\(UUID().uuidString)")
-    return try DataDirectory.prepare(url)
+    try DataDirectory.prepare(TestScratch.url(name))
 }
 
 /// Collects a conversation's events so tests can wait for one.
@@ -157,7 +196,7 @@ final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
     }
 }
 
-@Suite("Conversation through the real session service", .serialized)
+@Suite("Conversation through the real session service", .serialized, .removesScratch)
 struct ConversationTests {
     @Test("the session service binary is built") func binaryPresent() { #expect(haveBinary, binaryMissing) }
 
@@ -613,9 +652,8 @@ struct ConversationTests {
     /// that has gone missing, and one that can no longer be executed.
     @Test("a restart that cannot launch the service reports why", arguments: ["missing", "broken"])
     func restartFailureIsReported(_ how: String) async throws {
-        let copy = FileManager.default.temporaryDirectory.appending(path: "pva-swift-binary-\(UUID().uuidString)")
+        let copy = TestScratch.url("binary")
         try FileManager.default.copyItem(at: sessionBinary, to: copy)
-        defer { try? FileManager.default.removeItem(at: copy) }
         var config = ConversationConfig(
             binary: copy, dataDir: try tempDataDir("relaunch-\(how)"),
             recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
@@ -656,7 +694,7 @@ struct ConversationTests {
     }
 }
 
-@Suite("On-device language model")
+@Suite("On-device language model", .removesScratch)
 struct ModelTests {
     @Test("after a context overflow, retry only if nothing was streamed (no spliced replies)")
     func overflowRetry() {
