@@ -658,16 +658,25 @@ impl Session {
             return;
         }
         let mut spoken: String = trimmed.chars().take(max_chars).collect();
+        let mut model_text = None;
         if let Some(index) = index
             && !t.executed
             && guard::claims_completion(&spoken)
         {
             out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
-            guard::DRAFT_DISCLAIMER.clone_into(&mut spoken);
+            model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
         }
         let seq = r.next_seq;
         r.next_seq += 1;
         r.chunks.insert(call, false);
+        out.push(Output::Record(Record::Spoken {
+            turn: t.id,
+            call,
+            seq,
+            text: spoken.clone(),
+            index,
+            model_text,
+        }));
         out.push(Output::Send(ServiceMessage::TtsRequest {
             call,
             turn: t.id,

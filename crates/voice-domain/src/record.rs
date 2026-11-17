@@ -39,6 +39,17 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
+    /// What was sent to synthesis, exactly: what the assistant said, interrupted or not.
+    /// `index` is the model's sentence number (none for session-authored text); `model_text`
+    /// is the model's sentence when the session replaced it.
+    Spoken {
+        turn: TurnId,
+        call: CallId,
+        seq: u32,
+        text: String,
+        index: Option<u32>,
+        model_text: Option<String>,
+    },
     Decided {
         turn: TurnId,
         decision: Decision,

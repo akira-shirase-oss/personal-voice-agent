@@ -253,6 +253,13 @@ struct ConversationTests {
 
 @Suite("On-device language model")
 struct ModelTests {
+    @Test("after a context overflow, retry only if nothing was streamed (no spliced replies)")
+    func overflowRetry() {
+        #expect(FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 0))
+        #expect(!FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 1))
+        #expect(!FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 3))
+    }
+
     static var available: Bool { FoundationModelsProvider().availability() == .available }
 
     @Test("FoundationModels streams kind first, then sentences, then the proposal", .enabled("FoundationModels is available") { ModelTests.available })

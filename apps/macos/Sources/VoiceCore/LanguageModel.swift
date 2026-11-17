@@ -161,6 +161,23 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
         prewarm()
     }
 
+    static func mayRetryAfterOverflow(eventsSent: Int) -> Bool { eventsSent == 0 }
+
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        func increment() {
+            lock.lock()
+            n += 1
+            lock.unlock()
+        }
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return n
+        }
+    }
+
     static func prompt(_ heard: String, recap: [(heard: String, reply: String)]) -> String {
         guard !recap.isEmpty else { return "The user said: «\(heard)»" }
         let earlier = recap.map { "User: «\($0.heard)»\nYou: \($0.reply)" }.joined(separator: "\n")
@@ -170,13 +187,20 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
     public func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         if case .unavailable(let reason, _) = availability() { throw LMError.failed(reason) }
         let (session, recap) = takeSession()
+        let sent = Counter()
+        let counted: @Sendable (LMEvent) -> Void = { e in
+            sent.increment()
+            events(e)
+        }
         let reply: String
         do {
-            reply = try await stream(Self.prompt(heard, recap: recap), session: session, events: events)
+            reply = try await stream(Self.prompt(heard, recap: recap), session: session, events: counted)
         } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
-            // A long utterance plus the recap overflowed: once more without the recap. Events
-            // already sent stay valid; the service drops a repeated sentence index.
-            reply = try await stream(Self.prompt(heard, recap: []), session: LanguageModelSession(instructions: Self.instructions), events: events)
+            // A long utterance plus the recap overflowed. Retry without the recap only if
+            // nothing was streamed yet: a retry after some sentences would splice two
+            // different generations into one reply.
+            guard Self.mayRetryAfterOverflow(eventsSent: sent.value) else { throw LMError.failed(.contextWindow) }
+            reply = try await stream(Self.prompt(heard, recap: []), session: LanguageModelSession(instructions: Self.instructions), events: counted)
         }
         remember(heard, reply)
     }

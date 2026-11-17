@@ -6,7 +6,7 @@
     reason = "test code: a panic is the failure report"
 )]
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -114,11 +114,13 @@ async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed()
             "session_opened",
             "turn_opened",
             "heard",
+            "spoken",
+            "spoken",
             "inferred",
             "turn_closed",
             "session_closed"
         ],
-        "the ledger keeps heard and inferred apart, and nothing executed"
+        "the ledger keeps heard, spoken and inferred apart, and nothing executed"
     );
     assert_eq!(
         recs[2]["text"], "what is the capital of France",
@@ -538,6 +540,49 @@ async fn completion_claims_without_evidence_never_reach_synthesis() {
         );
     }
     shutdown(stub, handle).await;
+}
+
+/// What was said is evidence too: every chunk sent to synthesis is in the ledger with its
+/// exact text, and a replaced claim keeps the model's original next to what was spoken.
+#[tokio::test]
+async fn what_was_spoken_is_ledgered() {
+    let c = config("spoken");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "tell me about Paris", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    let said = ["Paris is the capital of France.", "I've booked you a table there."];
+    for (i, t) in said.iter().enumerate() {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index: u32::try_from(i).unwrap(),
+            text: (*t).into(),
+        })
+        .await;
+        stub.until(|m| matches!(m, S::TtsRequest { .. })).await;
+    }
+    // Interrupted before lm_done: what was said must be on record anyway.
+    stub.send(&C::Interrupt).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let spoken: Vec<Value> = ledger(&dir).into_iter().filter(|r| r["kind"] == "spoken").collect();
+    assert_eq!(spoken.len(), 2, "one record per synthesized chunk");
+    assert_eq!(spoken[0]["text"], said[0]);
+    assert_eq!(spoken[0]["model_text"], Value::Null, "spoken as the model wrote it");
+    assert_eq!(spoken[1]["text"], voice_domain::guard::DRAFT_DISCLAIMER);
+    assert_eq!(
+        spoken[1]["model_text"], said[1],
+        "the replaced claim is kept beside what was said"
+    );
+    assert_eq!(
+        (spoken[0]["seq"].clone(), spoken[1]["seq"].clone()),
+        (json!(0), json!(1))
+    );
 }
 
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.
