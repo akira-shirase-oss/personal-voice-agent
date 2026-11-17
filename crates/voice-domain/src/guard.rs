@@ -1046,8 +1046,9 @@ const INFORMATIONAL: &[&str] = &[
 
 /// Whether a heard request may ask for something to be done on the user's behalf, so that a
 /// reply to it may claim it was done. Fails closed: only a question or an informational request
-/// that names no action verb (in any form) and no task counts as informational; any other
-/// request, statements included, may ask for an action. A turn that answers such a request ends
+/// that names no action verb (in any form) and no task, and is not phrased as a request ("could
+/// you…", "will you…", "please…"), counts as informational; any other request, statements
+/// included, may ask for an action. A turn that answers such a request ends
 /// with the turn-level disclosure (D-027).
 pub fn request_may_ask_for_action(heard: &str) -> bool {
     let lowered = heard.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
@@ -1063,7 +1064,18 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
     let asks_if_done = w.windows(2).any(|p| {
         matches!(p[0], "did" | "have" | "has" | "had") && matches!(p[1], "you" | "it" | "that" | "they" | "she" | "he")
     });
-    if names_action || asks_if_done {
+    // A request phrased as a question, whatever its verb: "could you sort out the plumber?",
+    // "will you…", "any chance you…", "do you mind…", "please…".
+    let polite = w.windows(2).any(|p| {
+        matches!(
+            p[0],
+            "can" | "could" | "would" | "will" | "won't" | "wouldn't" | "can't" | "couldn't"
+        ) && matches!(p[1], "you" | "u")
+    }) || w.iter().any(|t| matches!(*t, "please" | "pls"))
+        || has_phrase(&w, &["any", "chance"])
+        || w.first() == Some(&"mind")
+        || has_phrase(&w, &["you", "mind"]);
+    if names_action || asks_if_done || polite {
         return true;
     }
     let question = lowered.trim_end().ends_with('?');

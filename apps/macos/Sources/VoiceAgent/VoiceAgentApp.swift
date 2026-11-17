@@ -146,7 +146,10 @@ struct Transcript: View {
                     Row(label: "Heard", text: turn.heard ?? "…", mono: true)
                     Row(label: "Draft", text: turn.spoken.isEmpty ? "—" : turn.spoken.joined(separator: " "), mono: false)
                     // From the service's `executed` records only: the app never infers it.
-                    Row(label: "Executed", text: turn.executed.isEmpty ? "Nothing" : turn.executed.map(\.rawValue).joined(separator: ", "), mono: false)
+                    Row(
+                        label: "Executed",
+                        text: turn.executed.isEmpty ? (turn.nothingDone ? "Nothing has been done" : "Nothing") : turn.executed.map(\.rawValue).joined(separator: ", "),
+                        mono: false)
                         .foregroundStyle(.secondary)
                     HStack {
                         if let o = turn.outcome { Text(o.rawValue.replacingOccurrences(of: "_", with: " ")).font(.caption).bold() }

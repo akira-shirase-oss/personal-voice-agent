@@ -195,12 +195,22 @@ fn the_held_out_rates_are_printed_for_d027() {
     let lines = held_out();
     let pct = |n: usize, d: usize| if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 };
     for (name, groups) in [
-        ("review", &["review-b1", "review-b2", "review-split"][..]),
+        (
+            "review",
+            &["review-b1", "review-b2", "review-split", "review-final"][..],
+        ),
         ("own", &["own"][..]),
         ("unprompted", &["unprompted"][..]),
         (
             "all",
-            &["review-b1", "review-b2", "review-split", "own", "unprompted"][..],
+            &[
+                "review-b1",
+                "review-b2",
+                "review-split",
+                "review-final",
+                "own",
+                "unprompted",
+            ][..],
         ),
     ] {
         let set: Vec<&Line> = lines.iter().filter(|l| groups.contains(&l.group)).collect();

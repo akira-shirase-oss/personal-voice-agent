@@ -17,6 +17,9 @@ public enum ConversationEvent: Sendable {
     case turnClosed(TurnID, Outcome, TurnTiming)
     /// A tool call of this turn has a result on record (never inferred by the app).
     case executed(TurnID, ExecutionStatus)
+    /// The turn may have claimed an action and ended before it could say otherwise (cut off,
+    /// failed, interrupted): the app shows "Nothing has been done." with it.
+    case nothingDone(TurnID)
     case degraded(TurnID?, Stage, FailureReason)
     case consent(ConsentState)
     case notice(String)
@@ -531,9 +534,13 @@ public actor Conversation {
             let state = reassertRevocation(reported)
             consent = state
             publish(.consent(state))
-        case .notice(let code, _):
+        case .notice(let code, let turn):
             if code == "forget_refused_turn_active" { forgetPending = false }
-            publish(.notice(code))
+            if code == "nothing_done", let turn {
+                publish(.nothingDone(turn))
+            } else {
+                publish(.notice(code))
+            }
         case .flushed:
             publish(.notice("flushed"))
         case .pong(let seq):

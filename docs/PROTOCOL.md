@@ -99,7 +99,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `turn_closed` | `turn`, `outcome` | Final outcome of the turn |
 | `degraded` | `turn`, `stage` (`stt`/`lm`/`tts`/`tool`/`ledger`), `reason` | A provider or the ledger failed; nothing was invented |
 | `consent_state` | `capture`, `personal_voice` | Current consent after any change |
-| `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`) |
+| `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`), or `nothing_done`: the turn may have claimed an action and ended (interrupted, degraded, refused) before it could say nothing was done; the app shows it with the turn |
 | `flushed` | `seq` | Every record up to `seq` is durable |
 | `executed` | `turn`, `call`, `status` (`succeeded`/`failed`/`uncertain`) | A tool call of this turn has a result on record (the ledger's `executed`); what the app shows as executed |
 | `pong` | `seq` | Answer to `ping` with the same `seq` |

@@ -9,10 +9,10 @@
 > `d8b78cc` failed their thresholds (saturated append p99 554 ms against
 > 50 ms; one durable append p99 155 ms against 20 ms) on a disk another
 > process was driving. The completion-claim guard's sentence classifier
-> misses most claims it was not tuned on (84% of a held-out set), so every
+> misses most claims it was not tuned on (83% of a held-out set), so every
 > reply turn that may claim an action ends with "Nothing has been done.";
-> on the held-out set 1 of 61 claims still got through, in reply to a plain
-> question. `docs/ROADMAP.md` lists what is done, with its evidence, and
+> on the held-out set 5 of 70 claims still got through, all inside answers
+> to plain questions. `docs/ROADMAP.md` lists what is done, with its evidence, and
 > what is owed.
 
 A voice interface that learns your style without taking uncontrolled
