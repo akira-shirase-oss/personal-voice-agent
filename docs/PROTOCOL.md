@@ -13,6 +13,9 @@ durations only, never content (D-011).
 - The first app message must be `hello`; anything else first is
   `error` `hello_required`.
 - stdin EOF ends the session cleanly (`session_closed` is recorded).
+- A service that cannot open its data directory sends one `error` before exiting:
+  `already_running` (another service holds the directory's lock; exit code 6),
+  `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for these.
 - Golden lines for both sides live in `fixtures/protocol/`; the Rust and
   Swift test suites both decode every one of them.
 
@@ -43,6 +46,7 @@ durations only, never content (D-011).
 | `consent` | `scope` (`capture`/`personal_voice`), `grant` (bool), `rights_review` (string or null) | Grant or revoke |
 | `flush` | — | Barrier: answered by `flushed` once every earlier record is durable |
 | `ping` | `seq` | Liveness: answered by `pong` at once, without touching the ledger |
+| `forget` | `scope` | Carry out that consent scope's deletion scope now (capture: every heard transcript); refused while a turn is open |
 | `shutdown` | — | End the session cleanly |
 
 `proposal`:
@@ -83,6 +87,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`) |
 | `flushed` | `seq` | Every record up to `seq` is durable |
 | `pong` | `seq` | Answer to `ping` with the same `seq` |
+| `forgotten` | `scope`, `files`, `bytes` | A `forget` was carried out |
 | `error` | `code`, `detail` | Protocol-level error; `detail` never contains content |
 
 Outcomes: `completed`, `interrupted`, `degraded`, `refused`, `rejected`,

@@ -80,10 +80,16 @@ proof gate in `ROADMAP.md`:
 ## Non-negotiable invariants
 
 1. **Consent before capture and before any profile.** Capture happens only
-   while push-to-talk is held and capture consent is granted. Enroll only
-   your own voice or a speaker with explicit rights; consent and deletion
-   scope are recorded. Revocation stops capture/playback immediately and
-   prevents any further use of the revoked scope.
+   while push-to-talk is held and capture consent is granted, and the app
+   enforces it itself: the key coming up stops the microphone at once
+   (before any reply from the service), a capture that would start after
+   the key is up never starts, capture has its own 60 s cap, and a service
+   that stops answering is detected and replaced with the microphone off.
+   Enroll only your own voice or a speaker with explicit rights; consent and
+   deletion scope are recorded. Revocation stops capture/playback
+   immediately and prevents any further use of the revoked scope, also when
+   the disk is full (it fails closed) and with only one service per data
+   directory.
 2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
    recognizer's output, the assistant's inference and tool-result
    evidence. The ledger is what happened; the model's narration is not. A

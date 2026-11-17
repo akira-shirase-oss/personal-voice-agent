@@ -8,15 +8,17 @@ Device output latency is measured separately by the live drill (docs/DRILLS.md, 
 
 | Stage | Budget p95 | Measured p50 / p95 | |
 |---|---|---|---|
-| Recognizer finalize (release → heard text sent) | 250 ms | 67 / 103 ms | within |
-| Model first sentence (heard → first reply sentence) | 1,500 ms | 1,778 / 2,073 ms | **miss** |
-| Synthesis first audio (request → first buffer scheduled) | 150 ms | 17 / 31 ms | within |
+| Recognizer finalize (release → heard text sent) | 250 ms | 68 / 106 ms | within |
+| Model first sentence (heard → first reply sentence) | 1,500 ms | 1,476 / 1,954 ms | **miss** at p95 |
+| Synthesis first audio (request → first buffer scheduled) | 150 ms | 14 / 30 ms | within |
 | Service and app hops | 100 ms | included in the stages above | — |
-| **End of turn → first audio** | **2,000 ms** | **1,877 / 2,203 ms** | **miss at p95** |
+| **End of turn → first audio** | **2,000 ms** | **1,549 / 2,036 ms** | **miss at p95** |
 
-Measured: `perf/results/2026-11-16-173730-e2e-latency-rounds3.md` — 17 steady-state turns
-over the six committed fixtures, audio fed at real time, warm providers, load average 25–46
-(a shared, busy machine). The cold first turn took 1,551 ms.
+Measured: `perf/results/2026-11-16-210413-e2e-latency-rounds3.md`, from a clean tree at
+`d8b78cc` — 17 steady-state turns over the six committed fixtures, audio fed at real time,
+warm providers, 1-minute load average 19 → 15 (a shared, busy machine). The cold first turn
+took 1,409 ms. The earlier run (`…173730…`, from a dirty tree, load 25–46) measured p50 1,877 /
+p95 2,203 ms. In both, the model's first sentence is the whole miss.
 
 ## What moved the numbers (same bench, same day)
 
