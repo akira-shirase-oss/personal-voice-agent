@@ -216,6 +216,21 @@ fn unsynced_batch_after(file: &File, start: u64, len: u64, last_seq: u64) -> boo
     true
 }
 
+/// Directories synced, so tests can check that a new file's directory entry is made durable.
+#[cfg(test)]
+pub(crate) static SYNCED_DIRS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes a directory's entries durable: a new file's first acknowledged records are only safe
+/// once its name is.
+fn sync_dir(dir: &Path) -> Result<(), StoreError> {
+    File::open(dir).and_then(|d| d.sync_all()).map_err(io_err(dir))?;
+    #[cfg(test)]
+    if let Ok(mut v) = SYNCED_DIRS.lock() {
+        v.push(dir.to_owned());
+    }
+    Ok(())
+}
+
 fn create_dir(path: &Path) -> Result<(), StoreError> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -225,6 +240,7 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
+    let existed = path.exists();
     let mut o = OpenOptions::new();
     o.append(true).mode(0o600);
     if create_new {
@@ -232,7 +248,11 @@ fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
     } else {
         o.create(true);
     }
-    o.open(path).map_err(io_err(path))
+    let file = o.open(path).map_err(io_err(path))?;
+    if !existed && let Some(parent) = path.parent() {
+        sync_dir(parent)?;
+    }
+    Ok(file)
 }
 
 /// Appends `records` synchronously and makes them durable (recovery only).
@@ -739,6 +759,22 @@ mod tests {
         let mut v = Vec::new();
         scan_and_repair::<Record>(path, |r| v.push(r.clone())).unwrap();
         v
+    }
+
+    #[test]
+    fn new_logs_are_made_durable_in_their_directories() {
+        let dir = temp_dir("dirsync");
+        let opened = open(&dir, 10).unwrap();
+        let synced = SYNCED_DIRS.lock().unwrap().clone();
+        assert!(
+            synced.contains(&dir),
+            "the new consent.log's entry in the data directory"
+        );
+        assert!(
+            synced.contains(&dir.join("ledger")),
+            "the new session log's entry in ledger/"
+        );
+        drop(opened);
     }
 
     #[test]
