@@ -39,6 +39,9 @@ public final class TurnFencedPlayer: @unchecked Sendable {
         var stats = PlayerStats()
     }
     private let state = Mutex(State())
+    /// Test seam: runs immediately before `scheduleBuffer`, wherever that call is. The lock
+    /// rule's test uses it to land a stop between the fence check and the scheduling.
+    var testHookBeforeSchedule: (() -> Void)?
     /// Completion handlers hop here: `node.stop()` may call them while `state` is held, and
     /// the lock is not reentrant.
     private let callbacks = DispatchQueue(label: "voice.player.callbacks")
@@ -132,6 +135,7 @@ public final class TurnFencedPlayer: @unchecked Sendable {
             // Live: "played back" by the device. Offline there is no device, and only
             // "rendered" completions fire.
             let type: AVAudioPlayerNodeCompletionCallbackType = offline ? .dataRendered : .dataPlayedBack
+            testHookBeforeSchedule?()
             node.scheduleBuffer(chunk.pcm.buffer, completionCallbackType: type) { [weak self] _ in
                 guard let player = self else { return }
                 callbacks.async { player.completed(generation: generation, frames: frames, played: played) }

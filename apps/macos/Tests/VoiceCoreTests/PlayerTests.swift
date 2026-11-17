@@ -141,7 +141,9 @@ struct PlayerTests {
         #expect(p99 < 50_000, "stop() p99 \(p99) µs")
     }
 
-    @Test("concurrent late chunks never survive a stop (100 rounds, 8 threads)")
+    /// Late chunks offered from many threads once a stop has landed are all refused. This does
+    /// not prove the lock rule (a stop landing between check and schedule): `lockRule` does.
+    @Test("late chunks offered concurrently around a stop are refused (100 rounds, 8 threads)")
     func concurrentStress() throws {
         let p = try TurnFencedPlayer(format: playerFormat, offline: true)
         let small = Audio.tone(seconds: 0.01, format: playerFormat)
@@ -166,6 +168,37 @@ struct PlayerTests {
             #expect(try listen({ try p.render($0) }, wall: 0.05) == nil, "round \(round): stale audio survived")
         }
         #expect(violations.withLock { $0 } == 0)
+    }
+
+    /// The lock rule, deterministically: a stop that arrives after a chunk passed the fence
+    /// check but before it was scheduled must wait for the scheduling (and then discard it).
+    /// If scheduling ever moves outside the lock, the stop completes first and the chunk plays
+    /// after it — both expectations below then fail.
+    @Test("a stop between the fence check and scheduling cannot let the chunk play")
+    func lockRule() throws {
+        final class Flags: @unchecked Sendable {
+            private let lock = NSLock()
+            private var done = false
+            func set() { lock.withLock { done = true } }
+            var isSet: Bool { lock.withLock { done } }
+        }
+        let p = try TurnFencedPlayer(format: playerFormat, offline: true)
+        let stopDone = Flags()
+        let stopDoneBeforeSchedule = Flags()
+        p.testHookBeforeSchedule = {
+            Thread.detachNewThread {
+                p.stop(fence: TurnID(2))
+                stopDone.set()
+            }
+            Thread.sleep(forTimeInterval: 0.05)  // ample time for an unblocked stop to finish
+            if stopDone.isSet { stopDoneBeforeSchedule.set() }
+        }
+        p.enqueue(chunk(1, seconds: 0.5))
+        p.testHookBeforeSchedule = nil
+        while !stopDone.isSet { Thread.sleep(forTimeInterval: 0.001) }
+        let early = stopDoneBeforeSchedule.isSet
+        #expect(!early, "the stop completed between the check and the schedule")
+        #expect(try listen({ try p.render($0) }, wall: 1) == nil, "a chunk checked before the stop played after it")
     }
 
     @Test("the queue is bounded")
