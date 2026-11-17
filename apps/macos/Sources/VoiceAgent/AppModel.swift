@@ -9,6 +9,8 @@ struct TurnRow: Identifiable {
     let id: TurnID
     var heard: String?
     var spoken: [String] = []
+    /// Tool results the service recorded for this turn; empty means nothing executed.
+    var executed: [ExecutionStatus] = []
     var outcome: Outcome?
     var problem: String?
     var firstAudioMs: Int?
@@ -203,6 +205,7 @@ final class AppModel {
         case .capture(_, let on): if on && holding { startMicrophone() } else { stopMicrophone() }
         case .heard(let t, let text): row(t) { $0.heard = text }
         case .speaking(let t, let text): row(t) { $0.spoken.append(text) }
+        case .executed(let t, let status): row(t) { $0.executed.append(status) }
         case .confirm(let turn, let digest, let heard, let tool, let slots, let reasons):
             confirmation = PendingConfirmation(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons)
         case .turnClosed(let t, let outcome, let timing):

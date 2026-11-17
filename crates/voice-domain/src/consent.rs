@@ -68,10 +68,17 @@ impl ConsentState {
         state
     }
 
+    /// A personal-voice grant counts only in a build that has personal voice, and only with a
+    /// valid usage-rights review reference (D-020): a grant written into the log by hand or by
+    /// a later build cannot open the gate here.
     pub fn apply(&mut self, record: &ConsentRecord) {
         match record.scope {
             ConsentScope::Capture => self.capture = record.granted,
-            ConsentScope::PersonalVoice => self.personal_voice = record.granted,
+            ConsentScope::PersonalVoice => {
+                self.personal_voice = record.granted
+                    && PERSONAL_VOICE_AVAILABLE
+                    && record.rights_review.as_deref().is_some_and(is_rights_review_hash);
+            }
         }
     }
 
@@ -130,6 +137,19 @@ mod tests {
             personal_voice: true,
         };
         assert_eq!(s.voice(), Voice::Standard);
+    }
+
+    /// V3 hazard (second review, LOW20): a personal-voice grant in the log must not fold to
+    /// granted in a build without personal voice, even with a valid review reference.
+    #[test]
+    fn a_logged_personal_voice_grant_does_not_open_the_gate_in_this_release() {
+        let grant = ConsentRecord {
+            rights_review: Some("a".repeat(64)),
+            ..rec(ConsentScope::PersonalVoice, true)
+        };
+        assert!(!ConsentState::fold([&grant]).personal_voice);
+        let unreviewed = rec(ConsentScope::PersonalVoice, true);
+        assert!(!ConsentState::fold([&unreviewed]).personal_voice);
     }
 
     #[test]

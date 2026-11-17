@@ -101,6 +101,9 @@ public enum FailureReason: String, Codable, Sendable {
 
 public enum Stage: String, Codable, Sendable { case stt, lm, tts, tool, ledger }
 
+/// How a tool call ended, as the ledger recorded it.
+public enum ExecutionStatus: String, Codable, Sendable { case succeeded, failed, uncertain }
+
 public enum Outcome: String, Codable, Sendable {
     case completed, interrupted, degraded, refused, rejected, expired, empty, abandoned
     case consentRevoked = "consent_revoked"
@@ -151,7 +154,7 @@ public struct Recovered: Codable, Equatable, Sendable {
 enum Field: String, CodingKey {
     case type, `protocol`, client, turn, call, text, kind, index, proposal, model, instructions, reason, digest
     case approve, scope, grant, session, consent, recovered, on, heard, seq, voice, fence, tool, slots, reasons
-    case outcome, stage, code, detail, capture, files, bytes
+    case outcome, stage, code, detail, capture, files, bytes, status
     case minConfidence = "min_confidence"
     case rightsReview = "rights_review"
     case deadlineMs = "deadline_ms"
@@ -307,6 +310,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
     case notice(code: String, turn: TurnID?)
     case flushed(seq: UInt64)
     case pong(seq: UInt64)
+    case executed(turn: TurnID, call: CallID, status: ExecutionStatus)
     case forgotten(scope: ConsentScope, files: UInt32, bytes: UInt64)
     case error(code: String, detail: String)
 
@@ -327,6 +331,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case .notice: "notice"
         case .flushed: "flushed"
         case .pong: "pong"
+        case .executed: "executed"
         case .forgotten: "forgotten"
         case .error: "error"
         }
@@ -370,6 +375,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case "notice": self = .notice(code: try c.decode(String.self, forKey: .code), turn: try c.decodeIfPresent(TurnID.self, forKey: .turn))
         case "flushed": self = .flushed(seq: try c.decode(UInt64.self, forKey: .seq))
         case "pong": self = .pong(seq: try c.decode(UInt64.self, forKey: .seq))
+        case "executed": self = .executed(turn: try turn(), call: try call(), status: try c.decode(ExecutionStatus.self, forKey: .status))
         case "forgotten":
             self = .forgotten(
                 scope: try c.decode(ConsentScope.self, forKey: .scope), files: try c.decode(UInt32.self, forKey: .files),
@@ -431,6 +437,10 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
             try c.encode(code, forKey: .code)
             try c.encode(turn, forKey: .turn)
         case .flushed(let seq), .pong(let seq): try c.encode(seq, forKey: .seq)
+        case .executed(let turn, let call, let status):
+            try c.encode(turn, forKey: .turn)
+            try c.encode(call, forKey: .call)
+            try c.encode(status, forKey: .status)
         case .forgotten(let scope, let files, let bytes):
             try c.encode(scope, forKey: .scope)
             try c.encode(files, forKey: .files)

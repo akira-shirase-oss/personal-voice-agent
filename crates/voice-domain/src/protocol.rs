@@ -180,6 +180,13 @@ pub enum ServiceMessage {
     Pong {
         seq: u64,
     },
+    /// A tool call of this turn has a result on record (the ledger's `executed`): what the app
+    /// shows as executed, instead of assuming nothing ran.
+    Executed {
+        turn: TurnId,
+        call: CallId,
+        status: ExecutionStatus,
+    },
     /// A `forget` was carried out: how many files and bytes were deleted.
     Forgotten {
         scope: ConsentScope,
@@ -190,6 +197,25 @@ pub enum ServiceMessage {
         code: String,
         detail: String,
     },
+}
+
+/// How a tool call ended, as the app is told: never more than the ledger's record says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Succeeded,
+    Failed,
+    Uncertain,
+}
+
+impl ExecutionStatus {
+    pub fn of(outcome: &crate::tools::ToolOutcome) -> Self {
+        match outcome {
+            crate::tools::ToolOutcome::Succeeded { .. } => Self::Succeeded,
+            crate::tools::ToolOutcome::Failed { .. } => Self::Failed,
+            crate::tools::ToolOutcome::Uncertain { .. } => Self::Uncertain,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

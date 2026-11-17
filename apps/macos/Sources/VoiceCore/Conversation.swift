@@ -15,6 +15,8 @@ public enum ConversationEvent: Sendable {
     case speaking(TurnID, String)
     case confirm(turn: TurnID, digest: String, heard: String, tool: String, slots: [Slot], reasons: [ConfirmReason])
     case turnClosed(TurnID, Outcome, TurnTiming)
+    /// A tool call of this turn has a result on record (never inferred by the app).
+    case executed(TurnID, ExecutionStatus)
     case degraded(TurnID?, Stage, FailureReason)
     case consent(ConsentState)
     case notice(String)
@@ -500,6 +502,8 @@ public actor Conversation {
             publish(.notice("flushed"))
         case .pong(let seq):
             if pendingPing?.seq == seq { pendingPing = nil }
+        case .executed(let turn, _, let status):
+            publish(.executed(turn, status))
         case .forgotten(_, let files, let bytes):
             forgetPending = false
             config.model.forget()

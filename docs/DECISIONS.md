@@ -164,7 +164,10 @@ settled it, it is listed under **Open questions** rather than guessed.
   feature.** `evals/rights/<provider>-<model>-<date>.md` covers voice
   rights *and* data use; the consent record references it by hash, so a
   model change forces a new review. Until one exists, the personal-voice
-  scope cannot be granted (enforced in the domain).
+  scope cannot be granted (enforced in the domain), and a personal-voice grant
+  found in the consent log does not fold to granted in a build without the
+  voice or without a valid review hash; revoking it mid-turn stops playback
+  like a capture revocation.
 - **D-021 — "Stop" is defined for measurement.** Stop-playback latency is
   from the interrupt event's timestamp to the last non-silent sample
   rendered by the output node. Tests measure it by offline rendering

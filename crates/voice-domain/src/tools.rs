@@ -68,4 +68,8 @@ pub enum UncertainReason {
     Interrupted,
     ConsentRevoked,
     ServiceRestart,
+    /// The ledger failed while the tool ran.
+    LedgerUnavailable,
+    /// A provider failure (not a deadline) ended the turn.
+    ProviderFailed,
 }

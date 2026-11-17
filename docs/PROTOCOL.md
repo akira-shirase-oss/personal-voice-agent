@@ -96,6 +96,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `consent_state` | `capture`, `personal_voice` | Current consent after any change |
 | `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`) |
 | `flushed` | `seq` | Every record up to `seq` is durable |
+| `executed` | `turn`, `call`, `status` (`succeeded`/`failed`/`uncertain`) | A tool call of this turn has a result on record (the ledger's `executed`); what the app shows as executed |
 | `pong` | `seq` | Answer to `ping` with the same `seq` |
 | `forgotten` | `scope`, `files`, `bytes` | A `forget` was carried out |
 | `error` | `code`, `detail` | Protocol-level error; `detail` never contains content |
@@ -103,8 +104,10 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 Outcomes: `completed`, `interrupted`, `degraded`, `refused`, `rejected`,
 `expired`, `consent_revoked`, `empty`, `abandoned`.
 
-Confirmation `reasons`: `external_effect`, `irreversible_effect`,
-`sensitive_slot`, `low_confidence`, `no_confidence`, `slot_not_heard`.
+Confirmation `reasons`: `irreversible_effect`, `sensitive_slot`,
+`low_confidence`, `no_confidence`, `slot_not_heard`. There is no external-effect
+reason: an external tool is refused before any confirmation (`external_not_authorized`),
+because no external action can be authorized in the first release.
 
 ## Ordering guarantees
 

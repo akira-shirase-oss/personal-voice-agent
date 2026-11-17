@@ -11,7 +11,7 @@
 use voice_domain::consent::{ConsentScope, ConsentState};
 use voice_domain::policy::{ConfirmReason, Decision, Refusal};
 use voice_domain::proposal::{Proposal, ProposalKind, Slot, SlotKind};
-use voice_domain::protocol::{ClientMessage as C, FailureReason, Outcome, ServiceMessage as S, Stage};
+use voice_domain::protocol::{ClientMessage as C, ExecutionStatus, FailureReason, Outcome, ServiceMessage as S, Stage};
 use voice_domain::record::Record;
 use voice_domain::tools::{ToolEffect, ToolOutcome, ToolRegistry, ToolSpec, UncertainReason};
 use voice_domain::{CallId, Digest, Input, Limits, Output, Refused, Session, Timer, TimerKind, TurnId};
@@ -985,6 +985,102 @@ fn interrupting_a_running_tool_marks_it_uncertain_never_undone() {
         },
         reconciled: false
     })));
+}
+
+/// The app is told what executed (it used to print a hard-coded "Nothing"), and a tool cut off
+/// by a ledger failure is uncertain for that reason, not labelled a deadline.
+#[test]
+fn the_app_hears_what_executed_and_a_ledger_failure_is_not_called_a_deadline() {
+    let run_tool = |h: &mut H| {
+        let (turn, lm) = h.heard("note milk", Some(0.99));
+        let out = h.ok(done(
+            lm,
+            action("fixture.note", vec![slot("text", SlotKind::Text, "milk")]),
+        ));
+        let call = out
+            .iter()
+            .find_map(|o| {
+                if let Output::Execute { call, .. } = o {
+                    Some(*call)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        (turn, call)
+    };
+    let mut h = H::new();
+    let (turn, call) = run_tool(&mut h);
+    let out = h
+        .step(Input::ToolFinished {
+            call,
+            outcome: ToolOutcome::Succeeded {
+                evidence: "note #1".into(),
+            },
+        })
+        .unwrap();
+    assert!(H::sent(&out).contains(&S::Executed {
+        turn,
+        call,
+        status: ExecutionStatus::Succeeded
+    }));
+    let mut h = H::new();
+    let (turn, call) = run_tool(&mut h);
+    let out = h
+        .step(Input::LedgerUnavailable {
+            reason: FailureReason::LedgerIo,
+        })
+        .unwrap();
+    assert!(out.contains(&Output::Record(Record::Executed {
+        turn,
+        call,
+        outcome: ToolOutcome::Uncertain {
+            reason: UncertainReason::LedgerUnavailable
+        },
+        reconciled: false
+    })));
+    assert!(H::sent(&out).contains(&S::Executed {
+        turn,
+        call,
+        status: ExecutionStatus::Uncertain
+    }));
+}
+
+/// V3 hazard (second review, LOW20): revoking the personal voice mid-turn must silence what was
+/// already requested in it, as a capture revocation does. Unreachable in this release (the
+/// voice cannot be granted), so the state is built directly.
+#[test]
+fn revoking_the_personal_voice_mid_turn_stops_its_speech() {
+    let consent = ConsentState {
+        capture: true,
+        personal_voice: true,
+    };
+    let mut h = H {
+        s: Session::new(Limits::default(), registry(), consent),
+        log: Vec::new(),
+    };
+    let (turn, lm) = h.heard("tell me a story", Some(0.99));
+    h.ok(C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    });
+    let out = h.ok(C::LmSentence {
+        call: lm,
+        index: 0,
+        text: "Once upon a time.".into(),
+    });
+    assert_eq!(H::tts_calls(&out).len(), 1, "speech was requested");
+    let out = h.ok(C::Consent {
+        scope: ConsentScope::PersonalVoice,
+        grant: false,
+        rights_review: None,
+    });
+    let sent = H::sent(&out);
+    assert!(
+        sent.iter()
+            .any(|m| matches!(m, S::StopPlayback { fence } if *fence > turn))
+    );
+    assert_eq!(H::closed(&out), Some(Outcome::ConsentRevoked));
 }
 
 #[test]
