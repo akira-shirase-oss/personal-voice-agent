@@ -1,11 +1,15 @@
 # Personal Voice Agent
 
 > **Status — first release (V0–V2) built and tested on this Mac; not yet
-> shippable.** An independent review's findings are fixed with tests. The
-> live microphone drills, the human evaluation set, the million-scale load
-> runs and a long soak are owed, and the on-device model misses the latency
-> budget at p95. `docs/ROADMAP.md` lists what is done, with its evidence,
-> and what is owed.
+> shippable.** Two independent reviews' findings are fixed with tests,
+> except those `docs/ROADMAP.md` lists as owed. The live microphone drills,
+> the human evaluation set, the million-scale load runs and a long soak are
+> owed. Two measured misses stand: the on-device model misses the latency
+> budget at p95 (2,036 ms against 2,000), and both ledger smokes recorded at
+> `d8b78cc` failed their thresholds (saturated append p99 554 ms against
+> 50 ms; one durable append p99 155 ms against 20 ms) on a disk another
+> process was driving. `docs/ROADMAP.md` lists what is done, with its
+> evidence, and what is owed.
 
 A voice interface that learns your style without taking uncontrolled
 actions in your name. Push-to-talk conversations on macOS: a Swift/SwiftUI

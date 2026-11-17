@@ -126,7 +126,10 @@ settled it, it is listed under **Open questions** rather than guessed.
   logged (an unlink needs no free space) and created after a grant is
   logged; effective consent is "logged and token present", a torn consent
   tail counts as revoked, and a grant that cannot be recorded does not
-  stand. Proven on full HFS+ and APFS images (`tests/disk_full.rs`).
+  stand. Tested on full HFS+ and APFS images (`tests/disk_full.rs`). Only the
+  HFS+ run forces the revocation's log write to fail; on APFS unlinking the
+  token can free enough space for the record to land, so that run checks what
+  the user sees, not the failure path.
   Consent granted before this change has no token and must be granted once
   more.*
 - **D-018 — Deletion scope is stated honestly.** Deleting a file on APFS
