@@ -131,7 +131,12 @@ settled it, it is listed under **Open questions** rather than guessed.
   token can free enough space for the record to land, so that run checks what
   the user sees, not the failure path.
   Consent granted before this change has no token and must be granted once
-  more.*
+  more. If the unlink fails too (the data directory cannot be written), the
+  token's mode is set to 0000, a metadata change needing neither free space
+  nor a writable directory, and a token without its owner's read and write
+  bits counts as revoked; so a restart after both the unlink and the log
+  write failed comes back revoked (second review; a `store.rs` test, and a
+  full HFS+ image with the directory made read-only).*
 - **D-018 — Deletion scope is stated honestly.** Deleting a file on APFS
   does not erase its blocks from local snapshots or earlier backups, and
   SQLite-style freelists keep bytes too. So: the data directory is

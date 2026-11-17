@@ -269,10 +269,13 @@ fn append_now<T: Serialize>(path: &Path, session: &str, mut seq: u64, records: &
     Ok(seq)
 }
 
-/// Consent tokens: `consent.<scope>.granted` exists only while a grant stands. A revocation
-/// unlinks it before the log record is appended, and an unlink needs no free space, so a
-/// revocation holds on disk even when the log cannot be written. Effective consent at start
-/// is "the log says granted and the token exists" (D-017, amended).
+/// Consent tokens: `consent.<scope>.granted`, an empty file with mode 0600, stands only while a
+/// grant stands. A revocation unlinks it before the log record is appended, and an unlink needs
+/// no free space, so a revocation holds on disk even when the log cannot be written. If the
+/// unlink fails too (the directory cannot be written), the token's mode is set to 0000 instead:
+/// a metadata change that needs neither free space nor a writable directory. Effective consent
+/// at start is "the log says granted and the token exists with its owner's read and write
+/// bits" (D-017, amended).
 #[derive(Clone, Debug)]
 pub struct ConsentTokens {
     dir: PathBuf,
@@ -292,11 +295,19 @@ impl ConsentTokens {
     }
 
     pub fn granted(&self, scope: ConsentScope) -> bool {
-        self.path(scope).exists()
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(self.path(scope)).is_ok_and(|m| m.permissions().mode() & 0o600 == 0o600)
     }
 
     pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         let path = self.path(scope);
+        // A token left at 0000 by a revocation that could not unlink it: restore its mode first
+        // (a chmod needs ownership, not write permission).
+        match fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let f = OpenOptions::new()
             .write(true)
             .create(true)
@@ -307,11 +318,20 @@ impl ConsentTokens {
         File::open(&self.dir)?.sync_all()
     }
 
+    /// Unlinks the token; if that fails, sets its mode to 0000. Neither needs free space, and
+    /// the second needs no writable directory. An error only when both fail; the revocation then
+    /// stands in memory alone.
     pub fn revoke(&self, scope: ConsentScope) -> io::Result<()> {
-        match fs::remove_file(self.path(scope)) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.path(scope);
+        match fs::remove_file(&path) {
             Ok(()) => File::open(&self.dir)?.sync_all(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+            Err(unlink) => {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|_| unlink)?;
+                // The mode change is metadata; make it durable through the file itself.
+                File::open(&self.dir)?.sync_all()
+            }
         }
     }
 }
@@ -1076,6 +1096,45 @@ mod tests {
         assert!(!opened.consent_state.capture);
         assert_eq!(opened.recovered.torn_tails, 1);
         assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
+        // A token set to 0000 (a revocation that could not unlink it) is revoked, and a later
+        // grant restores it.
+        let dir = temp_dir("token-mode");
+        write_consent(&dir, &[consent(true)]);
+        let tokens = ConsentTokens::new(&dir);
+        tokens.grant(ConsentScope::Capture).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.join("consent.capture.granted"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        assert!(!tokens.granted(ConsentScope::Capture));
+        tokens.grant(ConsentScope::Capture).unwrap();
+        assert!(tokens.granted(ConsentScope::Capture), "a grant restores a 0000 token");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.join("consent.capture.granted"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        assert!(!open(&dir, 100).unwrap().consent_state.capture);
+    }
+
+    /// The residual case of the second review: the token cannot be unlinked (the directory is not
+    /// writable) and the revocation's record never reaches the log at all (not even torn). The
+    /// revocation must still hold at the next start.
+    #[test]
+    fn a_revocation_holds_when_the_token_cannot_be_unlinked_and_nothing_was_logged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("token-stuck");
+        write_consent(&dir, &[consent(true)]);
+        let tokens = ConsentTokens::new(&dir);
+        tokens.grant(ConsentScope::Capture).unwrap();
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let revoked = tokens.revoke(ConsentScope::Capture);
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(revoked.is_ok(), "the revocation reached the token: {revoked:?}");
+        assert!(dir.join("consent.capture.granted").exists(), "the unlink really failed");
+        assert!(
+            !open(&dir, 100).unwrap().consent_state.capture,
+            "the log still says granted, but the token says revoked"
+        );
     }
 
     /// Batches are cut at 1 MiB (so a power loss leaves at most that much unsynced), and the

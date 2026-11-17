@@ -22,9 +22,6 @@ next turn spoken, model unavailable, the fastest tap, a hung service while holdi
 delete history), 100 consented utterances quiet/noisy, and three one-hour sessions with
 stop-playback p95 and zero stale chunks.
 
-**Owed from the reviews:** the residual case where both the consent token's unlink and the
-revocation's log write fail (a restart could come back granted).
-
 **Owed in code:** one shared audio engine for capture and playback, so echo cancellation can
 reference the assistant's output (D-023 limitation); the model's first-sentence latency
 (`docs/LATENCY.md`).
