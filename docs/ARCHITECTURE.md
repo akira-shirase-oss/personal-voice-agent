@@ -128,7 +128,9 @@ budget is spent) instead of showing "restarting" forever. A service that stops
 answering without exiting is found by `ping`: once it is ready, every
 second while a turn is open or the key is held, every five seconds between
 turns, and on every key press; a ping unanswered for 3 s (30 s behind a
-`forget`) stops the microphone and playback and replaces the service.
+`forget`) stops the microphone and playback and replaces the service. Before
+`ready` a service answers no ping, so one that has not said `ready` 30 s
+after its launch (hung in startup or recovery) is replaced too.
 
 ## Consistency
 

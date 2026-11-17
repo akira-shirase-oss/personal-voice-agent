@@ -75,6 +75,9 @@ public struct ConversationConfig: Sendable {
     public var idleHeartbeatInterval: Duration = .seconds(5)
     /// How long a ping may wait behind a `forget`, which deletes files before it answers.
     public var forgetTimeout: Duration = .seconds(30)
+    /// A service that has not said `ready` this long after its launch (hung in startup or
+    /// recovery; it answers no ping before then) is replaced. Generous: recovery reads every log.
+    public var startupTimeout: Duration = .seconds(30)
     /// On quit, how long the service has to close its session after stdin closes before it
     /// gets SIGTERM (then SIGKILL): the app never leaves a child holding the data directory.
     public var shutdownGrace: Duration = .seconds(1)
@@ -160,6 +163,8 @@ public actor Conversation {
     private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
     private var pingSeq: UInt64 = 0
     private var lastPingAt: ContinuousClock.Instant?
+    /// When the current service was launched.
+    private var startedAt: ContinuousClock.Instant?
     /// The current service has said `ready`: it is pinged from then on, turn or no turn.
     private var sessionUp = false
     /// A `forget` was sent and not yet answered.
@@ -183,6 +188,7 @@ public actor Conversation {
         process = p
         pendingPing = nil
         lastPingAt = nil
+        startedAt = clock.now
         sessionUp = false
         forgetPending = false
         startHeartbeat(epoch)
@@ -219,7 +225,13 @@ public actor Conversation {
             p.kill()
             return false
         }
-        guard sessionUp else { return true }
+        guard sessionUp else {
+            // No `ready` yet: it cannot answer pings, so only a startup deadline can find a hang.
+            guard let launched = startedAt, clock.now - launched > config.startupTimeout else { return true }
+            publish(.serviceUnresponsive)
+            p.kill()
+            return false
+        }
         let active = currentTurn != nil || capturing != nil || keyHeld
         let idleDue = lastPingAt.map { clock.now - $0 >= config.idleHeartbeatInterval } ?? true
         if active || idleDue { ping() }

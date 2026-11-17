@@ -491,6 +491,27 @@ struct ConversationTests {
         await again.shutdown()
     }
 
+    /// A service that hangs before it says `ready` (in startup or recovery) answers no ping; the
+    /// startup deadline finds it and it is replaced, instead of "starting" forever.
+    @Test("a service that never becomes ready is replaced")
+    func startupHangIsFound() async throws {
+        let script = TestScratch.url("never-ready")
+        try Data("#!/bin/sh\nexec sleep 30\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        var config = try hungConfig("never-ready", idle: .seconds(60))
+        config.binary = script
+        config.startupTimeout = .milliseconds(600)
+        config.maxRestarts = 1
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        let t0 = ContinuousClock.now
+        try await c.start()
+        #expect(await r.next(timeout: .seconds(3)) { if case .serviceUnresponsive = $0 { true } else { false } } != nil, "the startup hang is found")
+        #expect(ContinuousClock.now - t0 < .seconds(2))
+        #expect(await r.next(timeout: .seconds(3)) { if case .serviceRestarting = $0 { true } else { false } } != nil, "and the service replaced")
+        await c.shutdown()
+    }
+
     /// A turn interrupted while capturing must release its recognizer (a `SpeechAnalyzer` keeps
     /// its model for the process lifetime and would otherwise wait forever).
     @Test("an interrupted capture releases its recognition session")
