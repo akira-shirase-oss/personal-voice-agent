@@ -259,7 +259,10 @@ impl Session {
 
     fn client(&mut self, msg: ClientMessage, out: &mut Vec<Output>) -> Result<(), Refused> {
         match msg {
-            ClientMessage::Hello { .. } | ClientMessage::Flush | ClientMessage::Shutdown => {
+            ClientMessage::Hello { .. }
+            | ClientMessage::Flush
+            | ClientMessage::Ping { .. }
+            | ClientMessage::Shutdown => {
                 return Err(Refused::ShellMessage);
             }
             ClientMessage::PttDown => self.ptt_down(out)?,

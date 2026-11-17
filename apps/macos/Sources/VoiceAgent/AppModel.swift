@@ -216,6 +216,9 @@ final class AppModel {
             service = .restarting(attempt)
         case .serviceGaveUp:
             service = .stopped("The session service keeps stopping. Quit and reopen the app.")
+        case .serviceUnresponsive:
+            stopMicrophone()
+            banner = "The session stopped responding; it is being restarted. Nothing was done."
         case .serviceFailed(let code):
             stopMicrophone()
             let why: String =

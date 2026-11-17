@@ -18,3 +18,4 @@
 {"type":"consent","scope":"personal_voice","grant":false,"rights_review":null}
 {"type":"flush"}
 {"type":"shutdown"}
+{"type":"ping","seq":7}

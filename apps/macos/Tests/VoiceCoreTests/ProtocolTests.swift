@@ -29,7 +29,7 @@ struct ProtocolTests {
             #expect(try jsonObject(again) == jsonObject(line), "\(String(decoding: line, as: UTF8.self))")
             types.insert(message.type)
         }
-        #expect(types.count == 17)
+        #expect(types.count == 18)
     }
 
     @Test("every service line decodes and re-encodes to the same JSON")
@@ -41,7 +41,7 @@ struct ProtocolTests {
             #expect(try jsonObject(again) == jsonObject(line), "\(String(decoding: line, as: UTF8.self))")
             types.insert(message.type)
         }
-        #expect(types.count == 15)
+        #expect(types.count == 16)
     }
 
     @Test("an unknown failure code from a provider becomes error")

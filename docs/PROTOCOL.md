@@ -42,6 +42,7 @@ durations only, never content (D-011).
 | `confirm` | `turn`, `digest`, `approve` (bool) | The user's decision on a `confirm_request` |
 | `consent` | `scope` (`capture`/`personal_voice`), `grant` (bool), `rights_review` (string or null) | Grant or revoke |
 | `flush` | — | Barrier: answered by `flushed` once every earlier record is durable |
+| `ping` | `seq` | Liveness: answered by `pong` at once, without touching the ledger |
 | `shutdown` | — | End the session cleanly |
 
 `proposal`:
@@ -81,6 +82,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `consent_state` | `capture`, `personal_voice` | Current consent after any change |
 | `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`) |
 | `flushed` | `seq` | Every record up to `seq` is durable |
+| `pong` | `seq` | Answer to `ping` with the same `seq` |
 | `error` | `code`, `detail` | Protocol-level error; `detail` never contains content |
 
 Outcomes: `completed`, `interrupted`, `degraded`, `refused`, `rejected`,

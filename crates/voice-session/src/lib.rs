@@ -337,6 +337,7 @@ impl<E: ToolExecutor> Actor<E> {
                 .error("duplicate_hello", "hello was already received")
                 .await
                 .map(|()| None),
+            ClientMessage::Ping { seq } => self.send(ServiceMessage::Pong { seq }).await.map(|()| None),
             ClientMessage::Flush => {
                 match self.ledger.flush(self.io_timeout).await {
                     Ok(seq) => self.send(ServiceMessage::Flushed { seq }).await?,

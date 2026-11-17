@@ -14,3 +14,4 @@
 {"type":"notice","code":"consent_required","turn":null}
 {"type":"flushed","seq":42}
 {"type":"error","code":"bad_message","detail":"malformed line"}
+{"type":"pong","seq":7}

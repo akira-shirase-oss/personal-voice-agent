@@ -71,6 +71,10 @@ pub enum ClientMessage {
         rights_review: Option<String>,
     },
     Flush,
+    /// Liveness: answered by `pong` from the service shell, without touching the ledger.
+    Ping {
+        seq: u64,
+    },
     Shutdown,
 }
 
@@ -94,6 +98,7 @@ impl ClientMessage {
             Self::Confirm { .. } => "confirm",
             Self::Consent { .. } => "consent",
             Self::Flush => "flush",
+            Self::Ping { .. } => "ping",
             Self::Shutdown => "shutdown",
         }
     }
@@ -164,6 +169,9 @@ pub enum ServiceMessage {
         turn: Option<TurnId>,
     },
     Flushed {
+        seq: u64,
+    },
+    Pong {
         seq: u64,
     },
     Error {

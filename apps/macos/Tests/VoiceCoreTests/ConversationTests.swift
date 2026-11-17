@@ -236,6 +236,36 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// A hung service (SIGSTOP) must not keep the microphone open, even while the key is held:
+    /// the app notices the missed heartbeat, stops capture and playback, and replaces it.
+    @Test("a hung service is detected, capture stops, and the service is replaced")
+    func hungService() async throws {
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: try tempDataDir("hung"),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hello", minConfidence: 0.95)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.heartbeatInterval = .milliseconds(200)
+        config.heartbeatTimeout = .milliseconds(800)
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        await c.pushToTalkDown()  // held throughout
+        #expect(await r.next(isCaptureOn) != nil)
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        let stopped = ContinuousClock.now
+        let off = await r.next(timeout: .seconds(4)) { if case .capture(_, on: false) = $0 { true } else { false } }
+        #expect(off != nil, "capture stops although the key is still held")
+        #expect(ContinuousClock.now - stopped < .seconds(3))
+        #expect(await r.seen.contains { if case .serviceUnresponsive = $0 { true } else { false } })
+        #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
+        kill(pid, SIGKILL)
+        await c.shutdown()
+    }
+
     /// A second app on the same data directory: its service refuses to start, and the app says
     /// so instead of restarting it in a loop.
     @Test("a second instance reports 'already running' and does not restart its service")

@@ -177,6 +177,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case confirm(turn: TurnID, digest: String, approve: Bool)
     case consent(scope: ConsentScope, grant: Bool, rightsReview: String?)
     case flush
+    case ping(seq: UInt64)
     case shutdown
 
     public var type: String {
@@ -197,6 +198,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .confirm: "confirm"
         case .consent: "consent"
         case .flush: "flush"
+        case .ping: "ping"
         case .shutdown: "shutdown"
         }
     }
@@ -209,6 +211,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try c.encode(p, forKey: .protocol)
             try c.encode(client, forKey: .client)
         case .pttDown, .interrupt, .flush, .shutdown: break
+        case .ping(let seq): try c.encode(seq, forKey: .seq)
         case .pttUp(let turn): try c.encode(turn, forKey: .turn)
         case .sttFinal(let call, let text, let confidence):
             try c.encode(call, forKey: .call)
@@ -275,6 +278,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
                 scope: try c.decode(ConsentScope.self, forKey: .scope), grant: try c.decode(Bool.self, forKey: .grant),
                 rightsReview: try c.decodeIfPresent(String.self, forKey: .rightsReview))
         case "flush": self = .flush
+        case "ping": self = .ping(seq: try c.decode(UInt64.self, forKey: .seq))
         case "shutdown": self = .shutdown
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message type")
         }
@@ -298,6 +302,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
     case consentState(ConsentState)
     case notice(code: String, turn: TurnID?)
     case flushed(seq: UInt64)
+    case pong(seq: UInt64)
     case error(code: String, detail: String)
 
     public var type: String {
@@ -316,6 +321,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case .consentState: "consent_state"
         case .notice: "notice"
         case .flushed: "flushed"
+        case .pong: "pong"
         case .error: "error"
         }
     }
@@ -357,6 +363,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
                 ConsentState(capture: try c.decode(Bool.self, forKey: .capture), personalVoice: try c.decode(Bool.self, forKey: .personalVoice)))
         case "notice": self = .notice(code: try c.decode(String.self, forKey: .code), turn: try c.decodeIfPresent(TurnID.self, forKey: .turn))
         case "flushed": self = .flushed(seq: try c.decode(UInt64.self, forKey: .seq))
+        case "pong": self = .pong(seq: try c.decode(UInt64.self, forKey: .seq))
         case "error": self = .error(code: try c.decode(String.self, forKey: .code), detail: try c.decode(String.self, forKey: .detail))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown service message type")
         }
@@ -413,7 +420,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case .notice(let code, let turn):
             try c.encode(code, forKey: .code)
             try c.encode(turn, forKey: .turn)
-        case .flushed(let seq): try c.encode(seq, forKey: .seq)
+        case .flushed(let seq), .pong(let seq): try c.encode(seq, forKey: .seq)
         case .error(let code, let detail):
             try c.encode(code, forKey: .code)
             try c.encode(detail, forKey: .detail)

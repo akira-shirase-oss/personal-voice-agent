@@ -24,6 +24,8 @@ public enum ConversationEvent: Sendable {
     /// The service refused to start for a reason a restart cannot fix: `already_running`
     /// (another copy owns the data directory), `store_corrupt` or `store_io`.
     case serviceFailed(String)
+    /// The service stopped answering while a turn was open; it is being replaced.
+    case serviceUnresponsive
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -53,6 +55,10 @@ public struct ConversationConfig: Sendable {
     public var maxRestarts = 5
     /// The app's own bound on one push-to-talk capture, independent of the service.
     public var localCaptureMax: Duration = .seconds(60)
+    /// While a turn is open the app pings the service this often, and treats it as hung when a
+    /// ping goes unanswered for `heartbeatTimeout`.
+    public var heartbeatInterval: Duration = .seconds(1)
+    public var heartbeatTimeout: Duration = .seconds(3)
 
     public init(binary: URL, dataDir: URL, recognizer: any SpeechRecognizing, model: any LanguageModeling, synthesizer: any SpeechSynthesizing) {
         self.binary = binary
@@ -117,6 +123,9 @@ public actor Conversation {
     private var stopping = false
     /// Set when the service reported an error a restart cannot fix.
     private var fatal: String?
+    /// The heartbeat ping awaiting its pong, if any.
+    private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
+    private var pingSeq: UInt64 = 0
     static let fatalCodes: Set<String> = ["already_running", "store_corrupt", "store_io"]
     private static let maxPendingBuffers = 512
 
@@ -134,10 +143,44 @@ public actor Conversation {
         epoch += 1
         player.beginEpoch(epoch)
         process = p
+        pendingPing = nil
+        startHeartbeat(epoch)
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))
         Task { [weak self] in
             for await event in p.events { await self?.handle(event, from: p) }
         }
+    }
+
+    /// While a turn is open or capture is on, ping the service; an unanswered ping past the
+    /// timeout means it is hung (a stopped process answers nothing, not even an exit).
+    private func startHeartbeat(_ e: UInt64) {
+        let interval = config.heartbeatInterval
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(for: interval)
+                guard let self, await self.heartbeat(e) else { return }
+            }
+        }
+    }
+
+    /// One heartbeat tick; false ends the loop for this session.
+    private func heartbeat(_ e: UInt64) -> Bool {
+        guard e == epoch, !stopping, let p = process, p.isRunning else { return false }
+        if let pending = pendingPing {
+            guard clock.now - pending.sentAt > config.heartbeatTimeout else { return true }
+            // Hung: stop everything here, then replace it (the exit starts a new session).
+            emit.yield(.serviceUnresponsive)
+            if let c = capturing { stopMicrophone(c) }
+            player.stop(fence: TurnID(UInt64.max), epoch: epoch)
+            p.kill()
+            return false
+        }
+        if currentTurn != nil || capturing != nil {
+            pingSeq += 1
+            pendingPing = (pingSeq, clock.now)
+            send(.ping(seq: pingSeq))
+        }
+        return true
     }
 
     public func shutdown() {
@@ -317,6 +360,8 @@ public actor Conversation {
             emit.yield(.notice(code))
         case .flushed:
             emit.yield(.notice("flushed"))
+        case .pong(let seq):
+            if pendingPing?.seq == seq { pendingPing = nil }
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }
             emit.yield(.notice(code))
