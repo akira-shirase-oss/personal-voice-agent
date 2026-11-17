@@ -75,6 +75,19 @@ func talk(_ c: Conversation, _ r: Recorder) async throws {
     await c.pushToTalkUp()
 }
 
+/// Counts how many recognition sessions were cancelled (released).
+final class CountingRecognizer: SpeechRecognizing, @unchecked Sendable {
+    let cancels = Mutex(0)
+    final class Session: RecognitionSession, @unchecked Sendable {
+        let owner: CountingRecognizer
+        init(_ owner: CountingRecognizer) { self.owner = owner }
+        func append(_ pcm: PCM) -> Bool { true }
+        func finish() async throws -> HeardText { HeardText(text: "hello", minConfidence: 0.9) }
+        func cancel() async { owner.cancels.withLock { $0 += 1 } }
+    }
+    func begin() async throws -> any RecognitionSession { Session(self) }
+}
+
 /// Stalls on its first turn (so a crash can land mid-turn), then answers like the test provider.
 final class StallOnceProvider: LanguageModeling, @unchecked Sendable {
     let modelID = "stall-once-test-provider"
@@ -267,6 +280,25 @@ struct ConversationTests {
         #expect(await r.seen.contains { if case .serviceUnresponsive = $0 { true } else { false } })
         #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
         kill(pid, SIGKILL)
+        await c.shutdown()
+    }
+
+    /// A turn interrupted while capturing must release its recognizer (a `SpeechAnalyzer` keeps
+    /// its model for the process lifetime and would otherwise wait forever).
+    @Test("an interrupted capture releases its recognition session")
+    func recognizerReleased() async throws {
+        let recognizer = CountingRecognizer()
+        let (c, r, pump) = try makeConversation("release", recognizer: recognizer)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        await c.pushToTalkDown()
+        #expect(await r.next(isCaptureOn) != nil)
+        try await Task.sleep(for: .milliseconds(100))  // the session has started
+        await c.interrupt()
+        _ = await r.next { closed($0) != nil }
+        let deadline = ContinuousClock.now + .seconds(1)
+        while recognizer.cancels.withLock({ $0 }) == 0 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(recognizer.cancels.withLock { $0 } == 1, "the interrupted turn's recognition session was released")
         await c.shutdown()
     }
 

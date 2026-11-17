@@ -351,7 +351,9 @@ public actor Conversation {
             let t = timing.removeValue(forKey: turn) ?? TurnTiming()
             if currentTurn == turn { currentTurn = nil }
             recognition.removeValue(forKey: turn)
-            sessions.removeValue(forKey: turn)
+            // A session never handed to a finish (an interrupt or revocation during capture)
+            // would otherwise wait forever with its model loaded: release it.
+            if let unfinished = sessions.removeValue(forKey: turn) { Task { await unfinished.cancel() } }
             pendingAudio.removeValue(forKey: turn)
             synthesisTail.removeValue(forKey: turn)
             restarts = 0
@@ -420,12 +422,19 @@ public actor Conversation {
     private func recognitionStarted(_ turn: TurnID, _ session: (any RecognitionSession)?) {
         let buffered = pendingAudio.removeValue(forKey: turn) ?? []
         guard let session else { return }
+        guard recognition[turn] != nil else {
+            // The turn closed while the recognizer was starting.
+            Task { await session.cancel() }
+            return
+        }
         for pcm in buffered { session.append(pcm) }
         sessions[turn] = session
     }
 
     private func finishRecognition(call: CallID, turn: TurnID) {
         stopMicrophone(turn)
+        // From here the finishing task owns the session (and cancels it if it is cancelled).
+        sessions.removeValue(forKey: turn)
         let started = recognition[turn]
         let process = self.process
         track(call, turn, Task { [weak self] in
