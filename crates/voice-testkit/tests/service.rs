@@ -833,6 +833,38 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
     assert!(recent.exists(), "a recent session is kept");
 }
 
+/// Retention also runs while the session stays open: an app left running for days must still
+/// expire old logs, not only at its next start.
+#[tokio::test]
+async fn retention_also_runs_while_the_session_is_open() {
+    let dir = voice_testkit::temp_data_dir("retention-open");
+    let mut c = config(&dir);
+    c.retention_every = Duration::from_millis(100);
+    let (stub, _, handle) = start(c).await;
+    // A closed session found only after the start-time pass, 40 days old.
+    let old = dir.join("ledger").join("0001.closed.log");
+    std::fs::write(&old, b"").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_hours(40 * 24))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while old.exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !old.exists(),
+        "a log past retention is deleted while the session is open"
+    );
+    shutdown(stub, handle).await;
+    assert!(
+        ledger(&dir).iter().any(|r| r["kind"] == "history_expired"),
+        "the expiry is on record"
+    );
+}
+
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.
 #[tokio::test]
 async fn logs_carry_no_transcript_or_reply_content() {

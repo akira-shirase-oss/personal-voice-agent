@@ -149,8 +149,8 @@ settled it, it is listed under **Open questions** rather than guessed.
   transcripts now have controls. "Delete history" (`forget` with scope
   `capture`, acting on that consent's deletion scope) deletes every session
   log, the live one included (rotated into a fresh log that records the
-  deletion), and closed logs older than 30 days are deleted at start
-  (`--retention-days`). Both are tested: a sentinel transcript is found
+  deletion), and closed logs older than 30 days are deleted at start and
+  every hour while the session stays open (`--retention-days`). Both are tested: a sentinel transcript is found
   nowhere under the data directory afterwards. Copies in snapshots or
   backups made before the exclusion are not reached. "Delete history" and a
   capture revocation also clear the model's in-memory recap (D-025), so deleted
