@@ -79,6 +79,7 @@ fn every_service_message_type_has_a_golden_line() {
         "notice",
         "flushed",
         "pong",
+        "executed",
         "forgotten",
         "error",
     ];

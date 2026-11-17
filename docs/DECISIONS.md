@@ -126,9 +126,17 @@ settled it, it is listed under **Open questions** rather than guessed.
   logged (an unlink needs no free space) and created after a grant is
   logged; effective consent is "logged and token present", a torn consent
   tail counts as revoked, and a grant that cannot be recorded does not
-  stand. Proven on full HFS+ and APFS images (`tests/disk_full.rs`).
+  stand. Tested on full HFS+ and APFS images (`tests/disk_full.rs`). Only the
+  HFS+ run forces the revocation's log write to fail; on APFS unlinking the
+  token can free enough space for the record to land, so that run checks what
+  the user sees, not the failure path.
   Consent granted before this change has no token and must be granted once
-  more.*
+  more. If the unlink fails too (the data directory cannot be written), the
+  token's mode is set to 0000, a metadata change needing neither free space
+  nor a writable directory, and a token without its owner's read and write
+  bits counts as revoked; so a restart after both the unlink and the log
+  write failed comes back revoked (second review; a `store.rs` test, and a
+  full HFS+ image with the directory made read-only).*
 - **D-018 — Deletion scope is stated honestly.** Deleting a file on APFS
   does not erase its blocks from local snapshots or earlier backups, and
   SQLite-style freelists keep bytes too. So: the data directory is
@@ -144,7 +152,13 @@ settled it, it is listed under **Open questions** rather than guessed.
   deletion), and closed logs older than 30 days are deleted at start
   (`--retention-days`). Both are tested: a sentinel transcript is found
   nowhere under the data directory afterwards. Copies in snapshots or
-  backups made before the exclusion are not reached.*
+  backups made before the exclusion are not reached. "Delete history" and a
+  capture revocation also clear the model's in-memory recap (D-025), so deleted
+  speech never reaches the next prompt; a turn still finishing when history is
+  deleted cannot add its text back (tested, second review N3). The deletion
+  comes before the fresh log is created, so a full disk cannot stop it (it did:
+  `tests/disk_full.rs` on full HFS+ and APFS images), and a deletion that fails
+  is shown to the user (N4).*
 - **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
   after release 3 s; model first output 6 s; model complete 20 s;
   synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;
@@ -155,7 +169,10 @@ settled it, it is listed under **Open questions** rather than guessed.
   feature.** `evals/rights/<provider>-<model>-<date>.md` covers voice
   rights *and* data use; the consent record references it by hash, so a
   model change forces a new review. Until one exists, the personal-voice
-  scope cannot be granted (enforced in the domain).
+  scope cannot be granted (enforced in the domain), and a personal-voice grant
+  found in the consent log does not fold to granted in a build without the
+  voice or without a valid review hash; revoking it mid-turn stops playback
+  like a capture revocation.
 - **D-021 — "Stop" is defined for measurement.** Stop-playback latency is
   from the interrupt event's timestamp to the last non-silent sample
   rendered by the output node. Tests measure it by offline rendering
@@ -189,13 +206,43 @@ settled it, it is listed under **Open questions** rather than guessed.
   cut to 300 characters, instead of one session growing with the whole conversation. The
   first bench (one growing session) showed model latency rising across rounds and 6 of 21
   turns missing the 6 s first-output deadline. Trade-off: the model forgets anything older
-  than two exchanges; long-term memory is V3's reviewed store, not the model's context.
+  than two exchanges; long-term memory is V3's reviewed store, not the model's context. The
+  recap is cleared on "Delete history" and on a capture revocation (D-018).
 - **D-026 — Offline rendering is the deterministic playback test bed.** Playback tests and the
   bench render the player with AVAudioEngine manual offline rendering, so nothing plays on the
   speakers and every sample is inspectable. Two behaviours found by probing are part of the
   contract of those tests: `prepare()` before an offline start makes the first quantum
   silent, and a buffer scheduled on a running node can start a few quanta late — so tests
   render until sound appears and prove silence over windows longer than the audio in question.
+
+- **D-027 — The completion-claim guard fails closed (2026-11-16, second review).** No tool can
+  run in V0–V2, so a model sentence that might say an action happened is never spoken bare. The
+  classifier gives one of three verdicts per sentence while the turn has no executed evidence.
+  *Replace* (spoken as the draft disclaimer): a past, perfect, passive or headline form of an
+  action verb whose subject is the assistant, a task, a person or a pronoun ("Priya has been
+  notified", "$50 sent to Priya", "I'd already sent it"), a completion phrase ("went out",
+  "consider it done"), or "I'm sending it now". *Disclose* (spoken with "Nothing has been done."
+  after it, so a false positive costs a clause, not the sentence): a less certain form — a
+  general verb with a pronoun subject ("It's set in Paris"), a third party's action, a past
+  passive about something other than a task, a claim inside a quoted draft. *Plain*: the rest.
+  Questions, negation, modals, conditionals, habits, the user's own actions, historical markers
+  and attributive adjectives exempt a verb only where they govern it, so "I paid the bill after
+  you confirmed", "No problem I've sent it" and the claim before a tag question ("…, anything
+  else?") are caught. Measured on `fixtures/claims/corpus.tsv`, 334 phrasings: the earlier 136,
+  the second review's 32 listed claims (two as the two-sentence replies it describes) and the 7
+  plain sentences it listed (it did not publish its other 8 claims and 10 plain sentences), and
+  159 added here (tenses, passives, numbers and currency, quoted drafts, multi-clause replies,
+  story, recipe and history prose). Of 169 claims, 161 are replaced, 7 disclosed and **1 is
+  missed (0.6%)**: "Priya should have it by now." Of 165 plain sentences, 149 are spoken intact,
+  **15 get the disclosure (9.1%)** and **1 is replaced (0.6%)**: "Booked solid, the restaurant
+  had no tables." The guard before this change, on the same corpus: 60 of 169 claims spoken
+  bare (35.5%, including all 32 of the review's) and 21 of 165 plain sentences replaced
+  (12.7%). These are rates on a corpus the classifier was tuned against, not on the model's
+  real output, so they are an upper bound on how well it does, not a guarantee. It reads
+  English, plus a short list of other languages' participles of send/pay/book/transfer (any of
+  them counts as a claim; their negation is not parsed). `tests/claims.rs` pins every verdict
+  and fails if a rate rises. Trade-off: a disclosed sentence sounds odd ("It's set in Paris.
+  Nothing has been done."); a fabricated "done" sounds true.
 
 ## Open questions
 

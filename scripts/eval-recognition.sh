@@ -6,7 +6,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-out="$(mktemp -t pva-eval).json"
+tmp="$(mktemp -d -t voice-agent-eval)"
+trap 'rm -rf "$tmp"' EXIT
+out="$tmp/eval.json"
 if [ -n "$(git status --porcelain -- apps fixtures)" ] && [ "${PVA_ALLOW_DIRTY:-}" != 1 ]; then
   echo "refusing to record from a dirty tree: commit first, so the result names the code it measured" >&2
   echo "(PVA_ALLOW_DIRTY=1 records anyway, marked -dirty)" >&2

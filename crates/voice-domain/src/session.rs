@@ -10,7 +10,7 @@ use crate::ids::{CallId, Digest, TurnId};
 use crate::limits::Limits;
 use crate::policy::{self, Decision, Heard, Refusal};
 use crate::proposal::{Action, Proposal, ProposalKind, Slot};
-use crate::protocol::{ClientMessage, FailureReason, Outcome, ServiceMessage, Stage};
+use crate::protocol::{ClientMessage, ExecutionStatus, FailureReason, Outcome, ServiceMessage, Stage};
 use crate::record::Record;
 use crate::tools::{ToolOutcome, ToolRegistry, UncertainReason};
 use std::collections::BTreeMap;
@@ -409,6 +409,7 @@ impl Session {
                 outcome: ToolOutcome::Uncertain { reason: uncertain },
                 reconciled: false,
             }));
+            out.push(executed(t.id, tool, ExecutionStatus::Uncertain));
             self.remember_unresolved(tool, t.id);
         }
         self.turn = Some(t);
@@ -438,7 +439,13 @@ impl Session {
                 reason,
             }));
         }
-        self.abort(UncertainReason::Deadline, out);
+        // A tool still running is uncertain for the reason the turn failed, not always "deadline".
+        let uncertain = match (stage, reason) {
+            (Stage::Ledger, _) => UncertainReason::LedgerUnavailable,
+            (_, FailureReason::Deadline) => UncertainReason::Deadline,
+            _ => UncertainReason::ProviderFailed,
+        };
+        self.abort(uncertain, out);
         out.push(Output::Send(ServiceMessage::Degraded {
             turn: Some(turn),
             stage,
@@ -491,9 +498,11 @@ impl Session {
             deletion_scope: consent::deletion_scope(scope),
         };
         let revoking_capture = scope == ConsentScope::Capture && !grant;
+        // A revoked personal voice must also silence what was already requested in it (V3).
+        let revoking_voice = scope == ConsentScope::PersonalVoice && !grant && self.consent.personal_voice;
         let mut cancelled = None;
         let active = self.active_turn();
-        if revoking_capture && active.is_some() {
+        if (revoking_capture || revoking_voice) && active.is_some() {
             // Stop first, record second: a crash between them leaves capture stopped.
             cancelled = Some(self.abort(UncertainReason::ConsentRevoked, out));
         }
@@ -644,7 +653,8 @@ impl Session {
     }
 
     /// Sends one chunk to synthesis for the active, responding turn. Model sentences go
-    /// through the completion-claim guard; `index` is `None` for session-authored text.
+    /// through the completion-claim guard (replaced, disclosed or spoken as written); `index`
+    /// is `None` for session-authored text.
     fn speak(&mut self, text: &str, index: Option<u32>, out: &mut Vec<Output>) {
         let call = self.alloc_call();
         let voice = self.consent.voice();
@@ -665,10 +675,21 @@ impl Session {
         let mut model_text = None;
         if let Some(index) = index
             && !t.executed
-            && guard::claims_completion(&spoken)
         {
-            out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
-            model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
+            match guard::classify(&spoken) {
+                guard::Verdict::Plain => {}
+                guard::Verdict::Replace => {
+                    out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
+                    model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
+                }
+                guard::Verdict::Disclose => {
+                    out.push(Output::Record(Record::ClaimDisclosed { turn: t.id, index }));
+                    // The chunk stays within its bound with the disclosure appended.
+                    let room = max_chars.saturating_sub(guard::DRAFT_DISCLOSURE.len() + 2);
+                    let kept: String = spoken.chars().take(room).collect();
+                    model_text = Some(std::mem::replace(&mut spoken, guard::disclosed(&kept)));
+                }
+            }
         }
         let seq = r.next_seq;
         r.next_seq += 1;
@@ -890,6 +911,7 @@ impl Session {
             outcome: outcome.clone(),
             reconciled: false,
         }));
+        out.push(executed(turn, call, ExecutionStatus::of(&outcome)));
         let text = match &outcome {
             ToolOutcome::Succeeded { evidence } => {
                 if let Some(t) = self.turn.as_mut() {
@@ -1021,6 +1043,7 @@ impl Session {
                     },
                     reconciled: false,
                 }));
+                out.push(executed(turn, call, ExecutionStatus::Uncertain));
                 self.remember_unresolved(call, turn);
                 out.push(Output::Send(ServiceMessage::Degraded {
                     turn: Some(turn),
@@ -1044,6 +1067,10 @@ fn refusal_text(refusal: Refusal) -> &'static str {
             "I couldn't tell exactly what to do, so I did nothing."
         }
     }
+}
+
+fn executed(turn: TurnId, call: CallId, status: ExecutionStatus) -> Output {
+    Output::Send(ServiceMessage::Executed { turn, call, status })
 }
 
 fn arm(call: CallId, kind: TimerKind, after_ms: u64) -> Output {

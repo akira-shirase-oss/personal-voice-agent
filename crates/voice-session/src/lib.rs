@@ -29,6 +29,8 @@ use voice_domain::tools::{ToolOutcome, ToolRegistry};
 use voice_domain::{CallId, Input, Limits, Output, Session};
 
 const IN_QUEUE: usize = 256;
+/// Malformed lines answered with an `error` per second; the rest are counted, not answered.
+const BAD_LINE_REPLIES_PER_S: u32 = 8;
 const OUT_QUEUE: usize = 256;
 const TOOL_QUEUE: usize = 64;
 
@@ -121,7 +123,36 @@ struct Actor<E> {
     max_records: u64,
     ledger_path: PathBuf,
     ledger_faults: watch::Receiver<Option<Fault>>,
+    bad_lines: BadLines,
     summary: Summary,
+}
+
+/// Rate limit for the replies to malformed lines: a flood of them must not flood the app (or
+/// fill the reply queue until the session ends).
+#[derive(Default)]
+struct BadLines {
+    window: Option<Instant>,
+    answered: u32,
+    unanswered: u64,
+}
+
+impl BadLines {
+    /// Whether this malformed line gets a reply, and how many before it went unanswered.
+    fn admit(&mut self, now: Instant) -> Option<u64> {
+        if self
+            .window
+            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(1))
+        {
+            self.window = Some(now);
+            self.answered = 0;
+        }
+        if self.answered >= BAD_LINE_REPLIES_PER_S {
+            self.unanswered += 1;
+            return None;
+        }
+        self.answered += 1;
+        Some(std::mem::take(&mut self.unanswered))
+    }
 }
 
 /// Opens the store off the async thread; on failure tells the app why (a code, no paths).
@@ -147,15 +178,21 @@ async fn open_store(
         );
     }
     opened.map_err(|e| {
-        let code = match e {
-            StoreError::Corrupt { .. } => "store_corrupt",
-            StoreError::Locked { .. } => "already_running",
-            StoreError::Io { .. } => "store_io",
+        let (code, detail) = match &e {
+            StoreError::Corrupt { .. } => ("store_corrupt", "the ledger could not be opened".to_owned()),
+            StoreError::Locked { holder, .. } => (
+                "already_running",
+                holder.map_or_else(
+                    || "another session service holds the data directory".to_owned(),
+                    |pid| format!("session service process {pid} holds the data directory"),
+                ),
+            ),
+            StoreError::Io { .. } => ("store_io", "the ledger could not be opened".to_owned()),
         };
         log.event("store_failed", &[("code", code.into())]);
         let _ = out.try_send(ServiceMessage::Error {
             code: code.into(),
-            detail: "the ledger could not be opened".into(),
+            detail,
         });
         ServiceError::Store(e)
     })
@@ -287,6 +324,7 @@ impl<E: ToolExecutor> Actor<E> {
             max_records: p.max_records,
             ledger_path,
             ledger_faults,
+            bad_lines: BadLines::default(),
             summary: Summary {
                 session,
                 reason: EndReason::Eof,
@@ -321,8 +359,10 @@ impl<E: ToolExecutor> Actor<E> {
     }
 
     /// Carries out a consent scope's deletion scope now (D-018). For capture: every heard
-    /// transcript, closed or live. The live log is rotated: a fresh one is opened first, the old
-    /// writer is closed, then every other log is deleted.
+    /// transcript, closed or live. The live log is closed, every log is deleted (an unlink needs
+    /// no free space, so a full disk cannot stop it), and only then is a fresh log opened to
+    /// record the deletion. If no fresh log can be created the deletion still stands: the app is
+    /// told what was removed, and the ledger is reported unavailable.
     async fn forget(&mut self, scope: voice_domain::consent::ConsentScope) -> Result<(), Stop> {
         if self.session.active_turn().is_some() {
             let turn = self.session.active_turn();
@@ -343,30 +383,49 @@ impl<E: ToolExecutor> Actor<E> {
                 })
                 .await;
         }
-        let (dir, max) = (self.data_dir.clone(), self.max_records);
-        let Ok(Ok((session, path, writer))) =
-            tokio::task::spawn_blocking(move || store::new_session_log(&dir, max)).await
-        else {
-            return self.error("forget_failed", "a new log could not be started").await;
-        };
-        let old = std::mem::replace(&mut self.ledger, writer);
-        self.ledger_faults = self.ledger.faults();
-        self.ledger_path.clone_from(&path);
-        self.summary.session = session;
+        let old = std::mem::replace(&mut self.ledger, LogWriter::closed());
         let _ = old.close(self.io_timeout).await;
         let dir = self.data_dir.clone();
-        let deleted = tokio::task::spawn_blocking(move || store::delete_history(&dir, &path)).await;
+        let deleted = tokio::task::spawn_blocking(move || store::delete_history(&dir)).await;
+        let fresh = self.open_fresh_log().await;
         let Ok(Ok((files, bytes))) = deleted else {
-            return self.error("forget_failed", "some history could not be deleted").await;
+            self.log.event("forget_failed", &[("fresh_log", fresh.into())]);
+            self.error("forget_failed", "some history could not be deleted").await?;
+            return self.drain_faults().await;
         };
-        self.record(Record::SessionOpened {
-            protocol: PROTOCOL_VERSION,
-            client: "after-forget".into(),
-        })
-        .await;
-        self.record(Record::HistoryDeleted { scope, files, bytes }).await;
-        self.log.event("history_deleted", &[("files", files.into())]);
-        self.send(ServiceMessage::Forgotten { scope, files, bytes }).await
+        if fresh {
+            self.record(Record::SessionOpened {
+                protocol: PROTOCOL_VERSION,
+                client: "after-forget".into(),
+            })
+            .await;
+            self.record(Record::HistoryDeleted { scope, files, bytes }).await;
+        }
+        self.log.event(
+            "history_deleted",
+            &[("files", files.into()), ("fresh_log", fresh.into())],
+        );
+        self.send(ServiceMessage::Forgotten { scope, files, bytes }).await?;
+        self.drain_faults().await
+    }
+
+    /// Opens a new session log in place of the closed one; false (and the ledger down) if it
+    /// cannot be created.
+    async fn open_fresh_log(&mut self) -> bool {
+        let (dir, max) = (self.data_dir.clone(), self.max_records);
+        if let Ok(Ok((session, path, writer))) =
+            tokio::task::spawn_blocking(move || store::new_session_log(&dir, max)).await
+        {
+            self.ledger = writer;
+            self.ledger_faults = self.ledger.faults();
+            self.ledger_path = path;
+            self.summary.session = session;
+            true
+        } else {
+            self.ledger_faults = self.ledger.faults();
+            self.ledger_down(FailureReason::LedgerIo);
+            false
+        }
     }
 
     async fn handshake(
@@ -392,7 +451,7 @@ impl<E: ToolExecutor> Actor<E> {
                     let _ = self.error("hello_required", "send hello first").await;
                 }
                 Some(framing::Inbound::Bad(code)) => {
-                    let _ = self.error(code, "malformed line").await;
+                    let _ = self.bad_line(code).await;
                 }
                 Some(framing::Inbound::ReadError) => return Err(EndReason::ReadError),
                 Some(framing::Inbound::Eof) | None => return Err(EndReason::Eof),
@@ -407,12 +466,19 @@ impl<E: ToolExecutor> Actor<E> {
         consent_faults: &mut watch::Receiver<Option<Fault>>,
     ) -> EndReason {
         loop {
+            // Inbound lines are taken first (biased), so a flood of them would hold back every
+            // deadline; a due timer is served before the next line instead.
+            if self.timers.next().is_some_and(|at| at <= Instant::now())
+                && let Err(Stop::ClientGone) = self.fire_due().await
+            {
+                return EndReason::ClientUnresponsive;
+            }
             let next_deadline = self.timers.next();
             let result = tokio::select! {
                 biased;
                 inbound = in_rx.recv() => match inbound {
                     Some(framing::Inbound::Message(msg)) => self.message(msg).await,
-                    Some(framing::Inbound::Bad(code)) => self.error(code, "malformed line").await.map(|()| None),
+                    Some(framing::Inbound::Bad(code)) => self.bad_line(code).await.map(|()| None),
                     Some(framing::Inbound::ReadError) => return EndReason::ReadError,
                     Some(framing::Inbound::Eof) | None => return EndReason::Eof,
                 },
@@ -649,6 +715,23 @@ impl<E: ToolExecutor> Actor<E> {
             .send_timeout(msg, self.io_timeout)
             .await
             .map_err(|_| Stop::ClientGone)
+    }
+
+    /// Answers a malformed line, within the rate limit.
+    async fn bad_line(&mut self, code: &str) -> Result<(), Stop> {
+        let Some(unanswered) = self.bad_lines.admit(Instant::now()) else {
+            return Ok(());
+        };
+        if unanswered == 0 {
+            return self.error(code, "malformed line").await;
+        }
+        self.log
+            .event("malformed_lines_unanswered", &[("count", unanswered.into())]);
+        self.error(
+            code,
+            &format!("malformed line; {unanswered} earlier ones were not answered"),
+        )
+        .await
     }
 
     async fn error(&self, code: &str, detail: &str) -> Result<(), Stop> {

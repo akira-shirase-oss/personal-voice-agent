@@ -9,6 +9,8 @@ struct TurnRow: Identifiable {
     let id: TurnID
     var heard: String?
     var spoken: [String] = []
+    /// Tool results the service recorded for this turn; empty means nothing executed.
+    var executed: [ExecutionStatus] = []
     var outcome: Outcome?
     var problem: String?
     var firstAudioMs: Int?
@@ -45,6 +47,8 @@ final class AppModel {
     var confirmation: PendingConfirmation?
     var banner: String?
     var holding = false
+    /// The microphone is actually capturing (the service said `capture on` while the key is held).
+    var micOn = false
     var installingSpeech = false
 
     private var conversation: Conversation?
@@ -162,6 +166,7 @@ final class AppModel {
         Task { for await pcm in stream { await conversation.feed(pcm) } }
         do {
             try capture.start { pcm in continuation.yield(pcm) }
+            micOn = true
         } catch {
             banner = micGranted ? "The microphone could not start." : "Microphone access is off. Allow it to talk."
             continuation.finish()
@@ -169,6 +174,7 @@ final class AppModel {
     }
 
     private func stopMicrophone() {
+        micOn = false
         capture.stop()
         feeder?.finish()
         feeder = nil
@@ -199,6 +205,7 @@ final class AppModel {
         case .capture(_, let on): if on && holding { startMicrophone() } else { stopMicrophone() }
         case .heard(let t, let text): row(t) { $0.heard = text }
         case .speaking(let t, let text): row(t) { $0.spoken.append(text) }
+        case .executed(let t, let status): row(t) { $0.executed.append(status) }
         case .confirm(let turn, let digest, let heard, let tool, let slots, let reasons):
             confirmation = PendingConfirmation(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons)
         case .turnClosed(let t, let outcome, let timing):
@@ -215,6 +222,8 @@ final class AppModel {
         case .notice(let code):
             if code == "consent_required" { banner = "Turn on “Listen while I hold Space” to talk." }
             if code == "forget_refused_turn_active" { banner = "Finish or stop the current turn, then delete history." }
+            if code == "service_not_running" { banner = "The session is restarting; press Space again in a moment." }
+            if code == "stale_service_stopped" { banner = "A session left running by an earlier run of the app was stopped." }
         case .serviceExited:
             service = .restarting(0)
             stopMicrophone()
@@ -225,17 +234,22 @@ final class AppModel {
         case .forgotten(let files, _):
             turns.removeAll()
             banner = "History deleted: \(files) session log(s) removed from this Mac (backups made earlier are not touched)."
+        case .forgetFailed:
+            banner = "History could not be deleted completely; some of what you said may still be on this Mac. Try again."
         case .eventsDropped(let n):
             banner = "The window fell behind and missed \(n) update(s); what it shows may be out of date."
         case .serviceUnresponsive:
             stopMicrophone()
+            service = .restarting(0)
             banner = "The session stopped responding; it is being restarted. Nothing was done."
         case .serviceFailed(let code):
             stopMicrophone()
             let why: String =
                 switch code {
-                case "already_running": "Another copy of the app is already running."
+                case "already_running": "Another copy of the app is using its data; this one takes over when that one quits."
                 case "store_corrupt": "The session record is damaged and was not changed. See docs/DRILLS.md."
+                case "binary_missing": "The session service (voice-session) is missing. Reinstall the app."
+                case "launch_failed": "The session service could not be started again. Quit and reopen the app."
                 default: "The session record could not be opened (disk full or unreadable)."
                 }
             service = .stopped(why)

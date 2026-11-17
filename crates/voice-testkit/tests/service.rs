@@ -23,12 +23,14 @@ use voice_testkit::{
     FixtureTools, INJECTED_EVIDENCE, Stub, fixture_registry, grant_capture, heard, lm_done, reply_turn, start, talk,
 };
 
-fn config(name: &str) -> Config<NoTools> {
-    Config::new(voice_testkit::temp_data_dir(name), NoTools, Log::off())
+/// A config on `dir`; the test keeps `dir` (a `TempDir`) alive, so it is removed when the test
+/// ends, pass or fail.
+fn config(dir: &Path) -> Config<NoTools> {
+    Config::new(dir.to_path_buf(), NoTools, Log::off())
 }
 
-fn tool_config(name: &str, tools: FixtureTools, limits: Limits) -> Config<FixtureTools> {
-    let mut c = Config::new(voice_testkit::temp_data_dir(name), tools, Log::off());
+fn tool_config(dir: &Path, tools: FixtureTools, limits: Limits) -> Config<FixtureTools> {
+    let mut c = Config::new(dir.to_path_buf(), tools, Log::off());
     c.tools = fixture_registry();
     c.limits = limits;
     c
@@ -88,8 +90,8 @@ async fn shutdown(
 
 #[tokio::test]
 async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed() {
-    let c = config("reply");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("reply");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let closed = reply_turn(
@@ -138,9 +140,9 @@ async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed()
 /// degraded, and never invents a result — a late answer is dropped.
 #[tokio::test]
 async fn a_stalled_model_is_cut_off_at_its_deadline() {
-    let mut c = config("stall");
+    let dir = voice_testkit::temp_data_dir("stall");
+    let mut c = config(&dir);
     c.limits.lm_first_ms = 80;
-    let dir = c.data_dir.clone();
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "hello", 0.99).await;
@@ -200,7 +202,8 @@ async fn a_stalled_model_is_cut_off_at_its_deadline() {
 /// and no late chunk of the old turn is ever requested.
 #[tokio::test]
 async fn interrupting_mid_utterance_stops_and_drops_the_old_turn() {
-    let (mut stub, _, handle) = start(config("interrupt")).await;
+    let dir = voice_testkit::temp_data_dir("interrupt");
+    let (mut stub, _, handle) = start(config(&dir)).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "tell me a story", 0.99).await;
     stub.send(&C::LmKind {
@@ -254,8 +257,8 @@ async fn interrupting_mid_utterance_stops_and_drops_the_old_turn() {
 /// can start; the revocation is in the consent log.
 #[tokio::test]
 async fn revoking_consent_mid_turn_stops_capture_and_blocks_further_turns() {
-    let c = config("revoke");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("revoke");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     stub.send(&C::PttDown).await;
@@ -308,9 +311,7 @@ async fn revoking_consent_mid_turn_stops_capture_and_blocks_further_turns() {
         "append-only: the grant and the revocation are both kept"
     );
     // A new service start folds the log: consent stays revoked.
-    let mut c = config("revoke-restart");
-    c.data_dir = dir;
-    let (stub, ready, handle) = start(c).await;
+    let (stub, ready, handle) = start(config(&dir)).await;
     assert!(matches!(ready, S::Ready { consent, .. } if !consent.capture));
     shutdown(stub, handle).await;
 }
@@ -325,7 +326,8 @@ async fn ambiguous_requests_wait_for_confirmation_and_expire_unexecuted() {
         confirm_ms: 100,
         ..Limits::default()
     };
-    let (mut stub, _, handle) = start(tool_config("ambiguous", tools, limits)).await;
+    let dir = voice_testkit::temp_data_dir("ambiguous");
+    let (mut stub, _, handle) = start(tool_config(&dir, tools, limits)).await;
     grant_capture(&mut stub).await;
 
     // Low confidence: confirmation, then nobody answers.
@@ -397,7 +399,8 @@ async fn ambiguous_requests_wait_for_confirmation_and_expire_unexecuted() {
 async fn adversarial_tool_output_and_speech_cannot_invoke_tools() {
     let tools = FixtureTools::default();
     let runs = Arc::clone(&tools.runs);
-    let (mut stub, _, handle) = start(tool_config("adversarial", tools, Limits::default())).await;
+    let dir = voice_testkit::temp_data_dir("adversarial");
+    let (mut stub, _, handle) = start(tool_config(&dir, tools, Limits::default())).await;
     grant_capture(&mut stub).await;
 
     let (_, lm) = heard(&mut stub, "look up weather", 0.99).await;
@@ -458,8 +461,8 @@ async fn a_hung_tool_is_recorded_uncertain() {
         tool_ms: 80,
         ..Limits::default()
     };
-    let c = tool_config("hang", FixtureTools::default(), limits);
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("hang");
+    let c = tool_config(&dir, FixtureTools::default(), limits);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (turn, lm) = heard(&mut stub, "hang on", 0.99).await;
@@ -515,7 +518,8 @@ async fn completion_claims_without_evidence_never_reach_synthesis() {
         "I've moved the meeting to 3pm.",
         "I've sent it.",
     ];
-    let (mut stub, _, handle) = start(config("claims")).await;
+    let dir = voice_testkit::temp_data_dir("claims");
+    let (mut stub, _, handle) = start(config(&dir)).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "send Priya a message", 0.99).await;
     stub.send(&C::LmKind {
@@ -542,12 +546,81 @@ async fn completion_claims_without_evidence_never_reach_synthesis() {
     shutdown(stub, handle).await;
 }
 
+/// Fail closed: the second review's off-corpus claims are replaced or disclosed through the
+/// real service, never spoken as written, and its plain sentences keep their words.
+#[tokio::test]
+async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_words() {
+    let claims = [
+        "Priya has been notified.",
+        "Dinner is booked for 8.",
+        "$50 sent to Priya.",
+        "I paid the bill after you confirmed.",
+        "I've booked the table for 7, anything else?",
+        "No problem I've sent it.",
+        "I'd already sent it.",
+        "Sending it now!",
+        "Your message went out.",
+        "Pago enviado.",
+    ];
+    let plain = [
+        ("It's set in Paris.", "It's set in Paris. Nothing has been done."),
+        ("That's changed a lot since 2020.", "That's changed a lot since 2020."),
+        ("I called it a day.", "I called it a day."),
+    ];
+    let dir = voice_testkit::temp_data_dir("claims-fail-closed");
+    let c = config(&dir);
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "send Priya fifty dollars", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    let mut index = 0;
+    let mut say = async |stub: &mut Stub, text: &str| {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index,
+            text: text.into(),
+        })
+        .await;
+        index += 1;
+        let (S::TtsRequest { text, .. }, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await else {
+            unreachable!()
+        };
+        text
+    };
+    for claim in claims {
+        let said = say(&mut stub, claim).await;
+        assert!(
+            said == voice_domain::guard::DRAFT_DISCLAIMER || said.ends_with(voice_domain::guard::DRAFT_DISCLOSURE),
+            "spoken without evidence: {claim} -> {said}"
+        );
+    }
+    for (sentence, expected) in plain {
+        assert_eq!(say(&mut stub, sentence).await, expected);
+    }
+    stub.send(&C::Interrupt).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let recs = ledger(&dir);
+    let disclosed = recs.iter().filter(|r| r["kind"] == "claim_disclosed").count();
+    let suppressed = recs.iter().filter(|r| r["kind"] == "claim_suppressed").count();
+    assert_eq!(
+        disclosed + suppressed,
+        claims.len() + 1,
+        "every guarded sentence is on record"
+    );
+    assert!(disclosed >= 1, "the possible claim was disclosed, not replaced");
+}
+
 /// What was said is evidence too: every chunk sent to synthesis is in the ledger with its
 /// exact text, and a replaced claim keeps the model's original next to what was spoken.
 #[tokio::test]
 async fn what_was_spoken_is_ledgered() {
-    let c = config("spoken");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("spoken");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "tell me about Paris", 0.99).await;
@@ -589,8 +662,8 @@ async fn what_was_spoken_is_ledgered() {
 /// the 64 KiB limit but the record built from it would not.
 #[tokio::test]
 async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
-    let c = tool_config("oversized", FixtureTools::default(), Limits::default());
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("oversized");
+    let c = tool_config(&dir, FixtureTools::default(), Limits::default());
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let (_, lm) = heard(&mut stub, "note this", 0.99).await;
@@ -632,17 +705,15 @@ async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
 /// file system — closed sessions and the current one — and the session carries on.
 #[tokio::test]
 async fn forgetting_capture_data_deletes_every_transcript() {
-    let c = config("forget");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("forget");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let secret = "TANGERINE-HARBOUR-4417";
     reply_turn(&mut stub, &format!("remember {secret}"), &["Okay."]).await;
     shutdown(stub, handle).await;
     // A second session, with the first one's transcript closed on disk.
-    let mut c = config("forget-2");
-    c.data_dir.clone_from(&dir);
-    let (mut stub, _, handle) = start(c).await;
+    let (mut stub, _, handle) = start(config(&dir)).await;
     reply_turn(&mut stub, &format!("and again {secret}"), &["Sure."]).await;
     stub.send(&C::Forget {
         scope: ConsentScope::Capture,
@@ -677,6 +748,38 @@ async fn forgetting_capture_data_deletes_every_transcript() {
     );
 }
 
+/// A forget that cannot delete everything says so (`forget_failed`), never `forgotten`, and the
+/// session carries on in a fresh log.
+#[tokio::test]
+async fn a_forget_that_cannot_delete_everything_says_so() {
+    let dir = voice_testkit::temp_data_dir("forget-fails");
+    let c = config(&dir);
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    reply_turn(&mut stub, "remember the blue door", &["Okay."]).await;
+    // An entry `remove_file` cannot delete: a directory inside the ledger.
+    let stuck = dir.join("ledger").join("stuck.closed.log");
+    std::fs::create_dir_all(stuck.join("inner")).unwrap();
+    stub.send(&C::Forget {
+        scope: ConsentScope::Capture,
+    })
+    .await;
+    let (m, skipped) = stub.until(|m| matches!(m, S::Error { .. } | S::Forgotten { .. })).await;
+    assert!(
+        matches!(&m, S::Error { code, .. } if code == "forget_failed"),
+        "a partial deletion is reported as failed: {m:?} after {skipped:?}"
+    );
+    reply_turn(&mut stub, "what time is it", &["Late."]).await;
+    shutdown(stub, handle).await;
+    std::fs::remove_dir_all(stuck).unwrap();
+    assert!(
+        ledger(&dir)
+            .iter()
+            .any(|r| r["kind"] == "heard" && r["text"] == "what time is it"),
+        "the session carried on in a fresh log"
+    );
+}
+
 fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).unwrap() {
@@ -707,9 +810,7 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
         .unwrap()
         .set_modified(forty_days)
         .unwrap();
-    let mut c = config("retention");
-    c.data_dir.clone_from(&dir);
-    let (stub, _, handle) = start(c).await;
+    let (stub, _, handle) = start(config(&dir)).await;
     shutdown(stub, handle).await;
     assert!(!old.exists(), "a 40-day-old session is past the 30-day default");
     assert!(recent.exists(), "a recent session is kept");
@@ -719,9 +820,9 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
 #[tokio::test]
 async fn logs_carry_no_transcript_or_reply_content() {
     let log = Log::memory();
-    let mut c = Config::new(voice_testkit::temp_data_dir("logs"), NoTools, log.clone());
+    let dir = voice_testkit::temp_data_dir("logs");
+    let mut c = Config::new(dir.to_path_buf(), NoTools, log.clone());
     c.limits.lm_first_ms = 60;
-    let dir = c.data_dir.clone();
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let secret = "PURPLE-ELEPHANT-7731";
@@ -754,7 +855,8 @@ async fn logs_carry_no_transcript_or_reply_content() {
 async fn the_protocol_refuses_garbage_without_dropping_the_session() {
     let (app, service) = tokio::io::duplex(64 * 1024);
     let (sr, sw) = tokio::io::split(service);
-    let handle = tokio::spawn(voice_session::run(sr, sw, config("protocol")));
+    let dir = voice_testkit::temp_data_dir("protocol");
+    let handle = tokio::spawn(voice_session::run(sr, sw, config(&dir)));
     let (ar, aw) = tokio::io::split(app);
     let mut w = aw;
     let mut r = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(ar));
@@ -782,11 +884,71 @@ async fn the_protocol_refuses_garbage_without_dropping_the_session() {
     assert_eq!(summary.reason, EndReason::Eof);
 }
 
+/// A flood of malformed lines must neither hold back a deadline nor flood the app with replies:
+/// a due timer is served before the next inbound line, and malformed lines are answered at most
+/// a few times a second. (An independent review measured a 200 ms model deadline stretched to
+/// 464 ms by such a flood, with an `error` sent for every line.)
+#[tokio::test]
+async fn a_flood_of_malformed_lines_neither_stretches_a_deadline_nor_floods_the_app() {
+    let dir = voice_testkit::temp_data_dir("flood");
+    let mut c = config(&dir);
+    c.limits.lm_first_ms = 200;
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, _lm) = heard(&mut stub, "tell me something", 0.99).await;
+    let armed = Instant::now();
+    let (mut w, mut r) = stub.into_parts();
+    let flood = tokio::spawn(async move {
+        let batch = b"not json\n".repeat(4_096);
+        let until = Instant::now() + Duration::from_millis(1_500);
+        while Instant::now() < until && w.write_all(&batch).await.is_ok() {
+            tokio::task::yield_now().await;
+        }
+        w
+    });
+    let (mut errors, mut degraded) = (0u64, None);
+    loop {
+        let wait = Duration::from_millis(if degraded.is_some() { 250 } else { 5_000 });
+        match tokio::time::timeout(wait, r.next_line()).await {
+            Ok(Ok(Some(line))) => match serde_json::from_str::<S>(&line).unwrap() {
+                S::Error { .. } => errors += 1,
+                S::Degraded {
+                    stage: Stage::Lm,
+                    reason: FailureReason::Deadline,
+                    ..
+                } if degraded.is_none() => degraded = Some(armed.elapsed()),
+                _ => {}
+            },
+            Err(_) if degraded.is_some() && !flood.is_finished() => {}
+            _ => break,
+        }
+    }
+    let mut w = flood.await.unwrap();
+    let degraded = degraded.expect("the model deadline fired during the flood");
+    println!("flood: degraded after {degraded:?}, {errors} error replies");
+    assert!(
+        degraded < Duration::from_millis(600),
+        "a 200 ms deadline held back to {degraded:?} by a flood of malformed lines"
+    );
+    assert!(
+        errors <= 40,
+        "{errors} error replies for one flood: the app is flooded back"
+    );
+    w.shutdown().await.unwrap();
+    while let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_secs(5), r.next_line()).await {}
+    assert_eq!(
+        handle.await.unwrap().unwrap().reason,
+        EndReason::Eof,
+        "the session survived the flood"
+    );
+}
+
 #[tokio::test]
 async fn a_wrong_protocol_version_ends_the_handshake() {
     let (app, service) = tokio::io::duplex(64 * 1024);
     let (sr, sw) = tokio::io::split(service);
-    let handle = tokio::spawn(voice_session::run(sr, sw, config("version")));
+    let dir = voice_testkit::temp_data_dir("version");
+    let handle = tokio::spawn(voice_session::run(sr, sw, config(&dir)));
     let (ar, mut aw) = tokio::io::split(app);
     aw.write_all(b"{\"type\":\"hello\",\"protocol\":2,\"client\":\"future\"}\n")
         .await
@@ -799,8 +961,8 @@ async fn a_wrong_protocol_version_ends_the_handshake() {
 
 #[tokio::test]
 async fn closing_stdin_mid_turn_closes_the_turn_honestly() {
-    let c = config("eof");
-    let dir = c.data_dir.clone();
+    let dir = voice_testkit::temp_data_dir("eof");
+    let c = config(&dir);
     let (mut stub, _, handle) = start(c).await;
     grant_capture(&mut stub).await;
     let _ = talk(&mut stub).await;

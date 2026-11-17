@@ -39,7 +39,7 @@ pub enum StoreError {
         why: &'static str,
     },
     #[error("another session service is using {path}")]
-    Locked { path: PathBuf },
+    Locked { path: PathBuf, holder: Option<u32> },
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> StoreError + '_ {
@@ -269,10 +269,13 @@ fn append_now<T: Serialize>(path: &Path, session: &str, mut seq: u64, records: &
     Ok(seq)
 }
 
-/// Consent tokens: `consent.<scope>.granted` exists only while a grant stands. A revocation
-/// unlinks it before the log record is appended, and an unlink needs no free space, so a
-/// revocation holds on disk even when the log cannot be written. Effective consent at start
-/// is "the log says granted and the token exists" (D-017, amended).
+/// Consent tokens: `consent.<scope>.granted`, an empty file with mode 0600, stands only while a
+/// grant stands. A revocation unlinks it before the log record is appended, and an unlink needs
+/// no free space, so a revocation holds on disk even when the log cannot be written. If the
+/// unlink fails too (the directory cannot be written), the token's mode is set to 0000 instead:
+/// a metadata change that needs neither free space nor a writable directory. Effective consent
+/// at start is "the log says granted and the token exists with its owner's read and write
+/// bits" (D-017, amended).
 #[derive(Clone, Debug)]
 pub struct ConsentTokens {
     dir: PathBuf,
@@ -292,11 +295,19 @@ impl ConsentTokens {
     }
 
     pub fn granted(&self, scope: ConsentScope) -> bool {
-        self.path(scope).exists()
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(self.path(scope)).is_ok_and(|m| m.permissions().mode() & 0o600 == 0o600)
     }
 
     pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         let path = self.path(scope);
+        // A token left at 0000 by a revocation that could not unlink it: restore its mode first
+        // (a chmod needs ownership, not write permission).
+        match fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let f = OpenOptions::new()
             .write(true)
             .create(true)
@@ -307,11 +318,20 @@ impl ConsentTokens {
         File::open(&self.dir)?.sync_all()
     }
 
+    /// Unlinks the token; if that fails, sets its mode to 0000. Neither needs free space, and
+    /// the second needs no writable directory. An error only when both fail; the revocation then
+    /// stands in memory alone.
     pub fn revoke(&self, scope: ConsentScope) -> io::Result<()> {
-        match fs::remove_file(self.path(scope)) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.path(scope);
+        match fs::remove_file(&path) {
             Ok(()) => File::open(&self.dir)?.sync_all(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+            Err(unlink) => {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|_| unlink)?;
+                // The mode change is metadata; make it durable through the file itself.
+                File::open(&self.dir)?.sync_all()
+            }
         }
     }
 }
@@ -330,21 +350,40 @@ pub struct Opened {
 
 /// One service per data directory, taken before anything is read: a second instance would
 /// otherwise "recover" the first one's live session and write the consent log with its own
-/// sequence counter. The lock lives as long as the returned file (the process).
+/// sequence counter. The lock lives as long as the returned file (the process). The holder
+/// writes its process ID into the file (never truncated before the lock is held), so a relaunched
+/// app can tell a stale orphan of its own from another running copy.
 fn lock_dir(dir: &Path) -> Result<File, StoreError> {
     let path = dir.join("lock");
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
+        .read(true)
         .write(true)
         .mode(0o600)
         .open(&path)
         .map_err(io_err(&path))?;
     match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked { path: dir.to_owned() }),
+        Ok(()) => {
+            let mut holder = &lock;
+            holder
+                .set_len(0)
+                .and_then(|()| holder.write_all(format!("{}\n", std::process::id()).as_bytes()))
+                .and_then(|()| holder.sync_data())
+                .map_err(io_err(&path))?;
+            Ok(lock)
+        }
+        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked {
+            path: dir.to_owned(),
+            holder: lock_holder(dir),
+        }),
         Err(fs::TryLockError::Error(e)) => Err(io_err(&path)(e)),
     }
+}
+
+/// The process ID the data directory's lock holder wrote, if any.
+pub fn lock_holder(dir: &Path) -> Option<u32> {
+    fs::read_to_string(dir.join("lock")).ok()?.trim().parse().ok()
 }
 
 /// Opens the data directory: repairs and folds the consent log, closes every session a crash
@@ -442,11 +481,12 @@ pub fn new_session_log(dir: &Path, max_records: u64) -> Result<(String, PathBuf,
     Ok((session, path, writer))
 }
 
-/// Deletes every session log except `keep` (the live one), then syncs the directory.
-/// Returns the files and bytes removed. D-018: this removes them from the live file system;
-/// copies in APFS snapshots or backups made before the data directory's exclusion remain.
-pub fn delete_history(dir: &Path, keep: &Path) -> Result<(u32, u64), StoreError> {
-    remove_logs(dir, |p| p != keep)
+/// Deletes every session log, the live one included (its writer must be closed first), then
+/// syncs the directory. Needs no free space. Returns the files and bytes removed. D-018: this
+/// removes them from the live file system; copies in APFS snapshots or backups made before the
+/// data directory's exclusion remain.
+pub fn delete_history(dir: &Path) -> Result<(u32, u64), StoreError> {
+    remove_logs(dir, |_| true)
 }
 
 /// Deletes closed session logs last modified more than `older_than` ago.
@@ -625,6 +665,19 @@ impl<T: Serialize + Send + 'static> LogWriter<T> {
         result
     }
 
+    /// A writer with no file that refuses every record (`Closed`): what the session holds
+    /// between closing its log for `forget` and opening the fresh one, or instead of a fresh one
+    /// that could not be created.
+    pub fn closed() -> Self {
+        let (tx, _) = mpsc::channel(1);
+        let (_, fault) = watch::channel(Some(Fault::Io));
+        Self {
+            tx,
+            fault,
+            thread: None,
+        }
+    }
+
     /// Resolves when the writer reports a fault (an I/O error or the record cap).
     pub fn faults(&self) -> watch::Receiver<Option<Fault>> {
         self.fault.clone()
@@ -741,10 +794,26 @@ mod tests {
     use voice_domain::protocol::Outcome;
     use voice_domain::record::CloseReason;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    /// Removed with its contents when dropped, also when an assertion fails.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(name: &str) -> TempDir {
         let dir = std::env::temp_dir().join(format!("pva-store-{name}-{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 
     fn write_lines(path: &Path, records: &[Record]) {
@@ -767,7 +836,7 @@ mod tests {
         let opened = open(&dir, 10).unwrap();
         let synced = SYNCED_DIRS.lock().unwrap().clone();
         assert!(
-            synced.contains(&dir),
+            synced.contains(&dir.0),
             "the new consent.log's entry in the data directory"
         );
         assert!(
@@ -1027,6 +1096,45 @@ mod tests {
         assert!(!opened.consent_state.capture);
         assert_eq!(opened.recovered.torn_tails, 1);
         assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
+        // A token set to 0000 (a revocation that could not unlink it) is revoked, and a later
+        // grant restores it.
+        let dir = temp_dir("token-mode");
+        write_consent(&dir, &[consent(true)]);
+        let tokens = ConsentTokens::new(&dir);
+        tokens.grant(ConsentScope::Capture).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.join("consent.capture.granted"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        assert!(!tokens.granted(ConsentScope::Capture));
+        tokens.grant(ConsentScope::Capture).unwrap();
+        assert!(tokens.granted(ConsentScope::Capture), "a grant restores a 0000 token");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.join("consent.capture.granted"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        assert!(!open(&dir, 100).unwrap().consent_state.capture);
+    }
+
+    /// The residual case of the second review: the token cannot be unlinked (the directory is not
+    /// writable) and the revocation's record never reaches the log at all (not even torn). The
+    /// revocation must still hold at the next start.
+    #[test]
+    fn a_revocation_holds_when_the_token_cannot_be_unlinked_and_nothing_was_logged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("token-stuck");
+        write_consent(&dir, &[consent(true)]);
+        let tokens = ConsentTokens::new(&dir);
+        tokens.grant(ConsentScope::Capture).unwrap();
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let revoked = tokens.revoke(ConsentScope::Capture);
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(revoked.is_ok(), "the revocation reached the token: {revoked:?}");
+        assert!(dir.join("consent.capture.granted").exists(), "the unlink really failed");
+        assert!(
+            !open(&dir, 100).unwrap().consent_state.capture,
+            "the log still says granted, but the token says revoked"
+        );
     }
 
     /// Batches are cut at 1 MiB (so a power loss leaves at most that much unsynced), and the

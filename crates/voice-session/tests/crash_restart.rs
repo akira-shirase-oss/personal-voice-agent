@@ -13,6 +13,31 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
+/// A scratch data directory, removed with its contents when dropped (also on a failed assertion):
+/// data directories hold heard transcripts.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("pva-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct Service {
     child: Child,
     stdin: ChildStdin,
@@ -92,8 +117,7 @@ fn session_files(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_killed_service_restarts_with_its_ledger_intact_and_open_turns_closed() {
-    let dir = std::env::temp_dir().join(format!("pva-crash-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("crash");
 
     let mut s = Service::start(&dir);
     assert_eq!(s.until("ready")["recovered"]["sessions"], 0);
@@ -179,14 +203,12 @@ fn a_killed_service_restarts_with_its_ledger_intact_and_open_turns_closed() {
     let files = session_files(&dir);
     assert_eq!(files.len(), 2);
     assert!(files.iter().all(|f| f.to_string_lossy().ends_with(".closed.log")));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn files_are_private_to_the_user() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("pva-perms-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("perms");
     let mut s = Service::start(&dir);
     s.until("ready");
     s.send(&json!({"type":"shutdown"}));
@@ -198,5 +220,4 @@ fn files_are_private_to_the_user() {
     for f in session_files(&dir) {
         assert_eq!(mode(&f), 0o600);
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

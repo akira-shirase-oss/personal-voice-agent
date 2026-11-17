@@ -9,13 +9,23 @@ durations only, never content (D-011).
 - A line longer than **65,536 bytes** is rejected (`error`
   `line_too_long`) and discarded up to its newline.
 - Unknown `type` or malformed JSON → `error` `bad_message`; the session
-  continues.
+  continues. At most 8 malformed lines a second are answered; the rest are
+  counted, and the next answer's `detail` says how many went unanswered. A
+  flood of them never delays a deadline: a due timer is served before the
+  next inbound line.
 - The first app message must be `hello`; anything else first is
   `error` `hello_required`.
 - stdin EOF ends the session cleanly (`session_closed` is recorded).
 - A service that cannot open its data directory sends one `error` before exiting:
   `already_running` (another service holds the directory's lock; exit code 6),
-  `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for these.
+  `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for the last
+  two. The lock holder writes its process ID into `<data-dir>/lock`; on `already_running` the
+  app reads it, stops a stale orphan of its own (the same `voice-session` binary whose parent
+  app has died, so its parent is launchd: SIGTERM, then SIGKILL) and starts again, and
+  otherwise waits for the other copy, retrying after 250 ms, doubling to at most 5 s, for as
+  long as it takes.
+- On quit the app sends `shutdown` and closes stdin, then sends SIGTERM if the service has
+  not exited within 1 s and SIGKILL 0.5 s later, and quits only once it has exited.
 - Golden lines for both sides live in `fixtures/protocol/`; the Rust and
   Swift test suites both decode every one of them.
 
@@ -46,7 +56,7 @@ durations only, never content (D-011).
 | `consent` | `scope` (`capture`/`personal_voice`), `grant` (bool), `rights_review` (string or null) | Grant or revoke |
 | `flush` | — | Barrier: answered by `flushed` once every earlier record is durable |
 | `ping` | `seq` | Liveness: answered by `pong` at once, without touching the ledger |
-| `forget` | `scope` | Carry out that consent scope's deletion scope now (capture: every heard transcript); refused while a turn is open |
+| `forget` | `scope` | Carry out that consent scope's deletion scope now (capture: every heard transcript); refused while a turn is open. Every log is deleted before the fresh one is created (no free space needed); answered by `forgotten`, or by `error` `forget_failed` if anything could not be deleted |
 | `shutdown` | — | End the session cleanly |
 
 `proposal`:
@@ -86,6 +96,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `consent_state` | `capture`, `personal_voice` | Current consent after any change |
 | `notice` | `code`, `turn` (or null) | A refused request (e.g. `consent_required`, `invalid_transition`) |
 | `flushed` | `seq` | Every record up to `seq` is durable |
+| `executed` | `turn`, `call`, `status` (`succeeded`/`failed`/`uncertain`) | A tool call of this turn has a result on record (the ledger's `executed`); what the app shows as executed |
 | `pong` | `seq` | Answer to `ping` with the same `seq` |
 | `forgotten` | `scope`, `files`, `bytes` | A `forget` was carried out |
 | `error` | `code`, `detail` | Protocol-level error; `detail` never contains content |
@@ -93,8 +104,10 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 Outcomes: `completed`, `interrupted`, `degraded`, `refused`, `rejected`,
 `expired`, `consent_revoked`, `empty`, `abandoned`.
 
-Confirmation `reasons`: `external_effect`, `irreversible_effect`,
-`sensitive_slot`, `low_confidence`, `no_confidence`, `slot_not_heard`.
+Confirmation `reasons`: `irreversible_effect`, `sensitive_slot`,
+`low_confidence`, `no_confidence`, `slot_not_heard`. There is no external-effect
+reason: an external tool is refused before any confirmation (`external_not_authorized`),
+because no external action can be authorized in the first release.
 
 ## Ordering guarantees
 

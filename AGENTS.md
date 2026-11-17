@@ -75,12 +75,19 @@ code and guide disagree, the guide wins unless a `D-NNN` says otherwise.
   synthesis tests render to buffers; playback tests use offline manual
   rendering. Live-mic code stays thin and is covered by `docs/DRILLS.md`.
 - Tests that need an on-device model skip with a printed reason when it is
-  unavailable; a skip is reported as a skip, never as a pass.
+  unavailable; a skip is reported as a skip, never as a pass. That is the only
+  allowed skip: its reason starts with `on-device:`, and `scripts/swift-skips.sh`
+  fails the gate on any other. Service-backed suites fail, never skip, when
+  `voice-session` is missing (`PVA_SESSION_BINARY`, else `$CARGO_TARGET_DIR/debug`,
+  else `target/debug`).
 
 ## Testing rule (workspace standard)
 
 Every feature ships regression tests + a fixture path (`fixtures/`) + a load
-scenario, in the same change. Every fixed bug gets a test that fails without
+scenario, in the same change. A test's data directory holds heard transcripts,
+so it is removed when the test ends, pass or fail (`voice_testkit::TempDir`; in
+Swift, `tempDataDir` inside a `.removesScratch` suite); the gate fails if any
+`pva-*` entry is left behind. Every fixed bug gets a test that fails without
 it. Keep consent records, deletion tests, provider/model compatibility
 checks and the evaluation set current; re-evaluate quality after any model
 or OS change.
@@ -90,5 +97,8 @@ or OS change.
 `scripts/check.sh` — toolchain pin, `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 `cargo test --workspace --locked`, the architecture check, then
-`swift build` and `swift test` for `apps/macos` (skipped with a message when
-not on macOS). Run it before every commit. CI runs the same.
+`swift build` and `swift test` for `apps/macos` against the service binary
+cargo built (skipped with a message when not on macOS), failing on any skip
+that is not an on-device one. Run it before every commit, and read its exit
+status directly (`scripts/check.sh; echo "exit $?"`), never through a pipe. CI
+runs the same.

@@ -63,7 +63,7 @@ struct SynthesisTests {
         #expect(count.withLock { $0 } == 87)
     }
 
-    @Test("the system voice renders to buffers, measured", .enabled("an en-US system voice is installed") { OnDevice.systemVoice })
+    @Test("the system voice renders to buffers, measured", .enabled("on-device: an en-US system voice is installed") { OnDevice.systemVoice })
     func systemVoice() async throws {
         let clock = ContinuousClock()
         let start = clock.now
@@ -78,7 +78,7 @@ struct SynthesisTests {
         #expect(seconds.withLock { $0 } > 1 && seconds.withLock { $0 } < 8)
     }
 
-    @Test("cancelling synthesis stops it promptly and delivers nothing afterwards", .enabled("an en-US system voice is installed") { OnDevice.systemVoice })
+    @Test("cancelling synthesis stops it promptly and delivers nothing afterwards", .enabled("on-device: an en-US system voice is installed") { OnDevice.systemVoice })
     func cancelSynthesis() async throws {
         let delivered = Mutex(0)
         let cancelledAt = Mutex<Int?>(nil)
@@ -102,7 +102,7 @@ struct SynthesisTests {
 
 @Suite("Recognition on committed fixtures")
 struct RecognitionTests {
-    @Test("quiet and noisy fixtures: word error rate recorded", .enabled("on-device speech assets are installed") { await OnDevice.speechReady() })
+    @Test("quiet and noisy fixtures: word error rate recorded", .enabled("on-device: on-device speech assets are installed") { await OnDevice.speechReady() })
     func fixtures() async throws {
         let recognizer = AppleSpeechRecognizer()
         var quietErrors = 0.0, noisyErrors = 0.0, words = 0.0
@@ -135,7 +135,7 @@ struct RecognitionTests {
         #expect(noisyWER <= 0.35)
     }
 
-    @Test("synthesized speech round-trips through recognition", .enabled("speech assets and a system voice") { await OnDevice.speechReady() && OnDevice.systemVoice })
+    @Test("synthesized speech round-trips through recognition", .enabled("on-device: speech assets and a system voice") { await OnDevice.speechReady() && OnDevice.systemVoice })
     func roundTrip() async throws {
         let text = "What is the capital of France?"
         let buffers = Mutex<[PCM]>([])
@@ -146,7 +146,7 @@ struct RecognitionTests {
         #expect(Transcripts.wordErrorRate(reference: text, hypothesis: heard.text) <= 0.2, "heard: \(heard.text)")
     }
 
-    @Test("a flood of audio past the bound fails as overrun instead of growing", .enabled("on-device speech assets are installed") { await OnDevice.speechReady() })
+    @Test("a flood of audio past the bound fails as overrun instead of growing", .enabled("on-device: on-device speech assets are installed") { await OnDevice.speechReady() })
     func overrun() async throws {
         let session = try await AppleSpeechRecognizer(maxQueuedBuffers: 4).begin()
         let pcm = try Audio.read(repoRoot.appending(path: "fixtures/audio/story-request.wav"))
@@ -156,7 +156,7 @@ struct RecognitionTests {
         await #expect(throws: RecognizerError.overrun) { try await session.finish() }
     }
 
-    @Test("a cancelled recognition returns promptly", .enabled("on-device speech assets are installed") { await OnDevice.speechReady() })
+    @Test("a cancelled recognition returns promptly", .enabled("on-device: on-device speech assets are installed") { await OnDevice.speechReady() })
     func cancel() async throws {
         let session = try await AppleSpeechRecognizer().begin()
         let pcm = try Audio.read(repoRoot.appending(path: "fixtures/audio/capital-question.wav"))

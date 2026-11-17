@@ -20,6 +20,17 @@ warm providers, 1-minute load average 19 → 15 (a shared, busy machine). The co
 took 1,409 ms. The earlier run (`…173730…`, from a dirty tree, load 25–46) measured p50 1,877 /
 p95 2,203 ms. In both, the model's first sentence is the whole miss.
 
+## Not voice latency, but missed too: the ledger smokes
+
+What a consent change or a tool call waits for before it proceeds is a durable ledger append.
+Both smokes recorded at `d8b78cc` failed their thresholds: saturated append-to-durable p99
+554 ms against 50 ms (`perf/results/2026-11-16-205704-ledger-50000.md`) and one durable append
+p99 155 ms against 20 ms (`…205803-ledger-sync-2000.md`), at 1-minute load 26–38 while another
+process drove the disk. Alternating the old and new builds under the same conditions
+(`…210000-ledger-ab-main-vs-branch.md`) measured both at 7–19 ms durable p99, so the misses read
+as a contended disk, not a slower writer; they stay recorded as misses until a quiet-machine
+run says otherwise.
+
 ## What moved the numbers (same bench, same day)
 
 | Change | End → first audio p50 / p95 | Turns degraded |

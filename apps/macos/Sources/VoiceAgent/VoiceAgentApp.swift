@@ -145,7 +145,9 @@ struct Transcript: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Row(label: "Heard", text: turn.heard ?? "…", mono: true)
                     Row(label: "Draft", text: turn.spoken.isEmpty ? "—" : turn.spoken.joined(separator: " "), mono: false)
-                    Row(label: "Executed", text: "Nothing (no actions in this version)", mono: false).foregroundStyle(.secondary)
+                    // From the service's `executed` records only: the app never infers it.
+                    Row(label: "Executed", text: turn.executed.isEmpty ? "Nothing" : turn.executed.map(\.rawValue).joined(separator: ", "), mono: false)
+                        .foregroundStyle(.secondary)
                     HStack {
                         if let o = turn.outcome { Text(o.rawValue.replacingOccurrences(of: "_", with: " ")).font(.caption).bold() }
                         if let p = turn.problem { Text(p).font(.caption).foregroundStyle(.orange) }
@@ -178,7 +180,9 @@ struct TalkBar: View {
 
     var body: some View {
         HStack {
-            Text(model.holding ? "Listening… release to send" : "Hold Space to talk · Esc to stop")
+            // Pressing Space always shows something: waiting until the service opens capture
+            // (a hung service is replaced within seconds, with a banner), then listening.
+            Text(model.holding ? (model.micOn ? "Listening… release to send" : "Waiting for the session…") : "Hold Space to talk · Esc to stop")
                 .foregroundStyle(.secondary)
             if let s = model.lastStop {
                 Text(String(format: "last stop %.0f ms rendered + %.0f ms device (%d measured)", s.renderedMs, s.deviceLatencyMs, model.stopLog.count))

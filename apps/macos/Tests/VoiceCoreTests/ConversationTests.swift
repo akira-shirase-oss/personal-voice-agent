@@ -4,12 +4,62 @@ import Synchronization
 import Testing
 @testable import VoiceCore
 
-let sessionBinary = repoRoot.appending(path: "target/debug/voice-session")
+/// The service binary the tests drive: `PVA_SESSION_BINARY`, else `$CARGO_TARGET_DIR/debug`,
+/// else the repository's `target/debug`. Tests that need it fail without it, never skip.
+let sessionBinary: URL = {
+    let env = ProcessInfo.processInfo.environment
+    if let path = env["PVA_SESSION_BINARY"], !path.isEmpty { return URL(fileURLWithPath: path) }
+    if let dir = env["CARGO_TARGET_DIR"], !dir.isEmpty {
+        let target = dir.hasPrefix("/") ? URL(fileURLWithPath: dir) : repoRoot.appending(path: dir)
+        return target.appending(path: "debug/voice-session")
+    }
+    return repoRoot.appending(path: "target/debug/voice-session")
+}()
 var haveBinary: Bool { FileManager.default.isExecutableFile(atPath: sessionBinary.path) }
+let binaryMissing: Comment = "voice-session not found at \(sessionBinary.path): run cargo build -p voice-session, or set PVA_SESSION_BINARY"
+
+/// The temporary files and directories one test made; removed when that test ends.
+final class TestScratch: Sendable {
+    @TaskLocal static var current: TestScratch?
+    let urls = Mutex<[URL]>([])
+
+    /// `TMPDIR` when set (Foundation ignores it on macOS; `scripts/check.sh` gives the tests a
+    /// private one), else the user's temp directory.
+    static var root: URL {
+        if let dir = ProcessInfo.processInfo.environment["TMPDIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) }
+        return FileManager.default.temporaryDirectory
+    }
+
+    /// A path in the temp directory that is removed when the current test ends.
+    static func url(_ name: String) -> URL {
+        let url = root.appending(path: "pva-swift-\(name)-\(UUID().uuidString)")
+        if let scratch = current {
+            scratch.urls.withLock { $0.append(url) }
+        } else {
+            Issue.record("a temporary path outside a .removesScratch suite would outlive its test: \(name)")
+        }
+        return url
+    }
+}
+
+/// Every test in the suite gets its own scratch list, removed when the test ends, pass or fail:
+/// data directories hold heard transcripts, and `scripts/check.sh` fails if one is left.
+struct RemovesScratch: SuiteTrait, TestTrait, TestScoping {
+    var isRecursive: Bool { true }
+    func scopeProvider(for test: Test, testCase: Test.Case?) -> RemovesScratch? { testCase == nil ? nil : self }
+    func provideScope(for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void) async throws {
+        let scratch = TestScratch()
+        defer { for url in scratch.urls.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) } }
+        try await TestScratch.$current.withValue(scratch) { try await function() }
+    }
+}
+
+extension Trait where Self == RemovesScratch {
+    static var removesScratch: Self { RemovesScratch() }
+}
 
 func tempDataDir(_ name: String) throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appending(path: "pva-swift-\(name)-\(UUID().uuidString)")
-    return try DataDirectory.prepare(url)
+    try DataDirectory.prepare(TestScratch.url(name))
 }
 
 /// Collects a conversation's events so tests can wait for one.
@@ -23,6 +73,16 @@ actor Recorder {
     func recentDegraded() -> (Stage, FailureReason)? {
         for e in seen.reversed() { if case .degraded(_, let stage, let reason) = e { return (stage, reason) } }
         return nil
+    }
+
+    /// Whether any event so far, or before the timeout, satisfies `match` (ignores the cursor).
+    func ever(timeout: Duration, _ match: @Sendable (ConversationEvent) -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if seen.contains(where: match) { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return seen.contains(where: match)
     }
 
     /// The next event (after the previous match) satisfying `match`, or nil at the timeout.
@@ -105,8 +165,41 @@ final class StallOnceProvider: LanguageModeling, @unchecked Sendable {
     }
 }
 
-@Suite("Conversation through the real session service", .serialized, .enabled("voice-session is built (cargo build -p voice-session)") { haveBinary })
+/// Hears a different phrase each turn (the last one repeats).
+final class SequenceRecognizer: SpeechRecognizing, @unchecked Sendable {
+    private let phrases: Mutex<[String]>
+    init(_ phrases: [String]) { self.phrases = Mutex(phrases) }
+    func begin() async throws -> any RecognitionSession {
+        let text = phrases.withLock { p in p.count > 1 ? p.removeFirst() : p[0] }
+        return try await ScriptedRecognizer(heard: HeardText(text: text, minConfidence: 0.95)).begin()
+    }
+}
+
+/// Builds each prompt exactly as the on-device provider does (its recap of the last two
+/// exchanges, then the heard text) and records it; answers like the test provider.
+final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
+    let modelID = "recap-probe-test-provider"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    let prompts = Mutex<[String]>([])
+    private let recap = Mutex<[(heard: String, reply: String)]>([])
+    func availability() -> LMAvailability { .available }
+    func forget() { recap.withLock { $0.removeAll() } }
+    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        let earlier = recap.withLock { $0 }
+        prompts.withLock { $0.append(FoundationModelsProvider.prompt(heard, recap: earlier)) }
+        try await DeterministicTestProvider().respond(to: heard, events: events)
+        recap.withLock { r in
+            r.append((heard, "You said: \(heard)"))
+            if r.count > 2 { r.removeFirst(r.count - 2) }
+        }
+    }
+}
+
+@Suite("Conversation through the real session service", .serialized, .removesScratch)
 struct ConversationTests {
+    @Test("the session service binary is built") func binaryPresent() { #expect(haveBinary, binaryMissing) }
+
     @Test("a reply turn is heard, spoken and closed, with timing")
     func replyTurn() async throws {
         let (c, r, pump) = try makeConversation("reply")
@@ -283,6 +376,71 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    func hungConfig(_ name: String, idle: Duration) throws -> ConversationConfig {
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: try tempDataDir(name),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hello", minConfidence: 0.95)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.heartbeatInterval = .milliseconds(200)
+        config.heartbeatTimeout = .milliseconds(800)
+        config.idleHeartbeatInterval = idle
+        return config
+    }
+
+    /// A service that hangs between turns (SIGSTOP while idle, no key pressed) is found by the
+    /// idle heartbeat and replaced; the turn after the replacement is served.
+    @Test("a service hung between turns is detected and replaced without a key press")
+    func hungBetweenTurns() async throws {
+        let c = try Conversation(try hungConfig("hung-idle", idle: .milliseconds(400)))
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil, "a first turn completes")
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        let stopped = ContinuousClock.now
+        let found = await r.next(timeout: .seconds(4)) { if case .serviceUnresponsive = $0 { true } else { false } }
+        #expect(found != nil, "the idle service's hang is noticed")
+        #expect(ContinuousClock.now - stopped < .seconds(3))
+        #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
+        try await talk(c, r)
+        let (_, outcome, _) = try #require(await r.next { closed($0) != nil }.flatMap(closed))
+        #expect(outcome == .completed, "the next turn is served")
+        await c.shutdown()
+    }
+
+    /// Pressing Space on a service that hung while idle: the press pings it, the missed pong is
+    /// reported within the timeout (the app shows it), the microphone never opens, and a new
+    /// service is started.
+    @Test("a key press on a service hung between turns is answered, never silently ignored")
+    func keyPressOnHungService() async throws {
+        let c = try Conversation(try hungConfig("hung-press", idle: .seconds(60)))
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        try await Task.sleep(for: .milliseconds(300))
+        let pressed = ContinuousClock.now
+        await c.pushToTalkDown()
+        let found = await r.next(timeout: .seconds(4)) { if case .serviceUnresponsive = $0 { true } else { false } }
+        #expect(found != nil, "the press finds the hang")
+        #expect(ContinuousClock.now - pressed < .seconds(2))
+        #expect(!(await r.seen.contains(where: isCaptureOn)), "the microphone never opened")
+        #expect(await r.next(timeout: .seconds(5), isReady) != nil, "a new service is ready")
+        await c.pushToTalkUp()
+        try await talk(c, r)
+        let (_, outcome, _) = try #require(await r.next { closed($0) != nil }.flatMap(closed))
+        #expect(outcome == .completed, "the next press is served")
+        await c.shutdown()
+    }
+
     /// A turn interrupted while capturing must release its recognizer (a `SpeechAnalyzer` keeps
     /// its model for the process lifetime and would otherwise wait forever).
     @Test("an interrupted capture releases its recognition session")
@@ -357,9 +515,168 @@ struct ConversationTests {
         #expect(await r2.next { if case .notice("already_running") = $0 { true } else { false } } != nil)
         #expect(await r2.next { if case .serviceExited = $0 { true } else { false } } != nil)
         let restarted = await r2.next(timeout: .seconds(1)) { if case .serviceRestarting = $0 { true } else { false } }
-        #expect(restarted == nil, "the refused service is not restarted")
-        await second.shutdown()
+        #expect(restarted == nil, "the refused service is not restarted as if it had crashed")
+        #expect(await r2.ever(timeout: .seconds(3)) { if case .serviceFailed("already_running") = $0 { true } else { false } }, "the refusal is reported")
+        // The other copy is alive and has a live parent: never treated as an orphan.
+        let firstPID = try #require(await first.servicePID)
+        #expect(kill(firstPID, 0) == 0, "the running copy's service was left alone")
+        #expect(await !(r2.seen.contains { if case .notice("stale_service_stopped") = $0 { true } else { false } }))
+        // Not permanent: once the first copy quits, the second takes over.
         await first.shutdown()
+        #expect(await r2.next(timeout: .seconds(8), isReady) != nil, "the waiting copy becomes ready")
+        await second.shutdown()
+    }
+
+    /// Quitting while the service is hung (SIGSTOP): the app does not return from shutdown until
+    /// its child has exited, so the next launch on the same data directory is not refused.
+    @Test("quitting ends a hung service, and the next launch is not refused")
+    func quitEndsAHungChild() async throws {
+        let dir = try tempDataDir("quit-hung")
+        func make() throws -> (Conversation, Recorder) {
+            var config = ConversationConfig(
+                binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+                model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+            config.offlinePlayback = true
+            let c = try Conversation(config)
+            return (c, Recorder(c.events))
+        }
+        let (first, r1) = try make()
+        try await first.start()
+        #expect(await r1.next(isReady) != nil)
+        let pid = try #require(await first.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        let t0 = ContinuousClock.now
+        await first.shutdown()
+        #expect(ContinuousClock.now - t0 < .seconds(4), "quit is bounded")
+        #expect(kill(pid, 0) != 0, "the hung service is gone when quit returns")
+        let (next, r2) = try make()
+        try await next.start()
+        #expect(await r2.next(timeout: .seconds(5), isReady) != nil, "the relaunch is not refused")
+        #expect(await !(r2.seen.contains { if case .notice("already_running") = $0 { true } else { false } }))
+        await next.shutdown()
+    }
+
+    /// An earlier app process died and left its service behind, hung, holding the lock (its
+    /// parent is now launchd). The relaunched app recognises its own stale orphan, stops it and
+    /// starts normally instead of reporting "already running" forever.
+    @Test("a stale orphan holding the data directory is stopped and replaced")
+    func staleOrphanIsReplaced() async throws {
+        let dir = try tempDataDir("orphan")
+        // A background pipeline whose shell exits at once: the service is reparented to launchd.
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", "sleep 20 2>/dev/null | \"$0\" --data-dir \"$1\" >/dev/null 2>&1 & echo $!", sessionBinary.path, dir.path]
+        let out = Pipe()
+        sh.standardOutput = out
+        try sh.run()
+        sh.waitUntilExit()
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let orphan = try #require(Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { kill(orphan, SIGKILL) }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ServiceLock.holder(dataDir: dir) != orphan && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(ServiceLock.holder(dataDir: dir) == orphan, "the orphan holds the lock")
+        kill(orphan, SIGSTOP)  // hung: it would never let go
+        #expect(ServiceLock.isStaleOrphan(orphan, binary: sessionBinary), "recognised as a stale orphan of this app")
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await c.start()
+        #expect(await r.next(timeout: .seconds(6), isReady) != nil, "the relaunched app starts")
+        #expect(kill(orphan, 0) != 0, "the stale orphan was stopped")
+        await c.shutdown()
+    }
+
+    /// "Delete history" must reach the model too: its recap of the last two exchanges would
+    /// otherwise quote deleted speech in the next prompt, and the reply could write it back
+    /// into the new log. Revoking capture consent clears it as well.
+    @Test("deleting history, or revoking consent, leaves no earlier heard text in the next prompt")
+    func forgetClearsTheModelRecap() async throws {
+        let probe = RecapProbeProvider()
+        let secret = "my locker code is 4321"
+        let recognizer = SequenceRecognizer([secret, "what time is it", "what time is it", secret, "what time is it"])
+        let (c, r, pump) = try makeConversation("forget-recap", model: probe, recognizer: recognizer)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        for _ in 0..<2 {
+            try await talk(c, r)
+            #expect(await r.next { closed($0) != nil } != nil)
+        }
+        #expect(probe.prompts.withLock { $0.last?.contains("4321") } == true, "the recap carries the earlier turn")
+        await c.forgetHistory()
+        #expect(await r.next { if case .forgotten = $0 { true } else { false } } != nil)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        let afterForget = probe.prompts.withLock { $0.last ?? "" }
+        #expect(!afterForget.contains("4321"), "deleted speech reached the model: \(afterForget)")
+        // Revocation: speech heard before it must not reach a prompt after a re-grant.
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        await c.setCaptureConsent(false)
+        #expect(await r.next { if case .consent(let s) = $0 { !s.capture } else { false } } != nil)
+        await c.setCaptureConsent(true)
+        #expect(await r.next { if case .consent(let s) = $0 { s.capture } else { false } } != nil)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        let afterRevoke = probe.prompts.withLock { $0.last ?? "" }
+        #expect(!afterRevoke.contains("4321"), "speech from before the revocation reached the model: \(afterRevoke)")
+        await c.shutdown()
+    }
+
+    /// A failed deletion is shown, never silent: the service's `forget_failed` reaches the app as
+    /// its own event (the window shows a banner for it).
+    @Test("a deletion that fails is reported to the app")
+    func forgetFailureIsReported() async throws {
+        let dir = try tempDataDir("forget-fails")
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: dir, recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await startWithConsent(c, r)
+        // An entry the service cannot delete: a directory inside the ledger.
+        let stuck = dir.appending(path: "ledger/stuck.closed.log/inner")
+        try FileManager.default.createDirectory(at: stuck, withIntermediateDirectories: true)
+        await c.forgetHistory()
+        #expect(await r.ever(timeout: .seconds(5)) { "\($0)".hasPrefix("forgetFailed") }, "the failure reaches the app as its own event")
+        #expect(await !(r.seen.contains { if case .forgotten = $0 { true } else { false } }), "nothing is reported deleted")
+        await c.shutdown()
+    }
+
+    /// A restart that cannot launch is reported, never left as "restarting" forever: a binary
+    /// that has gone missing, and one that can no longer be executed.
+    @Test("a restart that cannot launch the service reports why", arguments: ["missing", "broken"])
+    func restartFailureIsReported(_ how: String) async throws {
+        let copy = TestScratch.url("binary")
+        try FileManager.default.copyItem(at: sessionBinary, to: copy)
+        var config = ConversationConfig(
+            binary: copy, dataDir: try tempDataDir("relaunch-\(how)"),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.maxRestarts = 2
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        try await c.start()
+        #expect(await r.next(isReady) != nil)
+        try FileManager.default.removeItem(at: copy)
+        if how == "broken" {
+            // Executable, but not a program: the launch itself fails.
+            try Data("not a program".utf8).write(to: copy)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+        }
+        await c.killServiceForDrill()
+        #expect(await r.next { if case .serviceRestarting(1) = $0 { true } else { false } } != nil)
+        let expected = how == "missing" ? "binary_missing" : "launch_failed"
+        let reported = await r.ever(timeout: .seconds(5)) { if case .serviceFailed(let code) = $0 { code == expected } else { false } }
+        let seen = await r.seen
+        #expect(reported, "the failed relaunch is reported as \(expected): \(seen)")
+        await c.shutdown()
     }
 
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
@@ -377,7 +694,7 @@ struct ConversationTests {
     }
 }
 
-@Suite("On-device language model")
+@Suite("On-device language model", .removesScratch)
 struct ModelTests {
     @Test("after a context overflow, retry only if nothing was streamed (no spliced replies)")
     func overflowRetry() {
@@ -386,9 +703,38 @@ struct ModelTests {
         #expect(!FoundationModelsProvider.mayRetryAfterOverflow(eventsSent: 3))
     }
 
+    @Test("the recap keeps two exchanges, and forget clears it and drops a turn still running")
+    func recapForget() {
+        let recap = ConversationRecap(turns: 2, chars: 300)
+        for i in 1...3 {
+            let g = recap.begin().generation
+            recap.remember("heard \(i)", "reply \(i)", generation: g)
+        }
+        #expect(recap.begin().recap.map(\.heard) == ["heard 2", "heard 3"])
+        let running = recap.begin().generation  // a turn starts, then history is deleted
+        recap.forget()
+        #expect(recap.isEmpty)
+        recap.remember("deleted speech", "its reply", generation: running)
+        #expect(recap.isEmpty, "a turn that began before the deletion cannot write it back")
+        let fresh = recap.begin()
+        #expect(fresh.recap.isEmpty)
+        #expect(FoundationModelsProvider.prompt("hi", recap: fresh.recap) == "The user said: «hi»")
+        recap.remember(String(repeating: "x", count: 400), "ok", generation: fresh.generation)
+        #expect(recap.begin().recap.first?.heard.count == 300)
+    }
+
+    @Test("the on-device provider's forget clears its recap")
+    func providerForget() {
+        let p = FoundationModelsProvider()
+        p.recap.remember("my locker code is 4321", "noted", generation: p.recap.begin().generation)
+        #expect(!p.recap.isEmpty)
+        p.forget()
+        #expect(p.recap.isEmpty)
+    }
+
     static var available: Bool { FoundationModelsProvider().availability() == .available }
 
-    @Test("FoundationModels streams kind first, then sentences, then the proposal", .enabled("FoundationModels is available") { ModelTests.available })
+    @Test("FoundationModels streams kind first, then sentences, then the proposal", .enabled("on-device: FoundationModels is available") { ModelTests.available })
     func streams() async throws {
         let events = Mutex<[LMEvent]>([])
         let clock = ContinuousClock()
@@ -415,8 +761,8 @@ struct ModelTests {
         print("METRIC lm_first_event_ms=\(first.withLock { $0 }.map { Double($0.components.attoseconds) / 1e15 + Double($0.components.seconds) * 1000 } ?? -1)")
     }
 
-    @Test("end to end on this Mac: fixture audio → recognizer → service → model → voice", .enabled("speech assets, FoundationModels and a system voice") {
-        await OnDevice.speechReady() && ModelTests.available && OnDevice.systemVoice && haveBinary
+    @Test("end to end on this Mac: fixture audio → recognizer → service → model → voice", .enabled("on-device: speech assets, FoundationModels and a system voice") {
+        await OnDevice.speechReady() && ModelTests.available && OnDevice.systemVoice
     })
     func endToEnd() async throws {
         // Deadlines long enough that machine load cannot expire them: this test proves the

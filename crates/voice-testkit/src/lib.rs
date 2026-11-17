@@ -7,7 +7,7 @@
     reason = "test support: a panic is the failure report"
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -23,10 +23,50 @@ use voice_session::{Config, ServiceError, Summary};
 
 pub const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn temp_data_dir(name: &str) -> PathBuf {
+/// A test's data directory under the temp dir, created 0700 and removed with everything in it
+/// when dropped — also when the test panics. Data directories hold heard transcripts, so none
+/// may outlive its test (`scripts/check.sh` fails if one does).
+#[derive(Debug)]
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn to_path_buf(&self) -> PathBuf {
+        self.0.clone()
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub fn temp_data_dir(name: &str) -> TempDir {
+    use std::os::unix::fs::DirBuilderExt;
     let dir = std::env::temp_dir().join(format!("pva-{name}-{}", uuid::Uuid::now_v7()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .unwrap();
+    TempDir(dir)
 }
 
 pub struct Stub {
@@ -64,6 +104,11 @@ impl Stub {
             }
             skipped.push(m);
         }
+    }
+
+    /// The raw write half and line reader, for a test that writes and reads at the same time.
+    pub fn into_parts(self) -> (WriteHalf<DuplexStream>, Lines<BufReader<ReadHalf<DuplexStream>>>) {
+        (self.w, self.r)
     }
 
     /// Closes the app's side of the pipe (the service sees EOF).

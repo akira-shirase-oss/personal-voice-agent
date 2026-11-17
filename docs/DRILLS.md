@@ -83,13 +83,28 @@ Hold Space and, while holding, run `pkill -STOP -f 'VoiceAgent.app/Contents/MacO
 - Expect: within about 3 seconds the microphone indicator goes off although Space is still
   held, the app says the session stopped responding, and a new session becomes ready (the
   stopped service is killed by the app; no `pkill -CONT` is needed).
+- Then, between turns: run the same `pkill -STOP` with nothing held and wait. Within about
+  8 seconds the app says the session stopped responding and restarts it. Repeat, and this time
+  press Space within a second of the `pkill`: the talk bar shows "Waiting for the session…",
+  the microphone indicator never comes on, and within about 3 seconds the same banner appears.
+
+## Drill 11 — quit and relaunch with a hung or orphaned service
+
+Run `pkill -STOP -f 'VoiceAgent.app/Contents/MacOS/voice-session'`, then quit the app (⌘Q) and
+reopen it at once. Then force-quit the app itself (`pkill -9 -f 'VoiceAgent.app/Contents/MacOS/VoiceAgent$'`),
+stop the service it leaves behind as above, and reopen the app.
+
+- Expect: the first quit takes at most about 3 seconds and the relaunch becomes ready; after
+  the force quit the relaunched app says a session left running by an earlier run was stopped,
+  and becomes ready. Neither shows "Another copy of the app is using its data".
 
 ## Drill 10 — delete history
 
 Talk for a few turns, then click **Delete history**.
 
 - Expect: a banner says how many session logs were removed; `grep -r` for a phrase you said
-  finds nothing under `~/Library/Application Support/PersonalVoiceAgent`.
+  finds nothing under `~/Library/Application Support/PersonalVoiceAgent`; and asking "What did
+  I just say?" gets no quote of anything said before the deletion.
 
 ## Drill 7 — the 100 consented utterances and three one-hour sessions (ship gate)
 

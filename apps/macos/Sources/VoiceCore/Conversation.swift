@@ -15,21 +15,28 @@ public enum ConversationEvent: Sendable {
     case speaking(TurnID, String)
     case confirm(turn: TurnID, digest: String, heard: String, tool: String, slots: [Slot], reasons: [ConfirmReason])
     case turnClosed(TurnID, Outcome, TurnTiming)
+    /// A tool call of this turn has a result on record (never inferred by the app).
+    case executed(TurnID, ExecutionStatus)
     case degraded(TurnID?, Stage, FailureReason)
     case consent(ConsentState)
     case notice(String)
     case serviceExited(Int32)
     case serviceRestarting(attempt: Int)
     case serviceGaveUp
-    /// The service refused to start for a reason a restart cannot fix: `already_running`
-    /// (another copy owns the data directory), `store_corrupt` or `store_io`.
+    /// The service refused to start: `store_corrupt` or `store_io` (a restart cannot fix them),
+    /// or `already_running` (another running copy owns the data directory; the app keeps
+    /// retrying and takes over when it is free); or it could not be launched again:
+    /// `binary_missing`, or `launch_failed` once the restart budget is spent.
     case serviceFailed(String)
-    /// The service stopped answering while a turn was open; it is being replaced.
+    /// The service stopped answering (during a turn, between turns or on a key press); it is
+    /// being replaced.
     case serviceUnresponsive
     /// The app fell behind and this many older events were discarded; state shown may be stale.
     case eventsDropped(Int)
     /// A `forget` was carried out (D-018): how many session logs and bytes were deleted.
     case forgotten(files: UInt32, bytes: UInt64)
+    /// A `forget` could not delete everything: some heard transcripts may remain.
+    case forgetFailed
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -59,10 +66,21 @@ public struct ConversationConfig: Sendable {
     public var maxRestarts = 5
     /// The app's own bound on one push-to-talk capture, independent of the service.
     public var localCaptureMax: Duration = .seconds(60)
-    /// While a turn is open the app pings the service this often, and treats it as hung when a
-    /// ping goes unanswered for `heartbeatTimeout`.
+    /// While a turn is open (or the key is held) the app pings the service this often, and
+    /// treats it as hung when a ping goes unanswered for `heartbeatTimeout`.
     public var heartbeatInterval: Duration = .seconds(1)
     public var heartbeatTimeout: Duration = .seconds(3)
+    /// Between turns, once the session is ready, it pings this often; every key press also
+    /// pings at once, so a service that hung while idle is found before the microphone opens.
+    public var idleHeartbeatInterval: Duration = .seconds(5)
+    /// How long a ping may wait behind a `forget`, which deletes files before it answers.
+    public var forgetTimeout: Duration = .seconds(30)
+    /// On quit, how long the service has to close its session after stdin closes before it
+    /// gets SIGTERM (then SIGKILL): the app never leaves a child holding the data directory.
+    public var shutdownGrace: Duration = .seconds(1)
+    /// While another running copy holds the data directory, retry after 250 ms, doubling up to
+    /// this cap, for as long as it takes.
+    public var blockedRetryCap: Duration = .seconds(5)
     /// Bound on conversation events waiting for the app to read them.
     public var eventBuffer = 4_096
 
@@ -131,11 +149,18 @@ public actor Conversation {
     /// turns from 1 again) is never confused with the one that died.
     private var epoch: UInt64 = 0
     private var stopping = false
-    /// Set when the service reported an error a restart cannot fix.
+    /// Set when the service reported an error a plain restart cannot fix.
     private var fatal: String?
+    /// Consecutive launches refused with `already_running`.
+    private var blockedAttempts = 0
     /// The heartbeat ping awaiting its pong, if any.
     private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
     private var pingSeq: UInt64 = 0
+    private var lastPingAt: ContinuousClock.Instant?
+    /// The current service has said `ready`: it is pinged from then on, turn or no turn.
+    private var sessionUp = false
+    /// A `forget` was sent and not yet answered.
+    private var forgetPending = false
     static let fatalCodes: Set<String> = ["already_running", "store_corrupt", "store_io"]
     private static let maxPendingBuffers = 512
 
@@ -154,6 +179,9 @@ public actor Conversation {
         player.beginEpoch(epoch)
         process = p
         pendingPing = nil
+        lastPingAt = nil
+        sessionUp = false
+        forgetPending = false
         startHeartbeat(epoch)
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))
         Task { [weak self] in
@@ -162,8 +190,9 @@ public actor Conversation {
         }
     }
 
-    /// While a turn is open or capture is on, ping the service; an unanswered ping past the
-    /// timeout means it is hung (a stopped process answers nothing, not even an exit).
+    /// Once the service is ready, ping it — every interval while a turn is open or the key is
+    /// held, every idle interval between turns. An unanswered ping past the timeout means it is
+    /// hung (a stopped process answers nothing, not even an exit).
     private func startHeartbeat(_ e: UInt64) {
         let interval = config.heartbeatInterval
         Task { [weak self] in
@@ -178,7 +207,8 @@ public actor Conversation {
     private func heartbeat(_ e: UInt64) -> Bool {
         guard e == epoch, !stopping, let p = process, p.isRunning else { return false }
         if let pending = pendingPing {
-            guard clock.now - pending.sentAt > config.heartbeatTimeout else { return true }
+            let limit = forgetPending ? config.forgetTimeout : config.heartbeatTimeout
+            guard clock.now - pending.sentAt > limit else { return true }
             // Hung: stop everything here, then replace it (the exit starts a new session).
             publish(.serviceUnresponsive)
             if let c = capturing { stopMicrophone(c) }
@@ -186,20 +216,30 @@ public actor Conversation {
             p.kill()
             return false
         }
-        if currentTurn != nil || capturing != nil {
-            pingSeq += 1
-            pendingPing = (pingSeq, clock.now)
-            send(.ping(seq: pingSeq))
-        }
+        guard sessionUp else { return true }
+        let active = currentTurn != nil || capturing != nil || keyHeld
+        let idleDue = lastPingAt.map { clock.now - $0 >= config.idleHeartbeatInterval } ?? true
+        if active || idleDue { ping() }
         return true
     }
 
-    public func shutdown() {
+    private func ping() {
+        pingSeq += 1
+        pendingPing = (pingSeq, clock.now)
+        lastPingAt = clock.now
+        send(.ping(seq: pingSeq))
+    }
+
+    /// Ends the session and does not return until the service has exited: `shutdown`, then
+    /// stdin closed, SIGTERM after `shutdownGrace`, SIGKILL last. A child left running (or hung)
+    /// would hold the data directory's lock, and the next launch would be refused.
+    public func shutdown() async {
         stopping = true
-        try? process?.send(.shutdown)
-        process?.close()
         for task in calls.values { task.cancel() }
         player.shutdown()
+        guard let p = process else { return }
+        try? p.send(.shutdown)
+        await p.stop(grace: config.shutdownGrace)
     }
 
     /// Crash drill: kills the child with SIGKILL; the conversation restarts it.
@@ -226,7 +266,8 @@ public actor Conversation {
     private func handleExit(_ status: Int32, of p: SessionProcess) {
         guard p === process, exitHandled != ObjectIdentifier(p) else { return }
         exitHandled = ObjectIdentifier(p)
-        publish(.serviceExited(status))
+        let blocked = fatal == "already_running"
+        if !blocked || blockedAttempts == 0 { publish(.serviceExited(status)) }
         // The session is gone: stop its audio and drop all of its call state. The next
         // session reuses turn and call numbers from 1, so nothing of this one may linger.
         player.stop(fence: TurnID(UInt64.max), epoch: epoch)
@@ -242,11 +283,22 @@ public actor Conversation {
         timing.removeAll()
         if let c = capturing { stopMicrophone(c) }
         currentTurn = nil
+        sessionUp = false
         guard !stopping else { return }
+        if blocked {
+            fatal = nil
+            return waitForDataDirectory()
+        }
         if let fatal {
             publish(.serviceFailed(fatal))
             return
         }
+        scheduleRestart()
+    }
+
+    /// The next restart attempt with bounded backoff (100 ms, 200 ms, 400 ms, ...), or the end
+    /// of the restart budget.
+    private func scheduleRestart() {
         guard restarts < config.maxRestarts else {
             publish(.serviceGaveUp)
             return
@@ -255,16 +307,60 @@ public actor Conversation {
         let attempt = restarts
         publish(.serviceRestarting(attempt: attempt))
         Task { [weak self] in
-            // Bounded backoff: 100 ms, 200 ms, 400 ms, ...
             try? await Task.sleep(for: .milliseconds(100 << (attempt - 1)))
-            try? await self?.start()
+            await self?.relaunch()
+        }
+    }
+
+    /// `already_running`: another service holds the data directory. A stale orphan of this
+    /// app (its parent died; it still holds the lock, perhaps hung) is stopped and replaced at
+    /// once. Any other holder is another running copy: wait for it, with capped backoff, and
+    /// never give up — the refusal is reported, not made permanent.
+    private func waitForDataDirectory() {
+        blockedAttempts += 1
+        let attempt = blockedAttempts
+        if let pid = ServiceLock.holder(dataDir: config.dataDir), ServiceLock.isStaleOrphan(pid, binary: config.binary) {
+            publish(.notice("stale_service_stopped"))
+            Task { [weak self] in
+                _ = await ServiceLock.terminate(pid)
+                await self?.relaunch()
+            }
+            return
+        }
+        if attempt == 3 { publish(.serviceFailed("already_running")) }
+        let delay = min(Duration.milliseconds(250 << min(attempt - 1, 8)), config.blockedRetryCap)
+        Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            await self?.relaunch()
+        }
+    }
+
+    /// Starts the service again. A launch that throws is never swallowed (the window would
+    /// say "restarting" forever): a missing binary is reported at once, any other launch
+    /// failure is retried within the restart budget and then reported.
+    private func relaunch() {
+        guard !stopping else { return }
+        do {
+            try start()
+        } catch SessionProcessError.binaryMissing {
+            publish(.serviceFailed("binary_missing"))
+        } catch {
+            guard restarts < config.maxRestarts else {
+                publish(.serviceFailed("launch_failed"))
+                return
+            }
+            scheduleRestart()
         }
     }
 
     // MARK: User actions
 
     public func setCaptureConsent(_ grant: Bool) {
-        if !grant { stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) }) }
+        if !grant {
+            stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+            // Speech heard under the revoked consent must not reach a later prompt.
+            config.model.forget()
+        }
         send(.consent(scope: .capture, grant: grant, rightsReview: nil))
     }
 
@@ -272,6 +368,8 @@ public actor Conversation {
         keyHeld = true
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
         if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
+        // Every press checks the service is alive; the microphone opens only on its answer.
+        if sessionUp && pendingPing == nil { ping() }
         send(.pttDown)
     }
 
@@ -318,7 +416,12 @@ public actor Conversation {
     public func flush() { send(.flush) }
 
     /// Deletes every heard transcript (capture consent's deletion scope). Refused mid-turn.
-    public func forgetHistory() { send(.forget(scope: .capture)) }
+    public func forgetHistory() {
+        forgetPending = true
+        // The model's recap holds heard text too; it goes now, whatever the service answers.
+        config.model.forget()
+        send(.forget(scope: .capture))
+    }
 
     private func send(_ m: ClientMessage) {
         do { try process?.send(m) } catch { publish(.notice("service_not_running")) }
@@ -339,6 +442,8 @@ public actor Conversation {
         switch m {
         case .ready(_, let session, let consent, let recovered):
             self.consent = consent
+            sessionUp = true
+            blockedAttempts = 0
             publish(.ready(session: session, consent: consent, recovered: recovered))
         case .turnOpened(let turn):
             currentTurn = turn
@@ -391,16 +496,26 @@ public actor Conversation {
             consent = state
             publish(.consent(state))
         case .notice(let code, _):
+            if code == "forget_refused_turn_active" { forgetPending = false }
             publish(.notice(code))
         case .flushed:
             publish(.notice("flushed"))
         case .pong(let seq):
             if pendingPing?.seq == seq { pendingPing = nil }
+        case .executed(let turn, _, let status):
+            publish(.executed(turn, status))
         case .forgotten(_, let files, let bytes):
+            forgetPending = false
+            config.model.forget()
             publish(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }
-            publish(.notice(code))
+            if code == "forget_failed" {
+                forgetPending = false
+                publish(.forgetFailed)
+            } else {
+                publish(.notice(code))
+            }
         }
     }
 

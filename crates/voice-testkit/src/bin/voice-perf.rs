@@ -73,7 +73,7 @@ fn arg(args: &[String], name: &str, default: u64) -> u64 {
 async fn ledger(records: u64) -> (serde_json::Value, bool) {
     let dir = voice_testkit::temp_data_dir("perf-ledger");
     let opened = tokio::task::spawn_blocking({
-        let dir = dir.clone();
+        let dir = dir.to_path_buf();
         move || voice_session::store::open(&dir, records + 16)
     })
     .await
@@ -127,7 +127,7 @@ async fn ledger(records: u64) -> (serde_json::Value, bool) {
 async fn ledger_sync(records: u64) -> (serde_json::Value, bool) {
     let dir = voice_testkit::temp_data_dir("perf-sync");
     let opened = tokio::task::spawn_blocking({
-        let dir = dir.clone();
+        let dir = dir.to_path_buf();
         move || voice_session::store::open(&dir, records + 16)
     })
     .await
@@ -213,7 +213,8 @@ async fn interrupted_turn(stub: &mut voice_testkit::Stub, late_expected: &mut u6
 
 async fn turns(events: u64, interrupt_every: u64, stall_every: u64) -> (serde_json::Value, bool) {
     const LM_DEADLINE_MS: u64 = 50;
-    let mut config = Config::new(voice_testkit::temp_data_dir("perf-turns"), NoTools, Log::off());
+    let dir = voice_testkit::temp_data_dir("perf-turns");
+    let mut config = Config::new(dir.to_path_buf(), NoTools, Log::off());
     // Stalled turns hit a shortened model deadline. A turn that was not meant to stall but
     // degrades anyway is a deadline missed under load, and fails the run.
     config.limits.lm_first_ms = LM_DEADLINE_MS;

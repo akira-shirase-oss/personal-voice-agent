@@ -93,7 +93,8 @@ deadline → app finalizes and returns the heard text and confidence
 (**heard**) → service sends `lm_request` (heard text as quoted data, never
 raw audio) → the model streams a structured proposal: its `kind` first,
 then reply sentences → for a reply, each sentence goes through the
-completion-claim guard and becomes a `tts_request` tagged with turn N
+completion-claim guard (replaced, disclosed or spoken as written, D-027)
+and becomes a `tts_request` tagged with turn N
 → for an action, the policy decides: refuse, confirm (heard text shown
 verbatim) or execute → a tool result is recorded (**executed**) → only a
 successful result with evidence lets the service say "done".
@@ -119,7 +120,13 @@ failure, not an answer.
 
 **Service failure:** the app watches the child process; on an unexpected
 exit it shows degraded, restarts it with bounded backoff, and the new
-process runs recovery before it reports `ready`.
+process runs recovery before it reports `ready`. A restart that cannot
+launch says why (`binary_missing` at once, `launch_failed` once the restart
+budget is spent) instead of showing "restarting" forever. A service that stops
+answering without exiting is found by `ping`: once it is ready, every
+second while a turn is open or the key is held, every five seconds between
+turns, and on every key press; a ping unanswered for 3 s (30 s behind a
+`forget`) stops the microphone and playback and replaces the service.
 
 ## Consistency
 
