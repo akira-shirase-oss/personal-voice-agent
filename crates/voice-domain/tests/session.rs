@@ -1002,6 +1002,64 @@ fn capture_stops_on_its_own_at_the_limit() {
     assert_eq!(h.s.phase_name(), "transcribing");
 }
 
+/// A consent change the shell could not record: a grant does not stand (fail closed), a
+/// revocation does, and no grant is accepted afterwards.
+#[test]
+fn an_unrecorded_consent_change_fails_closed() {
+    let mut h = H::new(); // capture granted (recorded)
+    h.ok(C::PttDown);
+    let turn = h.s.active_turn().unwrap(); // capturing
+    let out = h
+        .step(Input::ConsentUnavailable {
+            scope: ConsentScope::Capture,
+            granted: true,
+        })
+        .unwrap();
+    assert_eq!(
+        H::closed(&out),
+        Some(Outcome::ConsentRevoked),
+        "an unrecorded grant does not stand"
+    );
+    assert!(H::sent(&out).contains(&S::Capture { turn, on: false }));
+    assert!(H::sent(&out).contains(&S::ConsentState(ConsentState {
+        capture: false,
+        personal_voice: false
+    })));
+    assert!(H::sent(&out).iter().any(|m| matches!(
+        m,
+        S::Degraded {
+            stage: Stage::Ledger,
+            ..
+        }
+    )));
+    assert_eq!(h.step(Input::Client(C::PttDown)), Err(Refused::ConsentRequired));
+    assert_eq!(
+        h.step(Input::Client(C::Consent {
+            scope: ConsentScope::Capture,
+            grant: true,
+            rights_review: None
+        })),
+        Err(Refused::ConsentLogUnavailable),
+        "nothing can be granted while consent cannot be recorded"
+    );
+    // A revocation is always accepted.
+    h.ok(C::Consent {
+        scope: ConsentScope::Capture,
+        grant: false,
+        rights_review: None,
+    });
+    let out = h
+        .step(Input::ConsentUnavailable {
+            scope: ConsentScope::Capture,
+            granted: false,
+        })
+        .unwrap();
+    assert!(H::sent(&out).contains(&S::ConsentState(ConsentState {
+        capture: false,
+        personal_voice: false
+    })));
+}
+
 #[test]
 fn a_ledger_failure_degrades_the_turn_and_refuses_new_ones() {
     let mut h = H::new();
@@ -1134,6 +1192,8 @@ fn random_input(
 }
 
 struct Checker {
+    /// What the session last told the app about capture consent.
+    consent: bool,
     approved: Vec<Digest>,
     auto_execute_turns: Vec<TurnId>,
     executed_ok: Vec<TurnId>,
@@ -1169,7 +1229,18 @@ impl Checker {
                     assert!(durable_sent, "Execute without a durable ToolCallSent first");
                 }
                 Output::Send(S::StopPlayback { fence }) => self.fence = *fence,
+                Output::Send(S::ConsentState(c)) => self.consent = c.capture,
+                Output::Send(S::Capture { on: true, .. }) => {
+                    assert!(
+                        self.consent && s.consent().capture,
+                        "capture turned on without capture consent"
+                    );
+                }
                 Output::Send(S::TtsRequest { turn, text, .. }) => {
+                    assert!(
+                        s.consent().capture,
+                        "speech requested after capture consent was revoked"
+                    );
                     assert!(
                         *turn >= self.fence,
                         "synthesis requested for a turn below the playback fence"
@@ -1198,6 +1269,7 @@ fn randomized_inputs_never_break_the_invariants_and_replay_identically() {
         let mut a = H::new();
         let mut b = H::new();
         let mut checker = Checker {
+            consent: true,
             approved: vec![],
             auto_execute_turns: vec![],
             executed_ok: vec![],

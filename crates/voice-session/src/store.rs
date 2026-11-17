@@ -14,7 +14,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
-use voice_domain::consent::{ConsentRecord, ConsentState};
+use voice_domain::consent::{ConsentRecord, ConsentScope, ConsentState};
 use voice_domain::protocol::Recovered;
 use voice_domain::record::{Record, RecoveryFold};
 
@@ -203,7 +203,55 @@ fn append_now<T: Serialize>(path: &Path, session: &str, mut seq: u64, records: &
     Ok(seq)
 }
 
+/// Consent tokens: `consent.<scope>.granted` exists only while a grant stands. A revocation
+/// unlinks it before the log record is appended, and an unlink needs no free space, so a
+/// revocation holds on disk even when the log cannot be written. Effective consent at start
+/// is "the log says granted and the token exists" (D-017, amended).
+#[derive(Clone, Debug)]
+pub struct ConsentTokens {
+    dir: PathBuf,
+}
+
+impl ConsentTokens {
+    pub fn new(dir: &Path) -> Self {
+        Self { dir: dir.to_owned() }
+    }
+
+    fn path(&self, scope: ConsentScope) -> PathBuf {
+        let name = match scope {
+            ConsentScope::Capture => "capture",
+            ConsentScope::PersonalVoice => "personal_voice",
+        };
+        self.dir.join(format!("consent.{name}.granted"))
+    }
+
+    pub fn granted(&self, scope: ConsentScope) -> bool {
+        self.path(scope).exists()
+    }
+
+    pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
+        let path = self.path(scope);
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)?;
+        f.sync_all()?;
+        File::open(&self.dir)?.sync_all()
+    }
+
+    pub fn revoke(&self, scope: ConsentScope) -> io::Result<()> {
+        match fs::remove_file(self.path(scope)) {
+            Ok(()) => File::open(&self.dir)?.sync_all(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 pub struct Opened {
+    pub tokens: ConsentTokens,
     pub session: String,
     pub ledger_path: PathBuf,
     pub ledger: LogWriter<Record>,
@@ -223,8 +271,21 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     let consent_path = dir.join("consent.log");
     let mut consent_state = ConsentState::default();
     let consent_scan = scan_and_repair::<ConsentRecord>(&consent_path, |r| consent_state.apply(r))?;
+    let tokens = ConsentTokens::new(dir);
     if consent_scan.torn_bytes.is_some() {
+        // A torn consent record may have been a revocation: fail closed until re-granted.
         recovered.torn_tails += 1;
+        consent_state = ConsentState::default();
+    }
+    for scope in [ConsentScope::Capture, ConsentScope::PersonalVoice] {
+        let logged = match scope {
+            ConsentScope::Capture => &mut consent_state.capture,
+            ConsentScope::PersonalVoice => &mut consent_state.personal_voice,
+        };
+        *logged = *logged && tokens.granted(scope);
+        if !*logged {
+            tokens.revoke(scope).map_err(io_err(dir))?;
+        }
     }
 
     let mut unclosed: Vec<PathBuf> = fs::read_dir(&ledger_dir)
@@ -269,6 +330,7 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         u64::MAX,
     )?;
     Ok(Opened {
+        tokens,
         session,
         ledger_path,
         ledger,
@@ -664,6 +726,50 @@ mod tests {
                 reconciled: false,
             }
         );
+    }
+
+    fn consent(granted: bool) -> ConsentRecord {
+        ConsentRecord {
+            v: 1,
+            scope: ConsentScope::Capture,
+            granted,
+            speaker: voice_domain::consent::Speaker::Owner,
+            rights_review: None,
+            deletion_scope: vec![],
+        }
+    }
+
+    fn write_consent(dir: &Path, records: &[ConsentRecord]) {
+        let mut out = Vec::new();
+        for (i, r) in records.iter().enumerate() {
+            out.extend(encode(i as u64 + 1, "s", r).unwrap());
+        }
+        fs::write(dir.join("consent.log"), out).unwrap();
+    }
+
+    #[test]
+    fn consent_stands_only_with_its_token_and_a_torn_tail_fails_closed() {
+        // Logged and token present: granted.
+        let dir = temp_dir("token-ok");
+        write_consent(&dir, &[consent(true)]);
+        ConsentTokens::new(&dir).grant(ConsentScope::Capture).unwrap();
+        assert!(open(&dir, 100).unwrap().consent_state.capture);
+        // Logged, but the token is gone (a revocation whose record never landed): revoked.
+        let dir = temp_dir("token-missing");
+        write_consent(&dir, &[consent(true)]);
+        assert!(!open(&dir, 100).unwrap().consent_state.capture);
+        // A torn record at the tail may have been a revocation: revoked, and the token removed.
+        let dir = temp_dir("token-torn");
+        write_consent(&dir, &[consent(true)]);
+        ConsentTokens::new(&dir).grant(ConsentScope::Capture).unwrap();
+        let mut f = OpenOptions::new().append(true).open(dir.join("consent.log")).unwrap();
+        f.write_all(b"0badc0de {\"v\":1,\"seq\":2,\"rec\":{\"v\":1,\"scope\":\"cap")
+            .unwrap();
+        drop(f);
+        let opened = open(&dir, 100).unwrap();
+        assert!(!opened.consent_state.capture);
+        assert_eq!(opened.recovered.torn_tails, 1);
+        assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
     }
 
     #[tokio::test]

@@ -44,6 +44,12 @@ pub enum Input {
     LedgerUnavailable {
         reason: FailureReason,
     },
+    /// The shell could not make a consent change durable. A failed grant is undone (fail
+    /// closed); a failed revocation stays in force; no further grant is accepted.
+    ConsentUnavailable {
+        scope: ConsentScope,
+        granted: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +98,8 @@ pub enum Refused {
     PersonalVoiceUnavailable,
     #[error("handled by the service shell, not the session")]
     ShellMessage,
+    #[error("consent cannot be recorded, so it cannot be granted")]
+    ConsentLogUnavailable,
 }
 
 impl Refused {
@@ -107,6 +115,7 @@ impl Refused {
             Self::RightsReviewRequired => "rights_review_required",
             Self::PersonalVoiceUnavailable => "personal_voice_unavailable",
             Self::ShellMessage => "shell_message",
+            Self::ConsentLogUnavailable => "consent_log_unavailable",
         }
     }
 }
@@ -124,6 +133,8 @@ pub struct Session {
     /// Tool calls marked uncertain whose real result may still arrive.
     unresolved: BTreeMap<CallId, TurnId>,
     ledger_ok: bool,
+    /// False once a consent change could not be recorded: grants are refused from then on.
+    consent_writable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +195,7 @@ impl Session {
             fence: TurnId(0),
             unresolved: BTreeMap::new(),
             ledger_ok: true,
+            consent_writable: true,
         }
     }
 
@@ -222,6 +234,7 @@ impl Session {
             Input::Client(msg) => self.client(msg, &mut out)?,
             Input::TimerFired(timer) => self.timer(timer, &mut out),
             Input::ToolFinished { call, outcome } => self.tool_finished(call, outcome, &mut out),
+            Input::ConsentUnavailable { scope, granted } => self.consent_unavailable(scope, granted, &mut out),
             Input::LedgerUnavailable { reason } => {
                 self.ledger_ok = false;
                 if self.turn.is_some() {
@@ -454,6 +467,9 @@ impl Session {
         rights_review: Option<String>,
         out: &mut Vec<Output>,
     ) -> Result<(), Refused> {
+        if grant && !self.consent_writable {
+            return Err(Refused::ConsentLogUnavailable);
+        }
         if scope == ConsentScope::PersonalVoice && grant {
             if !rights_review.as_deref().is_some_and(consent::is_rights_review_hash) {
                 return Err(Refused::RightsReviewRequired);
@@ -485,6 +501,36 @@ impl Session {
         }
         out.push(Output::Send(ServiceMessage::ConsentState(self.consent)));
         Ok(())
+    }
+
+    fn consent_unavailable(&mut self, scope: ConsentScope, granted: bool, out: &mut Vec<Output>) {
+        self.consent_writable = false;
+        let active = self.active_turn();
+        if granted {
+            // The grant is not durable, so it does not stand: back to revoked.
+            let undo = ConsentRecord {
+                v: 1,
+                scope,
+                granted: false,
+                speaker: Speaker::Owner,
+                rights_review: None,
+                deletion_scope: consent::deletion_scope(scope),
+            };
+            self.consent.apply(&undo);
+            if scope == ConsentScope::Capture
+                && let Some(turn) = active
+            {
+                let cancelled = self.abort(UncertainReason::ConsentRevoked, out);
+                out.push(Output::Record(Record::Interrupted { turn, cancelled }));
+                self.close(Outcome::ConsentRevoked, out);
+            }
+        }
+        out.push(Output::Send(ServiceMessage::Degraded {
+            turn: self.active_turn(),
+            stage: Stage::Ledger,
+            reason: FailureReason::LedgerIo,
+        }));
+        out.push(Output::Send(ServiceMessage::ConsentState(self.consent)));
     }
 
     // ---- recognizer -----------------------------------------------------------------

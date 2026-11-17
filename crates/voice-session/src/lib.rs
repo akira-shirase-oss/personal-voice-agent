@@ -110,6 +110,9 @@ struct Actor<E> {
     ledger_down: bool,
     /// A ledger failure noticed while applying outputs, fed to the reducer next.
     pending_fault: Option<FailureReason>,
+    /// A consent change that could not be made durable, fed to the reducer next.
+    pending_consent: Option<(voice_domain::consent::ConsentScope, bool)>,
+    tokens: store::ConsentTokens,
     summary: Summary,
 }
 
@@ -166,6 +169,7 @@ where
         }
     };
     let store::Opened {
+        tokens,
         session: session_id,
         ledger_path,
         ledger,
@@ -203,6 +207,8 @@ where
         log,
         ledger_down: false,
         pending_fault: None,
+        pending_consent: None,
+        tokens,
         summary: Summary {
             session: session_id.clone(),
             reason: EndReason::Eof,
@@ -402,10 +408,13 @@ impl<E: ToolExecutor> Actor<E> {
                     self.send(notice).await?;
                 }
             }
-            next = self
-                .pending_fault
-                .take()
-                .map(|reason| Input::LedgerUnavailable { reason });
+            next = match self.pending_consent.take() {
+                Some((scope, granted)) => Some(Input::ConsentUnavailable { scope, granted }),
+                None => self
+                    .pending_fault
+                    .take()
+                    .map(|reason| Input::LedgerUnavailable { reason }),
+            };
         }
         Ok(())
     }
@@ -434,10 +443,35 @@ impl<E: ToolExecutor> Actor<E> {
                     }
                 }
                 Output::Consent(rec) => {
-                    if let Err(e) = self.consent.append_durable(rec, self.io_timeout).await {
-                        drop(outputs);
-                        self.ledger_error(e);
-                        return Ok(());
+                    let (scope, granted) = (rec.scope, rec.granted);
+                    if !granted {
+                        // Revoke on disk first: unlinking the token needs no free space.
+                        let tokens = self.tokens.clone();
+                        if !matches!(
+                            tokio::task::spawn_blocking(move || tokens.revoke(scope)).await,
+                            Ok(Ok(()))
+                        ) {
+                            self.log.event("consent_token_unlink_failed", &[]);
+                        }
+                    }
+                    let mut durable = self.consent.append_durable(rec, self.io_timeout).await.is_ok();
+                    if durable && granted {
+                        let tokens = self.tokens.clone();
+                        durable = matches!(
+                            tokio::task::spawn_blocking(move || tokens.grant(scope)).await,
+                            Ok(Ok(()))
+                        );
+                    }
+                    if !durable {
+                        self.log.event("consent_unrecorded", &[("granted", granted.into())]);
+                        self.pending_consent = Some((scope, granted));
+                        if granted {
+                            // A grant that is not durable does not stand: send nothing of it.
+                            drop(outputs);
+                            return Ok(());
+                        }
+                        // A revocation stands anyway: finish the step, so the app hears the
+                        // turn close and the revoked state.
                     }
                 }
                 Output::Arm { timer, after_ms } => {
