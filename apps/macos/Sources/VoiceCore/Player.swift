@@ -33,7 +33,7 @@ public final class TurnFencedPlayer: @unchecked Sendable {
     private let offline: Bool
 
     private struct State {
-        var fence = TurnID(0)
+        var fence = PlaybackPosition(epoch: 0, turn: TurnID(0))
         var queuedFrames: AVAudioFramePosition = 0
         var generation: UInt64 = 0
         var stats = PlayerStats()
@@ -97,7 +97,18 @@ public final class TurnFencedPlayer: @unchecked Sendable {
         }
     }
 
-    public var fence: TurnID { state.withLock { $0.fence } }
+    /// The fence's turn within its epoch (tests and diagnostics).
+    public var fence: TurnID { state.withLock { $0.fence.turn } }
+    public var fencePosition: PlaybackPosition { state.withLock { $0.fence } }
+
+    /// Whether a chunk at `position` would be accepted now.
+    public func accepts(_ position: PlaybackPosition) -> Bool { state.withLock { position >= $0.fence } }
+
+    /// A new service session started: refuse every chunk of earlier sessions from here on,
+    /// accept this session's turns. The fence only rises.
+    public func beginEpoch(_ epoch: UInt64) {
+        state.withLock { s in s.fence = max(s.fence, PlaybackPosition(epoch: epoch, turn: TurnID(0))) }
+    }
     public var stats: PlayerStats { state.withLock { $0.stats } }
 
     /// Schedules a chunk unless its turn is below the fence or the queue is full.
@@ -105,7 +116,7 @@ public final class TurnFencedPlayer: @unchecked Sendable {
     @discardableResult
     public func enqueue(_ chunk: AudioChunk, played: (@Sendable () -> Void)? = nil) -> EnqueueResult {
         state.withLock { s in
-            if chunk.turn < s.fence {
+            if chunk.position < s.fence {
                 s.stats.droppedStale += 1
                 return .droppedStale
             }
@@ -142,11 +153,11 @@ public final class TurnFencedPlayer: @unchecked Sendable {
     /// Stops playback now and refuses every chunk of a turn below `fence` from here on.
     /// Returns how long the stop took on this thread.
     @discardableResult
-    public func stop(fence: TurnID) -> Duration {
+    public func stop(fence: TurnID, epoch: UInt64 = 0) -> Duration {
         let clock = ContinuousClock()
         let started = clock.now
         state.withLock { s in
-            s.fence = max(s.fence, fence)
+            s.fence = max(s.fence, PlaybackPosition(epoch: epoch, turn: fence))
             s.generation += 1
             s.queuedFrames = 0
             s.stats.stops += 1

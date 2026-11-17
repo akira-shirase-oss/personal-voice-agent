@@ -70,6 +70,7 @@ final class ChunkProgress: @unchecked Sendable {
             return !s.started
         }
     }
+    var anyScheduled: Bool { state.withLock { $0.started } }
     /// True when this completes the chunk.
     func played() -> Bool { state.withLock { s in s.played += 1; return Self.done(&s) } }
     func synthesisEnded() -> Bool { state.withLock { s in s.synthesized = true; return Self.done(&s) } }
@@ -101,6 +102,9 @@ public actor Conversation {
     private var callTurn: [CallID: TurnID] = [:]
     private var timing: [TurnID: TurnTiming] = [:]
     private var restarts = 0
+    /// One per launch of the service; tags every chunk so a restarted session (which numbers
+    /// turns from 1 again) is never confused with the one that died.
+    private var epoch: UInt64 = 0
     private var stopping = false
     private static let maxPendingBuffers = 512
 
@@ -115,6 +119,8 @@ public actor Conversation {
     public func start() throws {
         config.model.prewarm()
         let p = try SessionProcess(binary: config.binary, dataDir: config.dataDir, limits: config.limits)
+        epoch += 1
+        player.beginEpoch(epoch)
         process = p
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))
         Task { [weak self] in
@@ -137,7 +143,20 @@ public actor Conversation {
     private func handleExit(_ status: Int32, of p: SessionProcess) {
         guard p === process else { return }
         emit.yield(.serviceExited(status))
-        stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+        // The session is gone: stop its audio and drop all of its call state. The next
+        // session reuses turn and call numbers from 1, so nothing of this one may linger.
+        player.stop(fence: TurnID(UInt64.max), epoch: epoch)
+        for task in calls.values { task.cancel() }
+        for task in synthesisTail.values { task.cancel() }
+        for session in sessions.values { Task { await session.cancel() } }
+        calls.removeAll()
+        callTurn.removeAll()
+        synthesisTail.removeAll()
+        recognition.removeAll()
+        sessions.removeAll()
+        pendingAudio.removeAll()
+        timing.removeAll()
+        if let c = capturing { emit.yield(.capture(c, on: false)) }
         currentTurn = nil
         capturing = nil
         guard !stopping else { return }
@@ -164,7 +183,7 @@ public actor Conversation {
 
     public func pushToTalkDown() {
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
-        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1)) }
+        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         send(.pttDown)
     }
 
@@ -175,7 +194,7 @@ public actor Conversation {
     }
 
     public func interrupt() {
-        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1)) }
+        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         send(.interrupt)
     }
 
@@ -263,7 +282,7 @@ public actor Conversation {
     /// Stops playback, raises the fence and cancels every provider call of older turns.
     private func stopLocalWork(fence: TurnID?) {
         guard let fence else { return }
-        player.stop(fence: fence)
+        player.stop(fence: fence, epoch: epoch)
         for (call, turn) in callTurn where turn < fence {
             calls.removeValue(forKey: call)?.cancel()
             callTurn.removeValue(forKey: call)
@@ -359,10 +378,17 @@ public actor Conversation {
         let target = player.format
         let progress = ChunkProgress()
         let mark = marker(turn)
+        let position = PlaybackPosition(epoch: epoch, turn: turn)
         let task = Task {
             // Chunks of one turn are synthesized in order; playback overlaps the next synthesis.
             await previous?.value
-            guard !Task.isCancelled, turn >= player.fence else { return }
+            guard !Task.isCancelled else { return }
+            guard player.accepts(position) else {
+                // Say so rather than go quiet: the service then fails the chunk at once (or
+                // drops the reply as late) instead of waiting for its deadline.
+                try? process?.send(.ttsFailed(call: call, reason: .cancelled))
+                return
+            }
             let converter = Mutex<FormatConverter?>(nil)
             do {
                 try await synthesizer.synthesize(text, voice: voice) { pcm in
@@ -379,7 +405,7 @@ public actor Conversation {
                         guard let converted = try? c?.convert(pcm) else { return }
                         ready = converted
                     }
-                    let result = player.enqueue(AudioChunk(turn: turn, seq: seq, pcm: ready)) {
+                    let result = player.enqueue(AudioChunk(epoch: position.epoch, turn: turn, seq: seq, pcm: ready)) {
                         if progress.played() { try? process?.send(.ttsFinished(call: call)) }
                     }
                     if result == .scheduled, progress.scheduled() {
@@ -387,7 +413,12 @@ public actor Conversation {
                         try? process?.send(.ttsStarted(call: call))
                     }
                 }
-                if progress.synthesisEnded() { try? process?.send(.ttsFinished(call: call)) }
+                if progress.synthesisEnded() {
+                    try? process?.send(.ttsFinished(call: call))
+                } else if !progress.anyScheduled, !Task.isCancelled {
+                    // Every buffer was refused by the fence: nothing will play.
+                    try? process?.send(.ttsFailed(call: call, reason: .cancelled))
+                }
             } catch {
                 if !Task.isCancelled { try? process?.send(.ttsFailed(call: call, reason: .error)) }
             }

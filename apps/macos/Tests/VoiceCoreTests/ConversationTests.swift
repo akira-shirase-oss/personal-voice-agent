@@ -71,6 +71,23 @@ func talk(_ c: Conversation, _ r: Recorder) async throws {
     await c.pushToTalkUp()
 }
 
+/// Stalls on its first turn (so a crash can land mid-turn), then answers like the test provider.
+final class StallOnceProvider: LanguageModeling, @unchecked Sendable {
+    let modelID = "stall-once-test-provider"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    private let calls = Mutex(0)
+    func availability() -> LMAvailability { .available }
+    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        let n = calls.withLock { c -> Int in
+            c += 1
+            return c
+        }
+        if n == 1 { try await Task.sleep(for: .seconds(3_600)) }
+        try await DeterministicTestProvider().respond(to: heard, events: events)
+    }
+}
+
 @Suite("Conversation through the real session service", .serialized, .enabled("voice-session is built (cargo build -p voice-session)") { haveBinary })
 struct ConversationTests {
     @Test("a reply turn is heard, spoken and closed, with timing")
@@ -151,22 +168,31 @@ struct ConversationTests {
 
     /// Failure case: the service crashes; the app restarts it, recovery closes the open turn,
     /// and the next turn works.
+    /// Failure case: the service crashes mid-turn; the app restarts it, recovery closes the
+    /// open turn, and the next turn is actually spoken (the new session numbers turns from 1).
     @Test("a killed service is restarted, recovers its ledger, and serves the next turn")
     func crashRestart() async throws {
-        let (c, r, pump) = try makeConversation("crash", model: DeterministicTestProvider(mode: .stall))
+        let (c, r, pump) = try makeConversation("crash", model: StallOnceProvider())
         defer { pump.stop() }
         try await startWithConsent(c, r)
         try await talk(c, r)
         _ = await r.next { if case .heard = $0 { true } else { false } }
         await c.flush()
         _ = await r.next { if case .notice("flushed") = $0 { true } else { false } }
-        await c.killServiceForDrill()
+        await c.killServiceForDrill()  // turn 1 is open, waiting on the (stalled) model
         #expect(await r.next { if case .serviceExited = $0 { true } else { false } } != nil)
         #expect(await r.next { if case .serviceRestarting(1) = $0 { true } else { false } } != nil)
         let ready = await r.next(isReady)
         guard case .ready(_, let consent, let recovered)? = ready else { Issue.record("no ready after restart"); return }
         #expect(recovered.sessions == 1 && recovered.abandonedTurns == 1, "\(recovered)")
         #expect(consent.capture, "consent survived the crash")
+        // The next turn — turn 1 of the new session — must complete and be heard.
+        let loudBefore = pump.loudBlocks.withLock { $0 }
+        try await talk(c, r)
+        let (turn, outcome, _) = try #require(await r.next { closed($0) != nil }.flatMap(closed))
+        #expect(turn == TurnID(1), "the new session numbers turns from 1")
+        #expect(outcome == .completed, "the first turn after a restart is served")
+        #expect(pump.loudBlocks.withLock { $0 } > loudBefore, "and it is heard")
         await c.shutdown()
     }
 

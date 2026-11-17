@@ -89,6 +89,20 @@ struct PlayerTests {
         #expect(p.stats.droppedStale == 1)
     }
 
+    @Test("a new session's turn 1 plays, and no chunk of the dead session ever does")
+    func epochs() throws {
+        let p = try TurnFencedPlayer(format: playerFormat, offline: true)
+        // Session 1 was on turn 7 when it died.
+        p.stop(fence: TurnID(UInt64.max), epoch: 1)
+        p.beginEpoch(2)
+        #expect(p.enqueue(AudioChunk(epoch: 1, turn: TurnID(9), seq: 0, pcm: Audio.tone(seconds: 0.2, format: playerFormat))) == .droppedStale)
+        #expect(try listen({ try p.render($0) }, wall: 0.5) == nil, "a late chunk of the dead session stays silent")
+        #expect(p.enqueue(AudioChunk(epoch: 2, turn: TurnID(1), seq: 0, pcm: Audio.tone(seconds: 0.2, format: playerFormat))) == .scheduled)
+        #expect(try listen { try p.render($0) } != nil, "the new session's turn 1 plays")
+        p.beginEpoch(1)
+        #expect(p.fencePosition == PlaybackPosition(epoch: 2, turn: TurnID(0)), "the fence never moves back")
+    }
+
     @Test("the fence only rises: an older stop cannot reopen a newer fence")
     func fenceIsMonotonic() throws {
         let p = try TurnFencedPlayer(format: playerFormat, offline: true)
