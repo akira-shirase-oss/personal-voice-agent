@@ -1,9 +1,10 @@
 # Personal Voice Agent
 
 > **Status — first release (V0–V2) built and tested on this Mac; not yet
-> shippable.** The live microphone drills, the human evaluation set and the
-> million-scale load runs are owed, and the on-device model misses the
-> latency budget. `docs/ROADMAP.md` lists what is done, with its evidence,
+> shippable.** An independent review's findings are fixed with tests. The
+> live microphone drills, the human evaluation set, the million-scale load
+> runs and a long soak are owed, and the on-device model misses the latency
+> budget at p95. `docs/ROADMAP.md` lists what is done, with its evidence,
 > and what is owed.
 
 A voice interface that learns your style without taking uncontrolled

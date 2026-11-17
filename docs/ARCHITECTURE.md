@@ -63,8 +63,10 @@ covers the JSON bytes exactly and the JSON is
   being sent, a consent change, an explicit `flush`) wait for that ack.
 - **Recovery** on start: every record is verified. A torn final line
   (missing newline or bad CRC at the tail only) is truncated and recorded
-  as `recovered_torn_tail`; corruption before the tail stops the service
-  with an error instead of guessing. A session log without
+  as `recovered_torn_tail`. So is a zero-filled hole followed only by lines
+  of the same unsynced batch (at most 1 MiB, every sequence number after the
+  last good one): what a power loss can leave, never acknowledged. Any other
+  damage stops the service with an error instead of guessing. A session log without
   `session_closed` gets `turn_abandoned` for each open turn, `uncertain`
   for each tool call sent without a result, then `session_closed`.
 - **Bounds:** a record is at most 64 KiB (the domain's content limits keep real records far smaller); a session log holds at most

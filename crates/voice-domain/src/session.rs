@@ -9,7 +9,7 @@ use crate::guard;
 use crate::ids::{CallId, Digest, TurnId};
 use crate::limits::Limits;
 use crate::policy::{self, Decision, Heard, Refusal};
-use crate::proposal::{Action, Proposal, ProposalKind};
+use crate::proposal::{Action, Proposal, ProposalKind, Slot};
 use crate::protocol::{ClientMessage, FailureReason, Outcome, ServiceMessage, Stage};
 use crate::record::Record;
 use crate::tools::{ToolOutcome, ToolRegistry, UncertainReason};
@@ -43,6 +43,12 @@ pub enum Input {
     /// The shell could not write the ledger (I/O error or record cap).
     LedgerUnavailable {
         reason: FailureReason,
+    },
+    /// The shell could not make a consent change durable. A failed grant is undone (fail
+    /// closed); a failed revocation stays in force; no further grant is accepted.
+    ConsentUnavailable {
+        scope: ConsentScope,
+        granted: bool,
     },
 }
 
@@ -92,6 +98,8 @@ pub enum Refused {
     PersonalVoiceUnavailable,
     #[error("handled by the service shell, not the session")]
     ShellMessage,
+    #[error("consent cannot be recorded, so it cannot be granted")]
+    ConsentLogUnavailable,
 }
 
 impl Refused {
@@ -107,6 +115,7 @@ impl Refused {
             Self::RightsReviewRequired => "rights_review_required",
             Self::PersonalVoiceUnavailable => "personal_voice_unavailable",
             Self::ShellMessage => "shell_message",
+            Self::ConsentLogUnavailable => "consent_log_unavailable",
         }
     }
 }
@@ -124,6 +133,8 @@ pub struct Session {
     /// Tool calls marked uncertain whose real result may still arrive.
     unresolved: BTreeMap<CallId, TurnId>,
     ledger_ok: bool,
+    /// False once a consent change could not be recorded: grants are refused from then on.
+    consent_writable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +195,7 @@ impl Session {
             fence: TurnId(0),
             unresolved: BTreeMap::new(),
             ledger_ok: true,
+            consent_writable: true,
         }
     }
 
@@ -222,6 +234,7 @@ impl Session {
             Input::Client(msg) => self.client(msg, &mut out)?,
             Input::TimerFired(timer) => self.timer(timer, &mut out),
             Input::ToolFinished { call, outcome } => self.tool_finished(call, outcome, &mut out),
+            Input::ConsentUnavailable { scope, granted } => self.consent_unavailable(scope, granted, &mut out),
             Input::LedgerUnavailable { reason } => {
                 self.ledger_ok = false;
                 if self.turn.is_some() {
@@ -246,7 +259,11 @@ impl Session {
 
     fn client(&mut self, msg: ClientMessage, out: &mut Vec<Output>) -> Result<(), Refused> {
         match msg {
-            ClientMessage::Hello { .. } | ClientMessage::Flush | ClientMessage::Shutdown => {
+            ClientMessage::Hello { .. }
+            | ClientMessage::Flush
+            | ClientMessage::Ping { .. }
+            | ClientMessage::Forget { .. }
+            | ClientMessage::Shutdown => {
                 return Err(Refused::ShellMessage);
             }
             ClientMessage::PttDown => self.ptt_down(out)?,
@@ -454,6 +471,9 @@ impl Session {
         rights_review: Option<String>,
         out: &mut Vec<Output>,
     ) -> Result<(), Refused> {
+        if grant && !self.consent_writable {
+            return Err(Refused::ConsentLogUnavailable);
+        }
         if scope == ConsentScope::PersonalVoice && grant {
             if !rights_review.as_deref().is_some_and(consent::is_rights_review_hash) {
                 return Err(Refused::RightsReviewRequired);
@@ -485,6 +505,36 @@ impl Session {
         }
         out.push(Output::Send(ServiceMessage::ConsentState(self.consent)));
         Ok(())
+    }
+
+    fn consent_unavailable(&mut self, scope: ConsentScope, granted: bool, out: &mut Vec<Output>) {
+        self.consent_writable = false;
+        let active = self.active_turn();
+        if granted {
+            // The grant is not durable, so it does not stand: back to revoked.
+            let undo = ConsentRecord {
+                v: 1,
+                scope,
+                granted: false,
+                speaker: Speaker::Owner,
+                rights_review: None,
+                deletion_scope: consent::deletion_scope(scope),
+            };
+            self.consent.apply(&undo);
+            if scope == ConsentScope::Capture
+                && let Some(turn) = active
+            {
+                let cancelled = self.abort(UncertainReason::ConsentRevoked, out);
+                out.push(Output::Record(Record::Interrupted { turn, cancelled }));
+                self.close(Outcome::ConsentRevoked, out);
+            }
+        }
+        out.push(Output::Send(ServiceMessage::Degraded {
+            turn: self.active_turn(),
+            stage: Stage::Ledger,
+            reason: FailureReason::LedgerIo,
+        }));
+        out.push(Output::Send(ServiceMessage::ConsentState(self.consent)));
     }
 
     // ---- recognizer -----------------------------------------------------------------
@@ -612,16 +662,25 @@ impl Session {
             return;
         }
         let mut spoken: String = trimmed.chars().take(max_chars).collect();
+        let mut model_text = None;
         if let Some(index) = index
             && !t.executed
             && guard::claims_completion(&spoken)
         {
             out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
-            guard::DRAFT_DISCLAIMER.clone_into(&mut spoken);
+            model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
         }
         let seq = r.next_seq;
         r.next_seq += 1;
         r.chunks.insert(call, false);
+        out.push(Output::Record(Record::Spoken {
+            turn: t.id,
+            call,
+            seq,
+            text: spoken.clone(),
+            index,
+            model_text,
+        }));
         out.push(Output::Send(ServiceMessage::TtsRequest {
             call,
             turn: t.id,
@@ -662,7 +721,8 @@ impl Session {
         out.push(Output::Record(Record::Inferred {
             turn,
             call,
-            proposal: proposal.clone(),
+            // Bounded for the record; the policy below still judges the proposal as received.
+            proposal: bounded(&proposal, &self.limits),
             model: model.chars().take(max_name).collect(),
             instructions: instructions.chars().take(max_name).collect(),
         }));
@@ -1013,6 +1073,28 @@ fn late(call: CallId, message: &str, out: &mut Vec<Output>) {
         call,
         message: message.to_owned(),
     }));
+}
+
+/// A proposal cut to the limits, for the ledger: at most `max_slots` slots, each name and value
+/// cut to its limit, the tool name cut to `max_name_chars`. Replies are already bounded.
+fn bounded(p: &Proposal, limits: &Limits) -> Proposal {
+    let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    match p {
+        Proposal::Reply { reply } => Proposal::Reply { reply: reply.clone() },
+        Proposal::Action { reply, tool, slots } => Proposal::Action {
+            reply: reply.clone(),
+            tool: cut(tool, limits.max_name_chars),
+            slots: slots
+                .iter()
+                .take(limits.max_slots)
+                .map(|s| Slot {
+                    name: cut(&s.name, limits.max_name_chars),
+                    kind: s.kind,
+                    value: cut(&s.value, limits.max_slot_value_chars),
+                })
+                .collect(),
+        },
+    }
 }
 
 fn bound_outcome(outcome: ToolOutcome, max: usize) -> ToolOutcome {

@@ -58,8 +58,9 @@ While a reply is playing, switch **Listen while I hold Space** off.
 Ask something, and while the reply is being prepared run
 `pkill -9 -f 'VoiceAgent.app/Contents/MacOS/voice-session'` in Terminal.
 
-- Expect: the status line shows the session restarting, then ready, with a banner saying an
-  unfinished turn was closed. The next turn works.
+- Expect: the app stays up (it must never die with the service), the status line shows the
+  session restarting, then ready, with a banner saying an unfinished turn was closed, and the
+  next turn is spoken.
 
 ## Drill 6 — the model is unavailable
 
@@ -67,6 +68,28 @@ Turn Apple Intelligence off, then ask something.
 
 - Expect: the status line says why the model is unavailable, the turn shows a degraded
   reason, and nothing is spoken as if it were an answer.
+
+## Drill 8 — the fastest tap
+
+Tap Space as quickly as you can, ten times.
+
+- Expect: the menu-bar microphone indicator goes off at once every time (it may not come on at
+  all); no turn shows text you did not say; nothing is recorded after the key is up.
+
+## Drill 9 — hold, then a hung service
+
+Hold Space and, while holding, run `pkill -STOP -f 'VoiceAgent.app/Contents/MacOS/voice-session'`.
+
+- Expect: within about 3 seconds the microphone indicator goes off although Space is still
+  held, the app says the session stopped responding, and a new session becomes ready (the
+  stopped service is killed by the app; no `pkill -CONT` is needed).
+
+## Drill 10 — delete history
+
+Talk for a few turns, then click **Delete history**.
+
+- Expect: a banner says how many session logs were removed; `grep -r` for a phrase you said
+  finds nothing under `~/Library/Application Support/PersonalVoiceAgent`.
 
 ## Drill 7 — the 100 consented utterances and three one-hour sessions (ship gate)
 

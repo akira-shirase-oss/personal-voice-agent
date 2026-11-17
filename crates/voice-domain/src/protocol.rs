@@ -71,6 +71,15 @@ pub enum ClientMessage {
         rights_review: Option<String>,
     },
     Flush,
+    /// Liveness: answered by `pong` from the service shell, without touching the ledger.
+    Ping {
+        seq: u64,
+    },
+    /// Carry out a consent scope's deletion scope now (D-018): for `capture`, delete every
+    /// heard transcript. Refused while a turn is open.
+    Forget {
+        scope: ConsentScope,
+    },
     Shutdown,
 }
 
@@ -94,6 +103,8 @@ impl ClientMessage {
             Self::Confirm { .. } => "confirm",
             Self::Consent { .. } => "consent",
             Self::Flush => "flush",
+            Self::Ping { .. } => "ping",
+            Self::Forget { .. } => "forget",
             Self::Shutdown => "shutdown",
         }
     }
@@ -165,6 +176,15 @@ pub enum ServiceMessage {
     },
     Flushed {
         seq: u64,
+    },
+    Pong {
+        seq: u64,
+    },
+    /// A `forget` was carried out: how many files and bytes were deleted.
+    Forgotten {
+        scope: ConsentScope,
+        files: u32,
+        bytes: u64,
     },
     Error {
         code: String,

@@ -80,13 +80,27 @@ proof gate in `ROADMAP.md`:
 ## Non-negotiable invariants
 
 1. **Consent before capture and before any profile.** Capture happens only
-   while push-to-talk is held and capture consent is granted. Enroll only
-   your own voice or a speaker with explicit rights; consent and deletion
-   scope are recorded. Revocation stops capture/playback immediately and
-   prevents any further use of the revoked scope.
+   while push-to-talk is held and capture consent is granted, and the app
+   enforces it itself: the key coming up stops the microphone at once
+   (before any reply from the service), a capture that would start after
+   the key is up never starts, capture has its own 60 s cap, and a service
+   that stops answering is detected and replaced with the microphone off.
+   Enroll only your own voice or a speaker with explicit rights; consent and
+   deletion scope are recorded. Revocation stops capture/playback
+   immediately and prevents any further use of the revoked scope, also when
+   the disk is full (it fails closed) and with only one service per data
+   directory.
 2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
    recognizer's output, the assistant's inference and tool-result
-   evidence. The ledger is what happened; the model's narration is not.
+   evidence. The ledger is what happened; the model's narration is not. A
+   reply is drafted text: a sentence that says an action happened is spoken
+   only when this turn has executed evidence, otherwise it is replaced by a
+   draft disclaimer. Claims are found by a structural classifier
+   (first-person, passive, headline and bare past forms of action verbs,
+   completion phrases; questions, negations, futures and conditionals
+   excluded), pinned by a phrasing corpus (`fixtures/claims/corpus.tsv`). A
+   classifier can miss an unusual phrasing, so what was spoken is recorded
+   too.
 3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
    interruption playback stops and downstream work is cancelled; a late
    text/audio chunk from an old turn can never play over a new one; an
@@ -97,8 +111,9 @@ proof gate in `ROADMAP.md`:
    permissions or invoke a tool without the policy's decision.
 5. **Data stays local and its deletion is described honestly (D-018).**
    No audio is retained. The ledger and consent log are local files
-   (mode 0600, excluded from Time Machine). Deleting them removes them
-   from the live file system; copies can survive in APFS local snapshots
+   (mode 0600, excluded from Time Machine). Heard transcripts are kept 30
+   days by default, and "Delete history" removes every one at once. Either
+   deletion removes them from the live file system; copies can survive in APFS local snapshots
    or backups made before the exclusion, until those expire — the docs
    never claim more. V3 adds per-item encryption with keys in the
    Keychain so that deleting an item destroys its key ("unrecoverable

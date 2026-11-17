@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Second guard behind F_SETNOSIGPIPE on the service pipe: no write may kill the app.
+        signal(SIGPIPE, SIG_IGN)
         // An unbundled development run still gets a Dock icon and keyboard focus.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
@@ -103,6 +105,9 @@ struct StatusBar: View {
             HStack(spacing: 16) {
                 Toggle("Listen while I hold Space", isOn: Binding(get: { model.consent.capture }, set: { model.setConsent($0) }))
                     .disabled(model.service != .ready)
+                Button("Delete history") { model.deleteHistory() }
+                    .disabled(model.service != .ready)
+                    .help("Deletes every heard transcript kept on this Mac")
                 if !model.micGranted {
                     Button("Allow microphone") { Task { await model.requestMicrophone() } }
                 }

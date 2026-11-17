@@ -14,7 +14,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
-use voice_domain::consent::{ConsentRecord, ConsentState};
+use voice_domain::consent::{ConsentRecord, ConsentScope, ConsentState};
 use voice_domain::protocol::Recovered;
 use voice_domain::record::{Record, RecoveryFold};
 
@@ -22,6 +22,10 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Largest encoded record. The domain's content bounds keep real records far below it.
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_BATCH: usize = 1_024;
+/// The writer syncs before its unsynced bytes pass this, so after a power loss at most this
+/// much (plus one record) of a log can be an unsynced, possibly scrambled tail.
+const MAX_BATCH_BYTES: usize = 1024 * 1024;
+const MAX_UNSYNCED_TAIL: u64 = (MAX_BATCH_BYTES + MAX_RECORD_BYTES) as u64;
 const QUEUE: usize = 4_096;
 
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +38,8 @@ pub enum StoreError {
         line: u64,
         why: &'static str,
     },
+    #[error("another session service is using {path}")]
+    Locked { path: PathBuf },
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> StoreError + '_ {
@@ -153,7 +159,14 @@ pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&
             Some("torn line")
         };
         if let Some(why) = problem {
-            if offset < len {
+            // A torn last write is an ordinary torn tail. A zero-filled hole is a power loss's
+            // unsynced batch only if everything after it fits that story; else it is damage.
+            let torn = if buf.contains(&0) {
+                unsynced_batch_after(&file, start, len, scan.last_seq)
+            } else {
+                offset >= len
+            };
+            if !torn {
                 return Err(StoreError::Corrupt {
                     path: path.to_owned(),
                     line: line_no,
@@ -170,6 +183,54 @@ pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&
     Ok(scan)
 }
 
+/// Whether the bytes from `start` to the end look like one unsynced batch a power loss left
+/// behind: short enough to be one batch, and every line in it that decodes carries a sequence
+/// number after `last_seq` (zero-filled holes are skipped). Anything else is real damage.
+fn unsynced_batch_after(file: &File, start: u64, len: u64, last_seq: u64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    if len - start > MAX_UNSYNCED_TAIL {
+        return false;
+    }
+    let mut rest = Vec::new();
+    let mut f = file;
+    if f.seek(SeekFrom::Start(start)).is_err() || f.read_to_end(&mut rest).is_err() {
+        return false;
+    }
+    let lines: Vec<&[u8]> = rest.split(|&b| b == b'\n').collect();
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw
+            .iter()
+            .position(|&b| b != 0)
+            .map_or(&raw[raw.len()..], |p| &raw[p..]);
+        if line.is_empty() {
+            continue;
+        }
+        match decode::<serde_json::Value>(line) {
+            Ok(env) if env.seq <= last_seq => return false,
+            Ok(_) => {}
+            // A garbled line is acceptable only as part of a hole or as the very last write.
+            Err(_) if raw.contains(&0) || i + 1 == lines.len() => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Directories synced, so tests can check that a new file's directory entry is made durable.
+#[cfg(test)]
+pub(crate) static SYNCED_DIRS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes a directory's entries durable: a new file's first acknowledged records are only safe
+/// once its name is.
+fn sync_dir(dir: &Path) -> Result<(), StoreError> {
+    File::open(dir).and_then(|d| d.sync_all()).map_err(io_err(dir))?;
+    #[cfg(test)]
+    if let Ok(mut v) = SYNCED_DIRS.lock() {
+        v.push(dir.to_owned());
+    }
+    Ok(())
+}
+
 fn create_dir(path: &Path) -> Result<(), StoreError> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -179,6 +240,7 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
+    let existed = path.exists();
     let mut o = OpenOptions::new();
     o.append(true).mode(0o600);
     if create_new {
@@ -186,7 +248,11 @@ fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
     } else {
         o.create(true);
     }
-    o.open(path).map_err(io_err(path))
+    let file = o.open(path).map_err(io_err(path))?;
+    if !existed && let Some(parent) = path.parent() {
+        sync_dir(parent)?;
+    }
+    Ok(file)
 }
 
 /// Appends `records` synchronously and makes them durable (recovery only).
@@ -203,7 +269,57 @@ fn append_now<T: Serialize>(path: &Path, session: &str, mut seq: u64, records: &
     Ok(seq)
 }
 
+/// Consent tokens: `consent.<scope>.granted` exists only while a grant stands. A revocation
+/// unlinks it before the log record is appended, and an unlink needs no free space, so a
+/// revocation holds on disk even when the log cannot be written. Effective consent at start
+/// is "the log says granted and the token exists" (D-017, amended).
+#[derive(Clone, Debug)]
+pub struct ConsentTokens {
+    dir: PathBuf,
+}
+
+impl ConsentTokens {
+    pub fn new(dir: &Path) -> Self {
+        Self { dir: dir.to_owned() }
+    }
+
+    fn path(&self, scope: ConsentScope) -> PathBuf {
+        let name = match scope {
+            ConsentScope::Capture => "capture",
+            ConsentScope::PersonalVoice => "personal_voice",
+        };
+        self.dir.join(format!("consent.{name}.granted"))
+    }
+
+    pub fn granted(&self, scope: ConsentScope) -> bool {
+        self.path(scope).exists()
+    }
+
+    pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
+        let path = self.path(scope);
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)?;
+        f.sync_all()?;
+        File::open(&self.dir)?.sync_all()
+    }
+
+    pub fn revoke(&self, scope: ConsentScope) -> io::Result<()> {
+        match fs::remove_file(self.path(scope)) {
+            Ok(()) => File::open(&self.dir)?.sync_all(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 pub struct Opened {
+    /// Held for the life of the process: one service per data directory.
+    pub lock: File,
+    pub tokens: ConsentTokens,
     pub session: String,
     pub ledger_path: PathBuf,
     pub ledger: LogWriter<Record>,
@@ -212,10 +328,30 @@ pub struct Opened {
     pub recovered: Recovered,
 }
 
+/// One service per data directory, taken before anything is read: a second instance would
+/// otherwise "recover" the first one's live session and write the consent log with its own
+/// sequence counter. The lock lives as long as the returned file (the process).
+fn lock_dir(dir: &Path) -> Result<File, StoreError> {
+    let path = dir.join("lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io_err(&path))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(fs::TryLockError::WouldBlock) => Err(StoreError::Locked { path: dir.to_owned() }),
+        Err(fs::TryLockError::Error(e)) => Err(io_err(&path)(e)),
+    }
+}
+
 /// Opens the data directory: repairs and folds the consent log, closes every session a crash
 /// left open, and starts a new session log. Blocking: call from `spawn_blocking`.
 pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     create_dir(dir)?;
+    let lock = lock_dir(dir)?;
     let ledger_dir = dir.join("ledger");
     create_dir(&ledger_dir)?;
     let mut recovered = Recovered::default();
@@ -223,8 +359,21 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     let consent_path = dir.join("consent.log");
     let mut consent_state = ConsentState::default();
     let consent_scan = scan_and_repair::<ConsentRecord>(&consent_path, |r| consent_state.apply(r))?;
+    let tokens = ConsentTokens::new(dir);
     if consent_scan.torn_bytes.is_some() {
+        // A torn consent record may have been a revocation: fail closed until re-granted.
         recovered.torn_tails += 1;
+        consent_state = ConsentState::default();
+    }
+    for scope in [ConsentScope::Capture, ConsentScope::PersonalVoice] {
+        let logged = match scope {
+            ConsentScope::Capture => &mut consent_state.capture,
+            ConsentScope::PersonalVoice => &mut consent_state.personal_voice,
+        };
+        *logged = *logged && tokens.granted(scope);
+        if !*logged {
+            tokens.revoke(scope).map_err(io_err(dir))?;
+        }
     }
 
     let mut unclosed: Vec<PathBuf> = fs::read_dir(&ledger_dir)
@@ -259,16 +408,17 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         mark_closed(&path)?;
     }
 
-    let session = uuid::Uuid::now_v7().to_string();
-    let ledger_path = ledger_dir.join(format!("{session}.log"));
-    let ledger = LogWriter::start(open_append(&ledger_path, true)?, session.clone(), 0, max_records)?;
+    let (session, ledger_path, ledger) = new_session_log(dir, max_records)?;
     let consent = LogWriter::start(
         open_append(&consent_path, false)?,
         session.clone(),
         consent_scan.last_seq,
         u64::MAX,
+        None,
     )?;
     Ok(Opened {
+        lock,
+        tokens,
         session,
         ledger_path,
         ledger,
@@ -276,6 +426,55 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
         consent_state,
         recovered,
     })
+}
+
+/// Starts a new session log (`ledger/<uuid v7>.log`) and its writer.
+pub fn new_session_log(dir: &Path, max_records: u64) -> Result<(String, PathBuf, LogWriter<Record>), StoreError> {
+    let session = uuid::Uuid::now_v7().to_string();
+    let path = dir.join("ledger").join(format!("{session}.log"));
+    let writer = LogWriter::start(
+        open_append(&path, true)?,
+        session.clone(),
+        0,
+        max_records,
+        Some(|bytes| Record::RecordTooLarge { bytes }),
+    )?;
+    Ok((session, path, writer))
+}
+
+/// Deletes every session log except `keep` (the live one), then syncs the directory.
+/// Returns the files and bytes removed. D-018: this removes them from the live file system;
+/// copies in APFS snapshots or backups made before the data directory's exclusion remain.
+pub fn delete_history(dir: &Path, keep: &Path) -> Result<(u32, u64), StoreError> {
+    remove_logs(dir, |p| p != keep)
+}
+
+/// Deletes closed session logs last modified more than `older_than` ago.
+pub fn expire_history(dir: &Path, older_than: Duration) -> Result<(u32, u64), StoreError> {
+    let cutoff = SystemTime::now().checked_sub(older_than).unwrap_or(UNIX_EPOCH);
+    remove_logs(dir, |p| {
+        p.to_string_lossy().ends_with(".closed.log")
+            && fs::metadata(p).and_then(|m| m.modified()).is_ok_and(|t| t < cutoff)
+    })
+}
+
+fn remove_logs(dir: &Path, select: impl Fn(&Path) -> bool) -> Result<(u32, u64), StoreError> {
+    let ledger = dir.join("ledger");
+    let (mut files, mut bytes) = (0, 0);
+    for entry in fs::read_dir(&ledger).map_err(io_err(&ledger))? {
+        let path = entry.map_err(io_err(&ledger))?.path();
+        if !select(&path) {
+            continue;
+        }
+        let len = fs::metadata(&path).map_or(0, |m| m.len());
+        fs::remove_file(&path).map_err(io_err(&path))?;
+        files += 1;
+        bytes += len;
+    }
+    File::open(&ledger)
+        .and_then(|d| d.sync_all())
+        .map_err(io_err(&ledger))?;
+    Ok((files, bytes))
 }
 
 /// Renames `<id>.log` to `<id>.closed.log` once its `session_closed` is durable, so later
@@ -328,12 +527,20 @@ pub struct LogWriter<T> {
 }
 
 impl<T: Serialize + Send + 'static> LogWriter<T> {
-    fn start(file: File, session: String, seq: u64, max_records: u64) -> Result<Self, StoreError> {
+    /// `placeholder` builds the record written in place of one over `MAX_RECORD_BYTES`, so an
+    /// oversized record leaves a visible mark instead of vanishing.
+    fn start(
+        file: File,
+        session: String,
+        seq: u64,
+        max_records: u64,
+        placeholder: Option<fn(u64) -> T>,
+    ) -> Result<Self, StoreError> {
         let (tx, rx) = mpsc::channel(QUEUE);
         let (fault_tx, fault) = watch::channel(None);
         let thread = std::thread::Builder::new()
             .name("ledger-writer".into())
-            .spawn(move || writer_thread(file, &session, seq, max_records, rx, &fault_tx))
+            .spawn(move || writer_thread(file, &session, seq, max_records, placeholder, rx, &fault_tx))
             .map_err(|e| StoreError::Io {
                 path: PathBuf::from("ledger-writer"),
                 source: e,
@@ -429,6 +636,7 @@ fn writer_thread<T: Serialize>(
     session: &str,
     mut seq: u64,
     max_records: u64,
+    placeholder: Option<fn(u64) -> T>,
     mut rx: mpsc::Receiver<Req<T>>,
     fault: &watch::Sender<Option<Fault>>,
 ) {
@@ -436,16 +644,30 @@ fn writer_thread<T: Serialize>(
     let mut acks: Vec<(Ack, Result<u64, WriteError>)> = Vec::new();
     let mut failed: Option<WriteError> = None;
     let mut written: u64 = 0;
-    while let Some(first) = rx.blocking_recv() {
+    let mut carry: std::collections::VecDeque<Req<T>> = std::collections::VecDeque::new();
+    loop {
+        let Some(first) = carry.pop_front().or_else(|| rx.blocking_recv()) else {
+            break;
+        };
         let mut closing: Option<Ack> = None;
-        let mut pending = vec![first];
-        while pending.len() < MAX_BATCH
-            && let Ok(req) = rx.try_recv()
-        {
-            pending.push(req);
+        let mut pending = std::collections::VecDeque::from([first]);
+        while pending.len() < MAX_BATCH {
+            match carry.pop_front().map_or_else(|| rx.try_recv().ok(), Some) {
+                Some(req) => pending.push_back(req),
+                None => break,
+            }
         }
         let mut batch_acks: Vec<(Ack, u64)> = Vec::new();
-        for req in pending {
+        while let Some(req) = pending.pop_front() {
+            if buf.len() >= MAX_BATCH_BYTES {
+                // Sync before the unsynced bytes pass the bound; the rest waits for the next batch.
+                // Order is kept: what is left of this batch goes before anything carried over.
+                pending.push_front(req);
+                pending.extend(carry.drain(..));
+                carry = pending;
+                pending = std::collections::VecDeque::new();
+                break;
+            }
             match req {
                 Req::Append(rec, ack) => {
                     if let Some(e) = failed {
@@ -471,7 +693,15 @@ fn writer_thread<T: Serialize>(
                                 batch_acks.push((ack, seq));
                             }
                         }
-                        _ => {
+                        other => {
+                            let bytes = other.map_or(0, |l| l.len() as u64);
+                            if let Some(make) = placeholder
+                                && let Ok(line) = encode(seq + 1, session, &make(bytes))
+                            {
+                                seq += 1;
+                                written += 1;
+                                buf.extend_from_slice(&line);
+                            }
                             if let Some(ack) = ack {
                                 acks.push((ack, Err(WriteError::TooLarge)));
                             }
@@ -532,6 +762,22 @@ mod tests {
     }
 
     #[test]
+    fn new_logs_are_made_durable_in_their_directories() {
+        let dir = temp_dir("dirsync");
+        let opened = open(&dir, 10).unwrap();
+        let synced = SYNCED_DIRS.lock().unwrap().clone();
+        assert!(
+            synced.contains(&dir),
+            "the new consent.log's entry in the data directory"
+        );
+        assert!(
+            synced.contains(&dir.join("ledger")),
+            "the new session log's entry in ledger/"
+        );
+        drop(opened);
+    }
+
+    #[test]
     fn the_crc_catches_a_flipped_byte() {
         let line = encode(1, "s", &Record::TurnOpened { turn: TurnId(1) }).unwrap();
         assert!(decode::<Record>(&line[..line.len() - 1]).is_ok());
@@ -565,6 +811,79 @@ mod tests {
         f.write_all(b"00000000 {}\n").unwrap();
         drop(f);
         assert!(scan_and_repair::<Record>(&path, |_| {}).unwrap().torn_bytes.is_some());
+    }
+
+    /// Power loss can persist an unsynced batch out of order: a zero-filled hole, then valid
+    /// lines. Nothing in that batch was acknowledged, so it is a torn tail, not damage.
+    #[test]
+    fn a_zeroed_hole_in_the_last_batch_is_a_torn_tail() {
+        let dir = temp_dir("hole");
+        let path = dir.join("a.log");
+        let good = [
+            Record::TurnOpened { turn: TurnId(1) },
+            Record::TurnOpened { turn: TurnId(2) },
+        ];
+        write_lines(&path, &good);
+        let good_len = fs::metadata(&path).unwrap().len();
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        f.write_all(&encode(4, "s", &Record::TurnOpened { turn: TurnId(4) }).unwrap())
+            .unwrap();
+        f.write_all(&encode(5, "s", &Record::TurnOpened { turn: TurnId(5) }).unwrap())
+            .unwrap();
+        drop(f);
+        let scan = scan_and_repair::<Record>(&path, |_| {}).unwrap();
+        assert_eq!(scan.records, 2);
+        assert!(scan.torn_bytes.is_some());
+        assert_eq!(fs::metadata(&path).unwrap().len(), good_len);
+    }
+
+    #[test]
+    fn a_hole_followed_by_an_old_sequence_number_is_damage() {
+        let dir = temp_dir("hole-old-seq");
+        let path = dir.join("a.log");
+        write_lines(
+            &path,
+            &[
+                Record::TurnOpened { turn: TurnId(1) },
+                Record::TurnOpened { turn: TurnId(2) },
+            ],
+        );
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        f.write_all(&encode(1, "s", &Record::TurnOpened { turn: TurnId(9) }).unwrap())
+            .unwrap();
+        drop(f);
+        assert!(matches!(
+            scan_and_repair::<Record>(&path, |_| {}),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn a_hole_followed_by_more_than_one_batch_is_damage() {
+        let dir = temp_dir("hole-long");
+        let path = dir.join("a.log");
+        write_lines(&path, &[Record::TurnOpened { turn: TurnId(1) }]);
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0u8; 300]).unwrap();
+        for seq in 3..700_u64 {
+            let rec = Record::Heard {
+                turn: TurnId(1),
+                call: voice_domain::CallId(seq),
+                text: "z".repeat(2_000),
+                min_confidence: None,
+            };
+            f.write_all(&encode(seq, "s", &rec).unwrap()).unwrap();
+        }
+        drop(f);
+        assert!(
+            matches!(
+                scan_and_repair::<Record>(&path, |_| {}),
+                Err(StoreError::Corrupt { .. })
+            ),
+            "1.4 MB after a hole is not one unsynced batch"
+        );
     }
 
     #[test]
@@ -663,6 +982,103 @@ mod tests {
                 },
                 reconciled: false,
             }
+        );
+    }
+
+    fn consent(granted: bool) -> ConsentRecord {
+        ConsentRecord {
+            v: 1,
+            scope: ConsentScope::Capture,
+            granted,
+            speaker: voice_domain::consent::Speaker::Owner,
+            rights_review: None,
+            deletion_scope: vec![],
+        }
+    }
+
+    fn write_consent(dir: &Path, records: &[ConsentRecord]) {
+        let mut out = Vec::new();
+        for (i, r) in records.iter().enumerate() {
+            out.extend(encode(i as u64 + 1, "s", r).unwrap());
+        }
+        fs::write(dir.join("consent.log"), out).unwrap();
+    }
+
+    #[test]
+    fn consent_stands_only_with_its_token_and_a_torn_tail_fails_closed() {
+        // Logged and token present: granted.
+        let dir = temp_dir("token-ok");
+        write_consent(&dir, &[consent(true)]);
+        ConsentTokens::new(&dir).grant(ConsentScope::Capture).unwrap();
+        assert!(open(&dir, 100).unwrap().consent_state.capture);
+        // Logged, but the token is gone (a revocation whose record never landed): revoked.
+        let dir = temp_dir("token-missing");
+        write_consent(&dir, &[consent(true)]);
+        assert!(!open(&dir, 100).unwrap().consent_state.capture);
+        // A torn record at the tail may have been a revocation: revoked, and the token removed.
+        let dir = temp_dir("token-torn");
+        write_consent(&dir, &[consent(true)]);
+        ConsentTokens::new(&dir).grant(ConsentScope::Capture).unwrap();
+        let mut f = OpenOptions::new().append(true).open(dir.join("consent.log")).unwrap();
+        f.write_all(b"0badc0de {\"v\":1,\"seq\":2,\"rec\":{\"v\":1,\"scope\":\"cap")
+            .unwrap();
+        drop(f);
+        let opened = open(&dir, 100).unwrap();
+        assert!(!opened.consent_state.capture);
+        assert_eq!(opened.recovered.torn_tails, 1);
+        assert!(!ConsentTokens::new(&dir).granted(ConsentScope::Capture));
+    }
+
+    /// Batches are cut at 1 MiB (so a power loss leaves at most that much unsynced), and the
+    /// records carried over to the next batch keep their order.
+    #[tokio::test]
+    async fn large_bursts_are_split_into_bounded_batches_in_order() {
+        let dir = temp_dir("batches");
+        let opened = open(&dir, 1_000_000).unwrap();
+        let w = opened.ledger;
+        let wait = Duration::from_secs(10);
+        for i in 0..2_000_u64 {
+            let rec = Record::Heard {
+                turn: TurnId(i),
+                call: voice_domain::CallId(i),
+                text: "y".repeat(2_000),
+                min_confidence: None,
+            };
+            w.append(rec, wait).await.unwrap();
+        }
+        w.flush(wait).await.unwrap();
+        let _ = w.close(wait).await;
+        let turns: Vec<u64> = read_all(&opened.ledger_path)
+            .iter()
+            .filter_map(|r| {
+                if let Record::Heard { turn, .. } = r {
+                    Some(turn.0)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(turns, (0..2_000).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn a_record_too_large_to_store_leaves_a_mark() {
+        let dir = temp_dir("too-large");
+        let opened = open(&dir, 100).unwrap();
+        let w = opened.ledger;
+        let wait = Duration::from_secs(5);
+        let huge = Record::Heard {
+            turn: TurnId(1),
+            call: voice_domain::CallId(1),
+            text: "x".repeat(70_000),
+            min_confidence: None,
+        };
+        assert_eq!(w.append_durable(huge, wait).await, Err(WriteError::TooLarge));
+        let _ = w.close(wait).await;
+        let recs = read_all(&opened.ledger_path);
+        assert!(
+            matches!(recs.as_slice(), [Record::RecordTooLarge { bytes }] if *bytes > 70_000),
+            "{recs:?}"
         );
     }
 

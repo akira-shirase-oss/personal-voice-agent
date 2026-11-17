@@ -44,6 +44,8 @@ pub struct Config<E> {
     /// Longest wait for the app to accept a message or the ledger to accept a record.
     pub io_timeout: Duration,
     pub log: Log,
+    /// Closed session logs older than this are deleted at start (D-018); `None` keeps them.
+    pub retention: Option<Duration>,
 }
 
 impl<E> Config<E> {
@@ -57,6 +59,7 @@ impl<E> Config<E> {
             handshake: Duration::from_secs(5),
             io_timeout: Duration::from_secs(2),
             log,
+            retention: Some(Duration::from_hours(30 * 24)),
         }
     }
 }
@@ -110,6 +113,14 @@ struct Actor<E> {
     ledger_down: bool,
     /// A ledger failure noticed while applying outputs, fed to the reducer next.
     pending_fault: Option<FailureReason>,
+    /// A consent change that could not be made durable, fed to the reducer next.
+    pending_consent: Option<(voice_domain::consent::ConsentScope, bool)>,
+    tokens: store::ConsentTokens,
+    /// The data directory, record cap and live log: `forget` rotates to a fresh log.
+    data_dir: PathBuf,
+    max_records: u64,
+    ledger_path: PathBuf,
+    ledger_faults: watch::Receiver<Option<Fault>>,
     summary: Summary,
 }
 
@@ -123,11 +134,23 @@ async fn open_store(
     let opened = tokio::task::spawn_blocking(move || store::open(&data_dir, max_records))
         .await
         .map_err(|_| ServiceError::Join)?;
+    if let Ok(o) = &opened {
+        let r = o.recovered;
+        log.event(
+            "store_opened",
+            &[
+                ("recovered_sessions", r.sessions.into()),
+                ("abandoned_turns", r.abandoned_turns.into()),
+                ("uncertain_calls", r.uncertain_calls.into()),
+                ("torn_tails", r.torn_tails.into()),
+            ],
+        );
+    }
     opened.map_err(|e| {
-        let code = if matches!(e, StoreError::Corrupt { .. }) {
-            "store_corrupt"
-        } else {
-            "store_io"
+        let code = match e {
+            StoreError::Corrupt { .. } => "store_corrupt",
+            StoreError::Locked { .. } => "already_running",
+            StoreError::Io { .. } => "store_io",
         };
         log.event("store_failed", &[("code", code.into())]);
         let _ = out.try_send(ServiceMessage::Error {
@@ -153,11 +176,12 @@ where
         handshake,
         io_timeout,
         log,
+        retention,
     } = config;
     let (out_tx, out_rx) = mpsc::channel::<ServiceMessage>(OUT_QUEUE);
     let writer_task = tokio::spawn(write_loop(writer, out_rx));
 
-    let opened = match open_store(data_dir, max_records, &out_tx, &log).await {
+    let opened = match open_store(data_dir.clone(), max_records, &out_tx, &log).await {
         Ok(o) => o,
         Err(e) => {
             drop(out_tx);
@@ -165,53 +189,25 @@ where
             return Err(e);
         }
     };
-    let store::Opened {
-        session: session_id,
-        ledger_path,
-        ledger,
-        consent,
-        consent_state,
-        recovered,
-    } = opened;
-    log.event(
-        "store_opened",
-        &[
-            ("recovered_sessions", recovered.sessions.into()),
-            ("abandoned_turns", recovered.abandoned_turns.into()),
-            ("uncertain_calls", recovered.uncertain_calls.into()),
-            ("torn_tails", recovered.torn_tails.into()),
-        ],
-    );
-
+    let consent_state = opened.consent_state;
+    let recovered = opened.recovered;
+    let session_id = opened.session.clone();
     let (in_tx, mut in_rx) = mpsc::channel(IN_QUEUE);
     let reader_task = tokio::spawn(framing::read_loop(reader, in_tx, framing::MAX_LINE));
     let (tool_tx, mut tool_rx) = mpsc::channel(TOOL_QUEUE);
-    let mut ledger_faults = ledger.faults();
-    let mut consent_faults = consent.faults();
-
-    let mut actor = Actor {
-        session: Session::new(limits.clone(), tools, consent_state),
-        ledger,
-        consent,
-        out: out_tx,
-        timers: Timers::default(),
-        tasks: JoinSet::new(),
-        tool_tx,
+    let mut consent_faults = opened.consent.faults();
+    let parts = Parts {
+        tools,
         executor,
         limits,
         io_timeout,
         log,
-        ledger_down: false,
-        pending_fault: None,
-        summary: Summary {
-            session: session_id.clone(),
-            reason: EndReason::Eof,
-            inputs: 0,
-            turns_closed: 0,
-            refused: 0,
-            late_dropped: 0,
-        },
+        data_dir,
+        max_records,
+        out: out_tx,
+        tool_tx,
     };
+    let (mut actor, _lock) = Actor::new(opened, parts);
 
     let reason = match actor.handshake(&mut in_rx, handshake).await {
         Err(reason) => reason,
@@ -222,6 +218,7 @@ where
                     client,
                 })
                 .await;
+            actor.expire(retention).await;
             let ready = ServiceMessage::Ready {
                 protocol: PROTOCOL_VERSION,
                 session: session_id.clone(),
@@ -232,20 +229,146 @@ where
                 EndReason::ClientUnresponsive
             } else {
                 actor.log.event("session_ready", &[]);
-                actor
-                    .serve(&mut in_rx, &mut tool_rx, &mut ledger_faults, &mut consent_faults)
-                    .await
+                actor.serve(&mut in_rx, &mut tool_rx, &mut consent_faults).await
             }
         }
     };
     actor.summary.reason = reason;
-    let summary = actor.finish(&ledger_path).await;
+    let summary = actor.finish().await;
     reader_task.abort();
     let _ = timeout(io_timeout, writer_task).await;
     Ok(summary)
 }
 
+/// What the actor needs besides the opened store.
+struct Parts<E> {
+    tools: ToolRegistry,
+    executor: Arc<E>,
+    limits: Limits,
+    io_timeout: Duration,
+    log: Log,
+    data_dir: PathBuf,
+    max_records: u64,
+    out: mpsc::Sender<ServiceMessage>,
+    tool_tx: mpsc::Sender<(CallId, ToolOutcome)>,
+}
+
 impl<E: ToolExecutor> Actor<E> {
+    /// Builds the actor; also returns the data-directory lock, which the caller keeps alive.
+    fn new(opened: store::Opened, p: Parts<E>) -> (Self, std::fs::File) {
+        let store::Opened {
+            lock,
+            tokens,
+            session,
+            ledger_path,
+            ledger,
+            consent,
+            consent_state,
+            recovered: _,
+        } = opened;
+        let ledger_faults = ledger.faults();
+        let actor = Self {
+            session: Session::new(p.limits.clone(), p.tools, consent_state),
+            ledger,
+            consent,
+            out: p.out,
+            timers: Timers::default(),
+            tasks: JoinSet::new(),
+            tool_tx: p.tool_tx,
+            executor: p.executor,
+            limits: p.limits,
+            io_timeout: p.io_timeout,
+            log: p.log,
+            ledger_down: false,
+            pending_fault: None,
+            pending_consent: None,
+            tokens,
+            data_dir: p.data_dir,
+            max_records: p.max_records,
+            ledger_path,
+            ledger_faults,
+            summary: Summary {
+                session,
+                reason: EndReason::Eof,
+                inputs: 0,
+                turns_closed: 0,
+                refused: 0,
+                late_dropped: 0,
+            },
+        };
+        (actor, lock)
+    }
+
+    /// Retention (D-018): deletes closed sessions past `retention` and records how many.
+    async fn expire(&mut self, retention: Option<Duration>) {
+        let Some(older_than) = retention else { return };
+        let dir = self.data_dir.clone();
+        let Ok(Ok((files, bytes))) = tokio::task::spawn_blocking(move || store::expire_history(&dir, older_than)).await
+        else {
+            self.log.event("retention_failed", &[]);
+            return;
+        };
+        if files > 0 {
+            let retention_days = u32::try_from(older_than.as_secs() / 86_400).unwrap_or(u32::MAX);
+            self.record(Record::HistoryExpired {
+                files,
+                bytes,
+                retention_days,
+            })
+            .await;
+            self.log.event("history_expired", &[("files", files.into())]);
+        }
+    }
+
+    /// Carries out a consent scope's deletion scope now (D-018). For capture: every heard
+    /// transcript, closed or live. The live log is rotated: a fresh one is opened first, the old
+    /// writer is closed, then every other log is deleted.
+    async fn forget(&mut self, scope: voice_domain::consent::ConsentScope) -> Result<(), Stop> {
+        if self.session.active_turn().is_some() {
+            let turn = self.session.active_turn();
+            return self
+                .send(ServiceMessage::Notice {
+                    code: "forget_refused_turn_active".into(),
+                    turn,
+                })
+                .await;
+        }
+        if scope == voice_domain::consent::ConsentScope::PersonalVoice {
+            // No personal-voice data can exist in the first release.
+            return self
+                .send(ServiceMessage::Forgotten {
+                    scope,
+                    files: 0,
+                    bytes: 0,
+                })
+                .await;
+        }
+        let (dir, max) = (self.data_dir.clone(), self.max_records);
+        let Ok(Ok((session, path, writer))) =
+            tokio::task::spawn_blocking(move || store::new_session_log(&dir, max)).await
+        else {
+            return self.error("forget_failed", "a new log could not be started").await;
+        };
+        let old = std::mem::replace(&mut self.ledger, writer);
+        self.ledger_faults = self.ledger.faults();
+        self.ledger_path.clone_from(&path);
+        self.summary.session = session;
+        let _ = old.close(self.io_timeout).await;
+        let dir = self.data_dir.clone();
+        let deleted = tokio::task::spawn_blocking(move || store::delete_history(&dir, &path)).await;
+        let Ok(Ok((files, bytes))) = deleted else {
+            return self.error("forget_failed", "some history could not be deleted").await;
+        };
+        self.record(Record::SessionOpened {
+            protocol: PROTOCOL_VERSION,
+            client: "after-forget".into(),
+        })
+        .await;
+        self.record(Record::HistoryDeleted { scope, files, bytes }).await;
+        self.log.event("history_deleted", &[("files", files.into())]);
+        self.send(ServiceMessage::Forgotten { scope, files, bytes }).await
+    }
+
     async fn handshake(
         &mut self,
         in_rx: &mut mpsc::Receiver<framing::Inbound>,
@@ -281,7 +404,6 @@ impl<E: ToolExecutor> Actor<E> {
         &mut self,
         in_rx: &mut mpsc::Receiver<framing::Inbound>,
         tool_rx: &mut mpsc::Receiver<(CallId, ToolOutcome)>,
-        ledger_faults: &mut watch::Receiver<Option<Fault>>,
         consent_faults: &mut watch::Receiver<Option<Fault>>,
     ) -> EndReason {
         loop {
@@ -295,8 +417,8 @@ impl<E: ToolExecutor> Actor<E> {
                     Some(framing::Inbound::Eof) | None => return EndReason::Eof,
                 },
                 Some((call, outcome)) = tool_rx.recv() => self.input(Input::ToolFinished { call, outcome }).await.map(|()| None),
-                Ok(()) = ledger_faults.changed() => {
-                    let fault = *ledger_faults.borrow();
+                Ok(()) = self.ledger_faults.changed() => {
+                    let fault = *self.ledger_faults.borrow();
                     self.ledger_fault(fault).await.map(|()| None)
                 }
                 Ok(()) = consent_faults.changed() => {
@@ -328,6 +450,8 @@ impl<E: ToolExecutor> Actor<E> {
                 .error("duplicate_hello", "hello was already received")
                 .await
                 .map(|()| None),
+            ClientMessage::Ping { seq } => self.send(ServiceMessage::Pong { seq }).await.map(|()| None),
+            ClientMessage::Forget { scope } => self.forget(scope).await.map(|()| None),
             ClientMessage::Flush => {
                 match self.ledger.flush(self.io_timeout).await {
                     Ok(seq) => self.send(ServiceMessage::Flushed { seq }).await?,
@@ -402,10 +526,13 @@ impl<E: ToolExecutor> Actor<E> {
                     self.send(notice).await?;
                 }
             }
-            next = self
-                .pending_fault
-                .take()
-                .map(|reason| Input::LedgerUnavailable { reason });
+            next = match self.pending_consent.take() {
+                Some((scope, granted)) => Some(Input::ConsentUnavailable { scope, granted }),
+                None => self
+                    .pending_fault
+                    .take()
+                    .map(|reason| Input::LedgerUnavailable { reason }),
+            };
         }
         Ok(())
     }
@@ -434,10 +561,35 @@ impl<E: ToolExecutor> Actor<E> {
                     }
                 }
                 Output::Consent(rec) => {
-                    if let Err(e) = self.consent.append_durable(rec, self.io_timeout).await {
-                        drop(outputs);
-                        self.ledger_error(e);
-                        return Ok(());
+                    let (scope, granted) = (rec.scope, rec.granted);
+                    if !granted {
+                        // Revoke on disk first: unlinking the token needs no free space.
+                        let tokens = self.tokens.clone();
+                        if !matches!(
+                            tokio::task::spawn_blocking(move || tokens.revoke(scope)).await,
+                            Ok(Ok(()))
+                        ) {
+                            self.log.event("consent_token_unlink_failed", &[]);
+                        }
+                    }
+                    let mut durable = self.consent.append_durable(rec, self.io_timeout).await.is_ok();
+                    if durable && granted {
+                        let tokens = self.tokens.clone();
+                        durable = matches!(
+                            tokio::task::spawn_blocking(move || tokens.grant(scope)).await,
+                            Ok(Ok(()))
+                        );
+                    }
+                    if !durable {
+                        self.log.event("consent_unrecorded", &[("granted", granted.into())]);
+                        self.pending_consent = Some((scope, granted));
+                        if granted {
+                            // A grant that is not durable does not stand: send nothing of it.
+                            drop(outputs);
+                            return Ok(());
+                        }
+                        // A revocation stands anyway: finish the step, so the app hears the
+                        // turn close and the revoked state.
                     }
                 }
                 Output::Arm { timer, after_ms } => {
@@ -509,7 +661,7 @@ impl<E: ToolExecutor> Actor<E> {
 
     /// Ends the session honestly: an active turn is interrupted (a running tool becomes
     /// uncertain), `session_closed` is made durable, and the log is marked closed.
-    async fn finish(mut self, ledger_path: &std::path::Path) -> Summary {
+    async fn finish(mut self) -> Summary {
         if self.session.active_turn().is_some()
             && let Ok(outputs) = self.session.step(Input::Client(ClientMessage::Interrupt))
         {
@@ -524,7 +676,7 @@ impl<E: ToolExecutor> Actor<E> {
         let _ = self.ledger.close(self.io_timeout).await;
         let _ = self.consent.close(self.io_timeout).await;
         if durable {
-            let path = ledger_path.to_owned();
+            let path = self.ledger_path.clone();
             let _ = tokio::task::spawn_blocking(move || store::mark_closed(&path)).await;
         }
         self.log.event(

@@ -121,7 +121,14 @@ settled it, it is listed under **Open questions** rather than guessed.
   Consent records carry scope, speaker, the rights-review hash (personal
   voice only) and deletion scope. Trade-off: a hand-rolled format instead
   of SQLite; it is small, inspectable with standard tools, and its crash
-  behaviour is fully tested here.
+  behaviour is fully tested here. *Amended 2026-11-16 (review): consent also
+  keeps a token file per granted scope, unlinked before a revocation is
+  logged (an unlink needs no free space) and created after a grant is
+  logged; effective consent is "logged and token present", a torn consent
+  tail counts as revoked, and a grant that cannot be recorded does not
+  stand. Proven on full HFS+ and APFS images (`tests/disk_full.rs`).
+  Consent granted before this change has no token and must be granted once
+  more.*
 - **D-018 — Deletion scope is stated honestly.** Deleting a file on APFS
   does not erase its blocks from local snapshots or earlier backups, and
   SQLite-style freelists keep bytes too. So: the data directory is
@@ -130,7 +137,14 @@ settled it, it is listed under **Open questions** rather than guessed.
   third-party provider holds audio or transcripts (D-014). Real erasure for
   memory and any voice data comes in V3 by crypto-shredding: per-item keys
   in the Keychain, deletion destroys the key, and a test proves the item
-  is unrecoverable afterwards.
+  is unrecoverable afterwards. *Amended 2026-11-16 (review): heard
+  transcripts now have controls. "Delete history" (`forget` with scope
+  `capture`, acting on that consent's deletion scope) deletes every session
+  log, the live one included (rotated into a fresh log that records the
+  deletion), and closed logs older than 30 days are deleted at start
+  (`--retention-days`). Both are tested: a sentinel transcript is found
+  nowhere under the data directory afterwards. Copies in snapshots or
+  backups made before the exclusion are not reached.*
 - **D-019 — Per-stage deadlines (initial values).** Recognizer finalize
   after release 3 s; model first output 6 s; model complete 20 s;
   synthesis first audio 3 s; synthesis chunk playback 30 s; tool 5 s;

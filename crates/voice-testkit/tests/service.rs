@@ -6,7 +6,7 @@
     reason = "test code: a panic is the failure report"
 )]
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -114,11 +114,13 @@ async fn a_reply_turn_is_ledgered_as_heard_then_inferred_with_nothing_executed()
             "session_opened",
             "turn_opened",
             "heard",
+            "spoken",
+            "spoken",
             "inferred",
             "turn_closed",
             "session_closed"
         ],
-        "the ledger keeps heard and inferred apart, and nothing executed"
+        "the ledger keeps heard, spoken and inferred apart, and nothing executed"
     );
     assert_eq!(
         recs[2]["text"], "what is the capital of France",
@@ -492,6 +494,225 @@ async fn a_hung_tool_is_recorded_uncertain() {
     let sent = recs.iter().position(|r| r["kind"] == "tool_call_sent").unwrap();
     let exec = recs.iter().position(|r| r["kind"] == "executed").unwrap();
     assert!(sent < exec);
+}
+
+/// A spoken "done" needs evidence: ordinary completion phrasings streamed by the model are
+/// never synthesized as they are when nothing executed (an independent review found 11 of
+/// these 12 spoken verbatim by the earlier phrase-list guard).
+#[tokio::test]
+async fn completion_claims_without_evidence_never_reach_synthesis() {
+    let claims = [
+        "Message sent to Priya.",
+        "Payment sent.",
+        "Sent!",
+        "Reminder set for nine.",
+        "I've added milk to your list.",
+        "I've texted Priya.",
+        "Your transfer is complete.",
+        "I've saved the note.",
+        "Okay, I've notified her.",
+        "Finished, the money is on its way.",
+        "I've moved the meeting to 3pm.",
+        "I've sent it.",
+    ];
+    let (mut stub, _, handle) = start(config("claims")).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "send Priya a message", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    for (i, claim) in claims.iter().enumerate() {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index: u32::try_from(i).unwrap(),
+            text: (*claim).into(),
+        })
+        .await;
+        let (S::TtsRequest { text, .. }, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await else {
+            unreachable!()
+        };
+        assert_eq!(
+            text,
+            voice_domain::guard::DRAFT_DISCLAIMER,
+            "spoken without evidence: {claim}"
+        );
+    }
+    shutdown(stub, handle).await;
+}
+
+/// What was said is evidence too: every chunk sent to synthesis is in the ledger with its
+/// exact text, and a replaced claim keeps the model's original next to what was spoken.
+#[tokio::test]
+async fn what_was_spoken_is_ledgered() {
+    let c = config("spoken");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "tell me about Paris", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    let said = ["Paris is the capital of France.", "I've booked you a table there."];
+    for (i, t) in said.iter().enumerate() {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index: u32::try_from(i).unwrap(),
+            text: (*t).into(),
+        })
+        .await;
+        stub.until(|m| matches!(m, S::TtsRequest { .. })).await;
+    }
+    // Interrupted before lm_done: what was said must be on record anyway.
+    stub.send(&C::Interrupt).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let spoken: Vec<Value> = ledger(&dir).into_iter().filter(|r| r["kind"] == "spoken").collect();
+    assert_eq!(spoken.len(), 2, "one record per synthesized chunk");
+    assert_eq!(spoken[0]["text"], said[0]);
+    assert_eq!(spoken[0]["model_text"], Value::Null, "spoken as the model wrote it");
+    assert_eq!(spoken[1]["text"], voice_domain::guard::DRAFT_DISCLAIMER);
+    assert_eq!(
+        spoken[1]["model_text"], said[1],
+        "the replaced claim is kept beside what was said"
+    );
+    assert_eq!(
+        (spoken[0]["seq"].clone(), spoken[1]["seq"].clone()),
+        (json!(0), json!(1))
+    );
+}
+
+/// An oversized proposal is still on record (bounded), never silently missing: the line fits
+/// the 64 KiB limit but the record built from it would not.
+#[tokio::test]
+async fn an_oversized_proposal_is_recorded_bounded_and_refused() {
+    let c = tool_config("oversized", FixtureTools::default(), Limits::default());
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "note this", 0.99).await;
+    let mut value = String::new();
+    let line = loop {
+        let proposal = Proposal::Action {
+            reply: "r".repeat(4_000),
+            tool: "fixture.note".into(),
+            slots: vec![Slot {
+                name: "text".into(),
+                kind: SlotKind::Text,
+                value: value.clone(),
+            }],
+        };
+        let line = serde_json::to_string(&lm_done(lm, proposal)).unwrap();
+        if line.len() >= 65_500 {
+            break line;
+        }
+        value.push_str(&"x".repeat((65_500 - line.len()).max(1)));
+    };
+    assert!(line.len() <= 65_536, "the line itself is within the protocol limit");
+    stub.send_raw(format!("{line}\n").as_bytes()).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let recs = ledger(&dir);
+    let inferred = recs
+        .iter()
+        .find(|r| r["kind"] == "inferred")
+        .expect("the proposal is on record");
+    let kept = inferred["proposal"]["slots"][0]["value"].as_str().unwrap().len();
+    assert!(kept <= 200, "the recorded slot is bounded ({kept} chars)");
+    assert!(
+        recs.iter()
+            .any(|r| r["kind"] == "decided" && r["decision"]["refusal"] == "slot_too_long")
+    );
+}
+
+/// Deletion (D-018): forgetting capture's data removes every heard transcript from the live
+/// file system — closed sessions and the current one — and the session carries on.
+#[tokio::test]
+async fn forgetting_capture_data_deletes_every_transcript() {
+    let c = config("forget");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let secret = "TANGERINE-HARBOUR-4417";
+    reply_turn(&mut stub, &format!("remember {secret}"), &["Okay."]).await;
+    shutdown(stub, handle).await;
+    // A second session, with the first one's transcript closed on disk.
+    let mut c = config("forget-2");
+    c.data_dir.clone_from(&dir);
+    let (mut stub, _, handle) = start(c).await;
+    reply_turn(&mut stub, &format!("and again {secret}"), &["Sure."]).await;
+    stub.send(&C::Forget {
+        scope: ConsentScope::Capture,
+    })
+    .await;
+    let (m, _) = stub.until(|m| matches!(m, S::Forgotten { .. })).await;
+    let S::Forgotten { files, .. } = m else { unreachable!() };
+    assert!(files >= 2, "both sessions' logs were deleted ({files})");
+    // The session carries on, recording into a fresh log.
+    reply_turn(&mut stub, "what time is it", &["Late."]).await;
+    shutdown(stub, handle).await;
+    let mut leftovers = Vec::new();
+    for entry in walk(&dir) {
+        if std::fs::read(&entry)
+            .unwrap()
+            .windows(secret.len())
+            .any(|w| w == secret.as_bytes())
+        {
+            leftovers.push(entry);
+        }
+    }
+    assert!(leftovers.is_empty(), "the transcript survives in {leftovers:?}");
+    let recs = ledger(&dir);
+    assert!(
+        recs.iter().any(|r| r["kind"] == "history_deleted"),
+        "the deletion is on record"
+    );
+    assert!(
+        recs.iter()
+            .any(|r| r["kind"] == "heard" && r["text"] == "what time is it"),
+        "later turns are kept"
+    );
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Retention (D-018): closed session logs older than the retention period are deleted at start.
+#[tokio::test]
+async fn closed_sessions_past_retention_are_deleted_at_start() {
+    let dir = voice_testkit::temp_data_dir("retention");
+    std::fs::create_dir_all(dir.join("ledger")).unwrap();
+    let old = dir.join("ledger").join("0001.closed.log");
+    let recent = dir.join("ledger").join("0002.closed.log");
+    for p in [&old, &recent] {
+        std::fs::write(p, b"").unwrap();
+    }
+    let forty_days = std::time::SystemTime::now() - Duration::from_hours(40 * 24);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(forty_days)
+        .unwrap();
+    let mut c = config("retention");
+    c.data_dir.clone_from(&dir);
+    let (stub, _, handle) = start(c).await;
+    shutdown(stub, handle).await;
+    assert!(!old.exists(), "a 40-day-old session is past the 30-day default");
+    assert!(recent.exists(), "a recent session is kept");
 }
 
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.

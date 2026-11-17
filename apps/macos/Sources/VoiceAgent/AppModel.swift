@@ -96,6 +96,8 @@ final class AppModel {
     func pushToTalkUp() {
         guard holding, let conversation else { return }
         holding = false
+        // The microphone stops on the key, not on a reply from anything else.
+        stopMicrophone()
         Task { await conversation.pushToTalkUp() }
     }
 
@@ -121,6 +123,11 @@ final class AppModel {
         guard let conversation else { return }
         if !grant { stopMicrophone() }
         Task { await conversation.setCaptureConsent(grant) }
+    }
+
+    func deleteHistory() {
+        guard let conversation else { return }
+        Task { await conversation.forgetHistory() }
     }
 
     func requestMicrophone() async {
@@ -189,7 +196,7 @@ final class AppModel {
                 banner = "Recovered after an unexpected stop: \(recovered.abandonedTurns) unfinished turn(s) closed."
             }
         case .turnOpened(let t): row(t) { _ in }
-        case .capture(_, let on): if on { startMicrophone() } else { stopMicrophone() }
+        case .capture(_, let on): if on && holding { startMicrophone() } else { stopMicrophone() }
         case .heard(let t, let text): row(t) { $0.heard = text }
         case .speaking(let t, let text): row(t) { $0.spoken.append(text) }
         case .confirm(let turn, let digest, let heard, let tool, let slots, let reasons):
@@ -207,6 +214,7 @@ final class AppModel {
             consent = state
         case .notice(let code):
             if code == "consent_required" { banner = "Turn on “Listen while I hold Space” to talk." }
+            if code == "forget_refused_turn_active" { banner = "Finish or stop the current turn, then delete history." }
         case .serviceExited:
             service = .restarting(0)
             stopMicrophone()
@@ -214,6 +222,23 @@ final class AppModel {
             service = .restarting(attempt)
         case .serviceGaveUp:
             service = .stopped("The session service keeps stopping. Quit and reopen the app.")
+        case .forgotten(let files, _):
+            turns.removeAll()
+            banner = "History deleted: \(files) session log(s) removed from this Mac (backups made earlier are not touched)."
+        case .eventsDropped(let n):
+            banner = "The window fell behind and missed \(n) update(s); what it shows may be out of date."
+        case .serviceUnresponsive:
+            stopMicrophone()
+            banner = "The session stopped responding; it is being restarted. Nothing was done."
+        case .serviceFailed(let code):
+            stopMicrophone()
+            let why: String =
+                switch code {
+                case "already_running": "Another copy of the app is already running."
+                case "store_corrupt": "The session record is damaged and was not changed. See docs/DRILLS.md."
+                default: "The session record could not be opened (disk full or unreadable)."
+                }
+            service = .stopped(why)
         }
     }
 

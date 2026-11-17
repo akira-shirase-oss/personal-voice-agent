@@ -10,14 +10,19 @@ cd "$(dirname "$0")/.."
 scenario="${1:?usage: scripts/perf.sh ledger|turns [args]}"
 shift
 
+if [ -n "$(git status --porcelain -- crates Cargo.toml Cargo.lock)" ] && [ "${PVA_ALLOW_DIRTY:-}" != 1 ]; then
+  echo "refusing to record from a dirty tree: commit first, so the result names the code it measured" >&2
+  echo "(PVA_ALLOW_DIRTY=1 records anyway, marked -dirty)" >&2
+  exit 2
+fi
 commit="$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain -- crates Cargo.toml Cargo.lock)" ] || echo '-dirty')"
-load_before="$(uptime | sed 's/.*load average[s]*: //')"
+load_before="$(uptime | sed 's/.*load average[s]*: //' | tr -s ', ' ' ')"
 cargo build --quiet --release --locked -p voice-testkit --bin voice-perf
 set +e
 out="$(target/release/voice-perf "$scenario" "$@")"
 status=$?
 set -e
-load_after="$(uptime | sed 's/.*load average[s]*: //')"
+load_after="$(uptime | sed 's/.*load average[s]*: //' | tr -s ', ' ' ')"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   machine="$(sysctl -n machdep.cpu.brand_string), $(($(sysctl -n hw.memsize) / 1073741824)) GB, $(sysctl -n hw.ncpu) cores"
@@ -37,8 +42,8 @@ cat > "$file" <<MD
 - Machine: ${machine}
 - OS: ${os}
 - Commit: ${commit}
-- Load average before: ${load_before}
-- Load average after: ${load_after}
+- Load average (1 / 5 / 15 min) before: ${load_before}
+- Load average (1 / 5 / 15 min) after: ${load_after}
 - Command: \`scripts/perf.sh ${scenario} $*\`
 
 Laptop numbers are development observations on a shared machine, not capacity claims.

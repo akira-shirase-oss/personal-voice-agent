@@ -53,6 +53,8 @@ fn every_client_message_type_has_a_golden_line() {
         "confirm",
         "consent",
         "flush",
+        "ping",
+        "forget",
         "shutdown",
     ];
     assert_eq!(types, expected.iter().map(|s| (*s).to_owned()).collect());
@@ -76,6 +78,8 @@ fn every_service_message_type_has_a_golden_line() {
         "consent_state",
         "notice",
         "flushed",
+        "pong",
+        "forgotten",
         "error",
     ];
     assert_eq!(types, expected.iter().map(|s| (*s).to_owned()).collect());

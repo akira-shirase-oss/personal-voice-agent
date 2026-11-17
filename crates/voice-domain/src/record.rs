@@ -39,6 +39,33 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
+    /// Written in place of a record too large to store (over 64 KiB): never silently missing.
+    RecordTooLarge {
+        bytes: u64,
+    },
+    /// Heard transcripts were deleted on request (`forget`): the first record of the fresh log.
+    HistoryDeleted {
+        scope: crate::consent::ConsentScope,
+        files: u32,
+        bytes: u64,
+    },
+    /// Closed sessions past the retention period were deleted at start.
+    HistoryExpired {
+        files: u32,
+        bytes: u64,
+        retention_days: u32,
+    },
+    /// What was sent to synthesis, exactly: what the assistant said, interrupted or not.
+    /// `index` is the model's sentence number (none for session-authored text); `model_text`
+    /// is the model's sentence when the session replaced it.
+    Spoken {
+        turn: TurnId,
+        call: CallId,
+        seq: u32,
+        text: String,
+        index: Option<u32>,
+        model_text: Option<String>,
+    },
     Decided {
         turn: TurnId,
         decision: Decision,

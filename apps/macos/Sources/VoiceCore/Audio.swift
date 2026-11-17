@@ -12,16 +12,33 @@ public struct PCM: @unchecked Sendable {
     public var seconds: Double { Double(buffer.frameLength) / buffer.format.sampleRate }
 }
 
-/// One playback chunk, always tagged with the turn it belongs to (D-009).
+/// Where a chunk belongs: the service session (an epoch the app counts, one per launch of
+/// the service) and the turn within it. Ordered by epoch, then turn — a restarted service
+/// numbers turns from 1 again, so the turn alone cannot order chunks across sessions.
+public struct PlaybackPosition: Comparable, Hashable, Sendable, CustomStringConvertible {
+    public let epoch: UInt64
+    public let turn: TurnID
+    public init(epoch: UInt64, turn: TurnID) {
+        self.epoch = epoch
+        self.turn = turn
+    }
+    public static func < (a: Self, b: Self) -> Bool { (a.epoch, a.turn.raw) < (b.epoch, b.turn.raw) }
+    public var description: String { "\(epoch)/\(turn)" }
+}
+
+/// One playback chunk, always tagged with the session and turn it belongs to (D-009).
 public struct AudioChunk: Sendable {
+    public let epoch: UInt64
     public let turn: TurnID
     public let seq: UInt32
     public let pcm: PCM
-    public init(turn: TurnID, seq: UInt32, pcm: PCM) {
+    public init(epoch: UInt64 = 0, turn: TurnID, seq: UInt32, pcm: PCM) {
+        self.epoch = epoch
         self.turn = turn
         self.seq = seq
         self.pcm = pcm
     }
+    public var position: PlaybackPosition { PlaybackPosition(epoch: epoch, turn: turn) }
 }
 
 public enum Audio {

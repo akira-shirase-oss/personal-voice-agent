@@ -21,6 +21,15 @@ public enum ConversationEvent: Sendable {
     case serviceExited(Int32)
     case serviceRestarting(attempt: Int)
     case serviceGaveUp
+    /// The service refused to start for a reason a restart cannot fix: `already_running`
+    /// (another copy owns the data directory), `store_corrupt` or `store_io`.
+    case serviceFailed(String)
+    /// The service stopped answering while a turn was open; it is being replaced.
+    case serviceUnresponsive
+    /// The app fell behind and this many older events were discarded; state shown may be stale.
+    case eventsDropped(Int)
+    /// A `forget` was carried out (D-018): how many session logs and bytes were deleted.
+    case forgotten(files: UInt32, bytes: UInt64)
 }
 
 /// Per-turn timestamps on the continuous clock, for the latency evidence (END_GOAL).
@@ -48,6 +57,14 @@ public struct ConversationConfig: Sendable {
     public var offlinePlayback = false
     public var playerSampleRate: Double = 22_050
     public var maxRestarts = 5
+    /// The app's own bound on one push-to-talk capture, independent of the service.
+    public var localCaptureMax: Duration = .seconds(60)
+    /// While a turn is open the app pings the service this often, and treats it as hung when a
+    /// ping goes unanswered for `heartbeatTimeout`.
+    public var heartbeatInterval: Duration = .seconds(1)
+    public var heartbeatTimeout: Duration = .seconds(3)
+    /// Bound on conversation events waiting for the app to read them.
+    public var eventBuffer = 4_096
 
     public init(binary: URL, dataDir: URL, recognizer: any SpeechRecognizing, model: any LanguageModeling, synthesizer: any SpeechSynthesizing) {
         self.binary = binary
@@ -70,6 +87,7 @@ final class ChunkProgress: @unchecked Sendable {
             return !s.started
         }
     }
+    var anyScheduled: Bool { state.withLock { $0.started } }
     /// True when this completes the chunk.
     func played() -> Bool { state.withLock { s in s.played += 1; return Self.done(&s) } }
     func synthesisEnded() -> Bool { state.withLock { s in s.synthesized = true; return Self.done(&s) } }
@@ -90,7 +108,11 @@ public actor Conversation {
     private var process: SessionProcess?
     private var consent = ConsentState(capture: false, personalVoice: false)
     private var currentTurn: TurnID?
+    /// The turn whose audio is being captured: the microphone is on exactly while this is set.
     private var capturing: TurnID?
+    /// Whether push-to-talk is held, as the user's last key event says — the app's own truth,
+    /// independent of the service's round trip.
+    private var keyHeld = false
     private var recognition: [TurnID: Task<(any RecognitionSession)?, Never>] = [:]
     /// Sessions that have started; audio is appended to them synchronously, in order.
     private var sessions: [TurnID: any RecognitionSession] = [:]
@@ -101,13 +123,26 @@ public actor Conversation {
     private var callTurn: [CallID: TurnID] = [:]
     private var timing: [TurnID: TurnTiming] = [:]
     private var restarts = 0
+    /// Older events discarded because the app fell behind (reported, never silent).
+    private var droppedEvents = 0
+    /// The process whose exit has been handled (its stream may also end without `.exited`).
+    private var exitHandled: ObjectIdentifier?
+    /// One per launch of the service; tags every chunk so a restarted session (which numbers
+    /// turns from 1 again) is never confused with the one that died.
+    private var epoch: UInt64 = 0
     private var stopping = false
+    /// Set when the service reported an error a restart cannot fix.
+    private var fatal: String?
+    /// The heartbeat ping awaiting its pong, if any.
+    private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
+    private var pingSeq: UInt64 = 0
+    static let fatalCodes: Set<String> = ["already_running", "store_corrupt", "store_io"]
     private static let maxPendingBuffers = 512
 
     public init(_ config: ConversationConfig) throws {
         self.config = config
         player = try TurnFencedPlayer(format: Audio.monoFloat(config.playerSampleRate), offline: config.offlinePlayback)
-        (events, emit) = AsyncStream.makeStream(of: ConversationEvent.self, bufferingPolicy: .bufferingNewest(4_096))
+        (events, emit) = AsyncStream.makeStream(of: ConversationEvent.self, bufferingPolicy: .bufferingNewest(config.eventBuffer))
     }
 
     // MARK: Lifecycle
@@ -115,11 +150,48 @@ public actor Conversation {
     public func start() throws {
         config.model.prewarm()
         let p = try SessionProcess(binary: config.binary, dataDir: config.dataDir, limits: config.limits)
+        epoch += 1
+        player.beginEpoch(epoch)
         process = p
+        pendingPing = nil
+        startHeartbeat(epoch)
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))
         Task { [weak self] in
             for await event in p.events { await self?.handle(event, from: p) }
+            await self?.streamEnded(p)
         }
+    }
+
+    /// While a turn is open or capture is on, ping the service; an unanswered ping past the
+    /// timeout means it is hung (a stopped process answers nothing, not even an exit).
+    private func startHeartbeat(_ e: UInt64) {
+        let interval = config.heartbeatInterval
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(for: interval)
+                guard let self, await self.heartbeat(e) else { return }
+            }
+        }
+    }
+
+    /// One heartbeat tick; false ends the loop for this session.
+    private func heartbeat(_ e: UInt64) -> Bool {
+        guard e == epoch, !stopping, let p = process, p.isRunning else { return false }
+        if let pending = pendingPing {
+            guard clock.now - pending.sentAt > config.heartbeatTimeout else { return true }
+            // Hung: stop everything here, then replace it (the exit starts a new session).
+            publish(.serviceUnresponsive)
+            if let c = capturing { stopMicrophone(c) }
+            player.stop(fence: TurnID(UInt64.max), epoch: epoch)
+            p.kill()
+            return false
+        }
+        if currentTurn != nil || capturing != nil {
+            pingSeq += 1
+            pendingPing = (pingSeq, clock.now)
+            send(.ping(seq: pingSeq))
+        }
+        return true
     }
 
     public func shutdown() {
@@ -134,20 +206,54 @@ public actor Conversation {
     public func killServiceForDrill() { process?.kill() }
     public var servicePID: Int32? { process?.pid }
 
+    /// Every event goes through here. If the bounded buffer must discard an older event, the
+    /// app is told at once, as the newest event, how many have been lost so far.
+    private func publish(_ e: ConversationEvent) {
+        if case .dropped = emit.yield(e) {
+            droppedEvents += 1
+            if case .dropped = emit.yield(.eventsDropped(droppedEvents + 1)) { droppedEvents += 1 }
+        }
+    }
+
+    /// The process's event stream ended: if its exit was not seen (the exit event itself can be
+    /// lost when the buffer overflowed), handle it now.
+    private func streamEnded(_ p: SessionProcess) {
+        guard exitHandled != ObjectIdentifier(p) else { return }
+        if p.overflowed { publish(.notice("service_messages_overflowed")) }
+        handleExit(-1, of: p)
+    }
+
     private func handleExit(_ status: Int32, of p: SessionProcess) {
-        guard p === process else { return }
-        emit.yield(.serviceExited(status))
-        stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+        guard p === process, exitHandled != ObjectIdentifier(p) else { return }
+        exitHandled = ObjectIdentifier(p)
+        publish(.serviceExited(status))
+        // The session is gone: stop its audio and drop all of its call state. The next
+        // session reuses turn and call numbers from 1, so nothing of this one may linger.
+        player.stop(fence: TurnID(UInt64.max), epoch: epoch)
+        for task in calls.values { task.cancel() }
+        for task in synthesisTail.values { task.cancel() }
+        for session in sessions.values { Task { await session.cancel() } }
+        calls.removeAll()
+        callTurn.removeAll()
+        synthesisTail.removeAll()
+        recognition.removeAll()
+        sessions.removeAll()
+        pendingAudio.removeAll()
+        timing.removeAll()
+        if let c = capturing { stopMicrophone(c) }
         currentTurn = nil
-        capturing = nil
         guard !stopping else { return }
+        if let fatal {
+            publish(.serviceFailed(fatal))
+            return
+        }
         guard restarts < config.maxRestarts else {
-            emit.yield(.serviceGaveUp)
+            publish(.serviceGaveUp)
             return
         }
         restarts += 1
         let attempt = restarts
-        emit.yield(.serviceRestarting(attempt: attempt))
+        publish(.serviceRestarting(attempt: attempt))
         Task { [weak self] in
             // Bounded backoff: 100 ms, 200 ms, 400 ms, ...
             try? await Task.sleep(for: .milliseconds(100 << (attempt - 1)))
@@ -163,19 +269,35 @@ public actor Conversation {
     }
 
     public func pushToTalkDown() {
+        keyHeld = true
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
-        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1)) }
+        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         send(.pttDown)
     }
 
+    /// Key up: capture stops here and now, before any reply from the service. If the service
+    /// has not turned capture on yet, it never will be: see `.capture(on: true)`.
     public func pushToTalkUp() {
+        keyHeld = false
         guard let t = capturing else { return }
-        timing[t, default: TurnTiming()].pttUp = clock.now
-        send(.pttUp(turn: t))
+        release(t)
+    }
+
+    /// Ends capture for `turn` locally and tells the service push-to-talk is up.
+    private func release(_ turn: TurnID) {
+        stopMicrophone(turn)
+        timing[turn, default: TurnTiming()].pttUp = clock.now
+        send(.pttUp(turn: turn))
+    }
+
+    private func stopMicrophone(_ turn: TurnID) {
+        guard capturing == turn else { return }
+        capturing = nil
+        publish(.capture(turn, on: false))
     }
 
     public func interrupt() {
-        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1)) }
+        if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         send(.interrupt)
     }
 
@@ -195,8 +317,11 @@ public actor Conversation {
 
     public func flush() { send(.flush) }
 
+    /// Deletes every heard transcript (capture consent's deletion scope). Refused mid-turn.
+    public func forgetHistory() { send(.forget(scope: .capture)) }
+
     private func send(_ m: ClientMessage) {
-        do { try process?.send(m) } catch { emit.yield(.notice("service_not_running")) }
+        do { try process?.send(m) } catch { publish(.notice("service_not_running")) }
     }
 
     // MARK: Service messages
@@ -205,7 +330,7 @@ public actor Conversation {
         guard p === process else { return }
         switch event {
         case .exited(let status): handleExit(status, of: p)
-        case .undecodable: emit.yield(.notice("undecodable_service_line"))
+        case .undecodable: publish(.notice("undecodable_service_line"))
         case .message(let m): handle(m)
         }
     }
@@ -214,21 +339,33 @@ public actor Conversation {
         switch m {
         case .ready(_, let session, let consent, let recovered):
             self.consent = consent
-            emit.yield(.ready(session: session, consent: consent, recovered: recovered))
+            publish(.ready(session: session, consent: consent, recovered: recovered))
         case .turnOpened(let turn):
             currentTurn = turn
-            emit.yield(.turnOpened(turn))
-        case .capture(let turn, let on):
-            if on { beginCapture(turn) } else { endCapture(turn) }
-            emit.yield(.capture(turn, on: on))
+            publish(.turnOpened(turn))
+        case .capture(let turn, on: true):
+            beginRecognition(turn)
+            if keyHeld {
+                capturing = turn
+                publish(.capture(turn, on: true))
+                capLocally(turn)
+            } else {
+                // The key came up before the service answered: the microphone never opens,
+                // and the (empty) turn ends at once.
+                pendingAudio.removeValue(forKey: turn)
+                timing[turn, default: TurnTiming()].pttUp = clock.now
+                send(.pttUp(turn: turn))
+            }
+        case .capture(let turn, on: false):
+            stopMicrophone(turn)
         case .sttRequest(let call, let turn, _):
             finishRecognition(call: call, turn: turn)
         case .lmRequest(let call, let turn, _, let heard):
-            emit.yield(.heard(turn, heard))
+            publish(.heard(turn, heard))
             runModel(call: call, turn: turn, heard: heard)
         case .ttsRequest(let call, let turn, let seq, let text, let voice, _):
             if timing[turn]?.firstTTSRequest == nil { timing[turn, default: TurnTiming()].firstTTSRequest = clock.now }
-            emit.yield(.speaking(turn, text))
+            publish(.speaking(turn, text))
             speak(call: call, turn: turn, seq: seq, text: text, voice: voice)
         case .cancel(let call):
             calls.removeValue(forKey: call)?.cancel()
@@ -236,34 +373,41 @@ public actor Conversation {
         case .stopPlayback(let fence):
             stopLocalWork(fence: fence)
         case .confirmRequest(let turn, let digest, let heard, let tool, let slots, let reasons):
-            emit.yield(.confirm(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons))
+            publish(.confirm(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons))
         case .turnClosed(let turn, let outcome):
             let t = timing.removeValue(forKey: turn) ?? TurnTiming()
             if currentTurn == turn { currentTurn = nil }
             recognition.removeValue(forKey: turn)
-            sessions.removeValue(forKey: turn)
+            // A session never handed to a finish (an interrupt or revocation during capture)
+            // would otherwise wait forever with its model loaded: release it.
+            if let unfinished = sessions.removeValue(forKey: turn) { Task { await unfinished.cancel() } }
             pendingAudio.removeValue(forKey: turn)
             synthesisTail.removeValue(forKey: turn)
             restarts = 0
-            emit.yield(.turnClosed(turn, outcome, t))
+            publish(.turnClosed(turn, outcome, t))
         case .degraded(let turn, let stage, let reason):
-            emit.yield(.degraded(turn, stage, reason))
+            publish(.degraded(turn, stage, reason))
         case .consentState(let state):
             consent = state
-            emit.yield(.consent(state))
+            publish(.consent(state))
         case .notice(let code, _):
-            emit.yield(.notice(code))
+            publish(.notice(code))
         case .flushed:
-            emit.yield(.notice("flushed"))
+            publish(.notice("flushed"))
+        case .pong(let seq):
+            if pendingPing?.seq == seq { pendingPing = nil }
+        case .forgotten(_, let files, let bytes):
+            publish(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
-            emit.yield(.notice(code))
+            if Self.fatalCodes.contains(code) { fatal = code }
+            publish(.notice(code))
         }
     }
 
     /// Stops playback, raises the fence and cancels every provider call of older turns.
     private func stopLocalWork(fence: TurnID?) {
         guard let fence else { return }
-        player.stop(fence: fence)
+        player.stop(fence: fence, epoch: epoch)
         for (call, turn) in callTurn where turn < fence {
             calls.removeValue(forKey: call)?.cancel()
             callTurn.removeValue(forKey: call)
@@ -272,13 +416,27 @@ public actor Conversation {
             task.cancel()
             synthesisTail.removeValue(forKey: turn)
         }
-        if let c = capturing, c < fence { endCapture(c) }
+        if let c = capturing, c < fence { stopMicrophone(c) }
     }
 
     // MARK: Providers
 
-    private func beginCapture(_ turn: TurnID) {
-        capturing = turn
+    /// The app's own capture limit: whatever the service does, capture ends here.
+    private func capLocally(_ turn: TurnID) {
+        let limit = config.localCaptureMax
+        let epochAtStart = epoch
+        Task { [weak self] in
+            try? await Task.sleep(for: limit)
+            await self?.localCapReached(turn, epochAtStart)
+        }
+    }
+
+    private func localCapReached(_ turn: TurnID, _ e: UInt64) {
+        guard e == epoch, capturing == turn else { return }
+        release(turn)
+    }
+
+    private func beginRecognition(_ turn: TurnID) {
         pendingAudio[turn] = []
         let recognizer = config.recognizer
         recognition[turn] = Task { [weak self] in
@@ -291,16 +449,19 @@ public actor Conversation {
     private func recognitionStarted(_ turn: TurnID, _ session: (any RecognitionSession)?) {
         let buffered = pendingAudio.removeValue(forKey: turn) ?? []
         guard let session else { return }
+        guard recognition[turn] != nil else {
+            // The turn closed while the recognizer was starting.
+            Task { await session.cancel() }
+            return
+        }
         for pcm in buffered { session.append(pcm) }
         sessions[turn] = session
     }
 
-    private func endCapture(_ turn: TurnID) {
-        if capturing == turn { capturing = nil }
-    }
-
     private func finishRecognition(call: CallID, turn: TurnID) {
-        endCapture(turn)
+        stopMicrophone(turn)
+        // From here the finishing task owns the session (and cancels it if it is cancelled).
+        sessions.removeValue(forKey: turn)
         let started = recognition[turn]
         let process = self.process
         track(call, turn, Task { [weak self] in
@@ -359,10 +520,17 @@ public actor Conversation {
         let target = player.format
         let progress = ChunkProgress()
         let mark = marker(turn)
+        let position = PlaybackPosition(epoch: epoch, turn: turn)
         let task = Task {
             // Chunks of one turn are synthesized in order; playback overlaps the next synthesis.
             await previous?.value
-            guard !Task.isCancelled, turn >= player.fence else { return }
+            guard !Task.isCancelled else { return }
+            guard player.accepts(position) else {
+                // Say so rather than go quiet: the service then fails the chunk at once (or
+                // drops the reply as late) instead of waiting for its deadline.
+                try? process?.send(.ttsFailed(call: call, reason: .cancelled))
+                return
+            }
             let converter = Mutex<FormatConverter?>(nil)
             do {
                 try await synthesizer.synthesize(text, voice: voice) { pcm in
@@ -379,7 +547,7 @@ public actor Conversation {
                         guard let converted = try? c?.convert(pcm) else { return }
                         ready = converted
                     }
-                    let result = player.enqueue(AudioChunk(turn: turn, seq: seq, pcm: ready)) {
+                    let result = player.enqueue(AudioChunk(epoch: position.epoch, turn: turn, seq: seq, pcm: ready)) {
                         if progress.played() { try? process?.send(.ttsFinished(call: call)) }
                     }
                     if result == .scheduled, progress.scheduled() {
@@ -387,7 +555,12 @@ public actor Conversation {
                         try? process?.send(.ttsStarted(call: call))
                     }
                 }
-                if progress.synthesisEnded() { try? process?.send(.ttsFinished(call: call)) }
+                if progress.synthesisEnded() {
+                    try? process?.send(.ttsFinished(call: call))
+                } else if !progress.anyScheduled, !Task.isCancelled {
+                    // Every buffer was refused by the fence: nothing will play.
+                    try? process?.send(.ttsFailed(call: call, reason: .cancelled))
+                }
             } catch {
                 if !Task.isCancelled { try? process?.send(.ttsFailed(call: call, reason: .error)) }
             }

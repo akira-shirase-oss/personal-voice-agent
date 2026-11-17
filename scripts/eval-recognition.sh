@@ -7,6 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 out="$(mktemp -t pva-eval).json"
+if [ -n "$(git status --porcelain -- apps fixtures)" ] && [ "${PVA_ALLOW_DIRTY:-}" != 1 ]; then
+  echo "refusing to record from a dirty tree: commit first, so the result names the code it measured" >&2
+  echo "(PVA_ALLOW_DIRTY=1 records anyway, marked -dirty)" >&2
+  exit 2
+fi
 commit="$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain -- apps fixtures)" ] || echo '-dirty')"
 PVA_EVAL_OUT="$out" swift test --package-path apps/macos --filter "RecognitionTests/fixtures" >/dev/null
 file="evals/recognition/$(date +%Y-%m-%d-%H%M%S).md"
@@ -21,6 +26,7 @@ lines = [
     f"- Machine: {sh('sysctl -n machdep.cpu.brand_string')}, {int(sh('sysctl -n hw.memsize'))//2**30} GB",
     f"- OS: macOS {sh('sw_vers -productVersion')} ({sh('sw_vers -buildVersion')})",
     f"- Commit: {sys.argv[3]}",
+    f"- Load average (1 / 5 / 15 min): {sh('uptime').split('load average')[-1].lstrip('s: ').replace(',', '')}",
     "- Recognizer: Speech SpeechAnalyzer + SpeechTranscriber, en-US, on-device",
     "- Audio: fixtures/audio/*.wav (macOS say, voice Samantha, 16 kHz); noisy = white noise at 10 dB SNR, seeded",
     "",
