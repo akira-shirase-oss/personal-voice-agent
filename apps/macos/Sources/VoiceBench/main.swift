@@ -96,8 +96,15 @@ func summary(_ values: [Double]) -> [String: Double] {
     func at(_ p: Double) -> Double { v[min(v.count - 1, Int((Double(v.count - 1) * p).rounded()))] }
     return ["n": Double(v.count), "p50_ms": at(0.5), "p95_ms": at(0.95), "max_ms": v.last!]
 }
+/// The bench's data directory holds the fixtures' transcripts: removed on every way out.
+nonisolated(unsafe) var benchDataDir: URL?
+func removeBenchData() {
+    if let dir = benchDataDir { try? FileManager.default.removeItem(at: dir) }
+    benchDataDir = nil
+}
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("voice-bench: \(message)\n".utf8))
+    removeBenchData()
     exit(2)
 }
 
@@ -115,6 +122,7 @@ let fixtures: [(String, String)] = try String(contentsOf: repoRoot.appending(pat
 let audio = try fixtures.map { try Audio.read(repoRoot.appending(path: "fixtures/audio/\($0.0).wav")) }
 
 let dataDir = try DataDirectory.prepare(FileManager.default.temporaryDirectory.appending(path: "pva-bench-\(UUID().uuidString)"))
+benchDataDir = dataDir
 var config = ConversationConfig(binary: binary, dataDir: dataDir, recognizer: recognizer, model: model, synthesizer: synthesizer)
 config.offlinePlayback = true
 if !warm { config.model = ColdModel(model) }
@@ -216,6 +224,7 @@ let result: [String: Any] = [
 ]
 pump.stop()
 await conversation.shutdown()
+removeBenchData()
 let json = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
 print(String(decoding: json, as: UTF8.self))
 exit(audioAfterStop == 0 ? 0 : 1)
