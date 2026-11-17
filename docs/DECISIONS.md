@@ -197,6 +197,35 @@ settled it, it is listed under **Open questions** rather than guessed.
   silent, and a buffer scheduled on a running node can start a few quanta late — so tests
   render until sound appears and prove silence over windows longer than the audio in question.
 
+- **D-027 — The completion-claim guard fails closed (2026-11-16, second review).** No tool can
+  run in V0–V2, so a model sentence that might say an action happened is never spoken bare. The
+  classifier gives one of three verdicts per sentence while the turn has no executed evidence.
+  *Replace* (spoken as the draft disclaimer): a past, perfect, passive or headline form of an
+  action verb whose subject is the assistant, a task, a person or a pronoun ("Priya has been
+  notified", "$50 sent to Priya", "I'd already sent it"), a completion phrase ("went out",
+  "consider it done"), or "I'm sending it now". *Disclose* (spoken with "Nothing has been done."
+  after it, so a false positive costs a clause, not the sentence): a less certain form — a
+  general verb with a pronoun subject ("It's set in Paris"), a third party's action, a past
+  passive about something other than a task, a claim inside a quoted draft. *Plain*: the rest.
+  Questions, negation, modals, conditionals, habits, the user's own actions, historical markers
+  and attributive adjectives exempt a verb only where they govern it, so "I paid the bill after
+  you confirmed", "No problem I've sent it" and the claim before a tag question ("…, anything
+  else?") are caught. Measured on `fixtures/claims/corpus.tsv`, 334 phrasings: the earlier 136,
+  the second review's 32 listed claims (two as the two-sentence replies it describes) and the 7
+  plain sentences it listed (it did not publish its other 8 claims and 10 plain sentences), and
+  159 added here (tenses, passives, numbers and currency, quoted drafts, multi-clause replies,
+  story, recipe and history prose). Of 169 claims, 161 are replaced, 7 disclosed and **1 is
+  missed (0.6%)**: "Priya should have it by now." Of 165 plain sentences, 149 are spoken intact,
+  **15 get the disclosure (9.1%)** and **1 is replaced (0.6%)**: "Booked solid, the restaurant
+  had no tables." The guard before this change, on the same corpus: 60 of 169 claims spoken
+  bare (35.5%, including all 32 of the review's) and 21 of 165 plain sentences replaced
+  (12.7%). These are rates on a corpus the classifier was tuned against, not on the model's
+  real output, so they are an upper bound on how well it does, not a guarantee. It reads
+  English, plus a short list of other languages' participles of send/pay/book/transfer (any of
+  them counts as a claim; their negation is not parsed). `tests/claims.rs` pins every verdict
+  and fails if a rate rises. Trade-off: a disclosed sentence sounds odd ("It's set in Paris.
+  Nothing has been done."); a fabricated "done" sounds true.
+
 ## Open questions
 
 - **Channels for external actions** — V4's contract must name them (email?

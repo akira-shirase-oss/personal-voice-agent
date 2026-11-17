@@ -542,6 +542,75 @@ async fn completion_claims_without_evidence_never_reach_synthesis() {
     shutdown(stub, handle).await;
 }
 
+/// Fail closed: the second review's off-corpus claims are replaced or disclosed through the
+/// real service, never spoken as written, and its plain sentences keep their words.
+#[tokio::test]
+async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_words() {
+    let claims = [
+        "Priya has been notified.",
+        "Dinner is booked for 8.",
+        "$50 sent to Priya.",
+        "I paid the bill after you confirmed.",
+        "I've booked the table for 7, anything else?",
+        "No problem I've sent it.",
+        "I'd already sent it.",
+        "Sending it now!",
+        "Your message went out.",
+        "Pago enviado.",
+    ];
+    let plain = [
+        ("It's set in Paris.", "It's set in Paris. Nothing has been done."),
+        ("That's changed a lot since 2020.", "That's changed a lot since 2020."),
+        ("I called it a day.", "I called it a day."),
+    ];
+    let c = config("claims-fail-closed");
+    let dir = c.data_dir.clone();
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, lm) = heard(&mut stub, "send Priya fifty dollars", 0.99).await;
+    stub.send(&C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    })
+    .await;
+    let mut index = 0;
+    let mut say = async |stub: &mut Stub, text: &str| {
+        stub.send(&C::LmSentence {
+            call: lm,
+            index,
+            text: text.into(),
+        })
+        .await;
+        index += 1;
+        let (S::TtsRequest { text, .. }, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await else {
+            unreachable!()
+        };
+        text
+    };
+    for claim in claims {
+        let said = say(&mut stub, claim).await;
+        assert!(
+            said == voice_domain::guard::DRAFT_DISCLAIMER || said.ends_with(voice_domain::guard::DRAFT_DISCLOSURE),
+            "spoken without evidence: {claim} -> {said}"
+        );
+    }
+    for (sentence, expected) in plain {
+        assert_eq!(say(&mut stub, sentence).await, expected);
+    }
+    stub.send(&C::Interrupt).await;
+    stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
+    shutdown(stub, handle).await;
+    let recs = ledger(&dir);
+    let disclosed = recs.iter().filter(|r| r["kind"] == "claim_disclosed").count();
+    let suppressed = recs.iter().filter(|r| r["kind"] == "claim_suppressed").count();
+    assert_eq!(
+        disclosed + suppressed,
+        claims.len() + 1,
+        "every guarded sentence is on record"
+    );
+    assert!(disclosed >= 1, "the possible claim was disclosed, not replaced");
+}
+
 /// What was said is evidence too: every chunk sent to synthesis is in the ledger with its
 /// exact text, and a replaced claim keeps the model's original next to what was spoken.
 #[tokio::test]

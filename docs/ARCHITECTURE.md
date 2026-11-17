@@ -93,7 +93,8 @@ deadline → app finalizes and returns the heard text and confidence
 (**heard**) → service sends `lm_request` (heard text as quoted data, never
 raw audio) → the model streams a structured proposal: its `kind` first,
 then reply sentences → for a reply, each sentence goes through the
-completion-claim guard and becomes a `tts_request` tagged with turn N
+completion-claim guard (replaced, disclosed or spoken as written, D-027)
+and becomes a `tts_request` tagged with turn N
 → for an action, the policy decides: refuse, confirm (heard text shown
 verbatim) or execute → a tool result is recorded (**executed**) → only a
 successful result with evidence lets the service say "done".

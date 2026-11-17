@@ -644,7 +644,8 @@ impl Session {
     }
 
     /// Sends one chunk to synthesis for the active, responding turn. Model sentences go
-    /// through the completion-claim guard; `index` is `None` for session-authored text.
+    /// through the completion-claim guard (replaced, disclosed or spoken as written); `index`
+    /// is `None` for session-authored text.
     fn speak(&mut self, text: &str, index: Option<u32>, out: &mut Vec<Output>) {
         let call = self.alloc_call();
         let voice = self.consent.voice();
@@ -665,10 +666,21 @@ impl Session {
         let mut model_text = None;
         if let Some(index) = index
             && !t.executed
-            && guard::claims_completion(&spoken)
         {
-            out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
-            model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
+            match guard::classify(&spoken) {
+                guard::Verdict::Plain => {}
+                guard::Verdict::Replace => {
+                    out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
+                    model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
+                }
+                guard::Verdict::Disclose => {
+                    out.push(Output::Record(Record::ClaimDisclosed { turn: t.id, index }));
+                    // The chunk stays within its bound with the disclosure appended.
+                    let room = max_chars.saturating_sub(guard::DRAFT_DISCLOSURE.len() + 2);
+                    let kept: String = spoken.chars().take(room).collect();
+                    model_text = Some(std::mem::replace(&mut spoken, guard::disclosed(&kept)));
+                }
+            }
         }
         let seq = r.next_seq;
         r.next_seq += 1;

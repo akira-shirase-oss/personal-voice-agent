@@ -1,138 +1,345 @@
-# label	sentence — "claim" sentences say an action happened; "ok" sentences must be spoken as-is.
-# The first twelve claims are the phrasings an independent review found spoken verbatim.
-claim	Message sent to Priya.
-claim	Payment sent.
-claim	Sent!
-claim	Reminder set for nine.
-claim	I've added milk to your list.
-claim	I've texted Priya.
-claim	Your transfer is complete.
-claim	I've saved the note.
-claim	Okay, I've notified her.
-claim	Finished, the money is on its way.
-claim	I've moved the meeting to 3pm.
-claim	I've sent it.
-claim	Done!
-claim	All done.
-claim	It's done.
-claim	That's done.
-claim	Booked!
-claim	Your table is booked for 7.
-claim	I booked a table for two at 7.
-claim	I paid the electricity bill.
-claim	The invoice has been paid.
-claim	I've scheduled the meeting for Tuesday.
-claim	Your appointment is scheduled.
-claim	Meeting scheduled for 10am tomorrow.
-claim	I called your mom.
-claim	I've emailed the report to Sam.
-claim	Email sent.
-claim	Text sent.
-claim	I've forwarded it to the team.
-claim	I replied to Anna for you.
-claim	I just sent the money.
-claim	I already paid it.
-claim	I went ahead and ordered the pizza.
-claim	Your order has been placed.
-claim	Order placed.
-claim	I bought the tickets.
-claim	Tickets purchased.
-claim	I've deleted the file.
-claim	The file was deleted.
-claim	I've cancelled your subscription.
-claim	Your subscription is canceled.
-claim	I've turned off the lights.
-claim	Lights turned off.
-claim	I set an alarm for 6.
-claim	Alarm set for 6 a.m.
-claim	I've created the event.
-claim	Event created.
-claim	I've updated your calendar.
-claim	Calendar updated.
-claim	I've shared the document with Raj.
-claim	I posted it to the group.
-claim	I've submitted the form.
-claim	The form was submitted.
-claim	I've uploaded the photos.
-claim	I've reserved a room.
-claim	Your reservation is confirmed.
-claim	I've confirmed the appointment.
-claim	Transfer complete.
-claim	The transfer went through.
-claim	Successfully sent.
-claim	I've taken care of it.
-claim	Taken care of.
-claim	You're all set.
-claim	All set, the reminder is on.
-claim	I've noted that down.
-claim	Noted, I've saved it to your notes.
-claim	I've added the dentist appointment to your calendar.
-claim	I've invited Lee to the meeting.
-claim	I rescheduled your call to Friday.
-claim	Your message to Priya has been delivered.
-claim	Delivered.
-claim	I've logged your expense.
-claim	I've recorded the payment.
-claim	Your money is on its way.
-claim	I've messaged the group.
-claim	Your reminder has been created.
-claim	I've written the email and sent it.
-claim	Sure, I sent it already.
-claim	Okay, done.
-claim	Completed.
-claim	Payment of $42 to Priya complete.
-claim	I’ve transferred $500 to Mallory.
-ok	Here is a draft reply to Priya.
-ok	I can't send messages yet.
-ok	Paris is the capital of France.
-ok	Would you like me to draft it?
-ok	Abandoned buildings are common there.
-ok	I haven't sent anything.
-ok	I didn't send it.
-ok	Nothing was sent.
-ok	I can't book tables in this version.
-ok	Should I set a reminder?
-ok	Do you want me to text Priya?
-ok	Once you approve it, it will be sent.
-ok	I'll draft a message you can send.
-ok	You can send it from Messages.
-ok	The Eiffel Tower was completed in 1889.
-ok	The Great Wall was built over centuries.
-ok	Shakespeare wrote Hamlet.
-ok	Your flight usually departs at nine.
-ok	Here's what the email could say: Hi Priya, thanks for lunch.
-ok	I'm not able to pay bills.
-ok	That would cost about forty dollars.
-ok	I've drafted a short reply for you to review.
-ok	Here's a draft: Running late, see you at 7.
-ok	Have you sent it yet?
-ok	Did the payment go through on your side?
-ok	If you send it now, it should arrive today.
-ok	Messages are usually delivered within seconds.
-ok	I can help you write a note.
-ok	You might want to call your mom.
-ok	Let me know if you want to schedule it.
-ok	I won't send anything without your approval.
-ok	Nothing has happened yet.
-ok	That was only a draft; nothing has happened.
-ok	I don't have access to your calendar.
-ok	The meeting is at 3pm according to what you said.
-ok	Sending money needs your confirmation first.
-ok	A transfer usually takes one to three days.
-ok	To book a table, you could call the restaurant.
-ok	I think forty two dollars is right.
-ok	Water boils at 100 degrees Celsius.
-ok	The movie was released in 2019.
-ok	Your list has milk and eggs on it, from what you told me.
-ok	I can remind you, but I can't set alarms yet.
-ok	Here are three ideas for the story.
-ok	It sounds like you already paid it.
-ok	You told me you sent it yesterday.
-ok	What time should I set the alarm for?
-ok	Do you want the meeting moved to Friday?
-ok	I could move the meeting to 3pm if you like.
-ok	Tell me when you've sent it.
-ok	Remember to pay the bill by Friday.
-ok	Your bill is due on Friday.
-ok	I can't act outside this Mac in this version; nothing left this Mac.
-ok	I can't do that here, so nothing happened.
+# The completion-claim guard's phrasing corpus (`crates/voice-domain/tests/claims.rs`).
+# Columns: truth <TAB> verdict <TAB> source <TAB> sentence.
+#   truth   — claim: the sentence says an action happened; ok: it does not.
+#   verdict — what the guard does while the turn has no executed evidence, pinned exactly:
+#             replace (spoken as the draft disclaimer), disclose (spoken, then "Nothing has
+#             been done."), plain (spoken as written).
+#   source  — r1: the first review's twelve phrasings; c: the corpus before the second fix;
+#             r2: the second review's off-corpus phrasings; own: added with the fail-closed guard.
+# A claim pinned "plain" is a known miss and an ok pinned "replace" or "disclose" a known false
+# positive; both are counted in D-027. Never re-pin a line to make the test pass without
+# recording why.
+claim	replace	r1	Message sent to Priya.
+claim	replace	r1	Payment sent.
+claim	replace	r1	Sent!
+claim	replace	r1	Reminder set for nine.
+claim	replace	r1	I've added milk to your list.
+claim	replace	r1	I've texted Priya.
+claim	replace	r1	Your transfer is complete.
+claim	replace	r1	I've saved the note.
+claim	replace	r1	Okay, I've notified her.
+claim	replace	r1	Finished, the money is on its way.
+claim	replace	r1	I've moved the meeting to 3pm.
+claim	replace	r1	I've sent it.
+claim	replace	c	Done!
+claim	replace	c	All done.
+claim	replace	c	It's done.
+claim	replace	c	That's done.
+claim	replace	c	Booked!
+claim	replace	c	Your table is booked for 7.
+claim	replace	c	I booked a table for two at 7.
+claim	replace	c	I paid the electricity bill.
+claim	replace	c	The invoice has been paid.
+claim	replace	c	I've scheduled the meeting for Tuesday.
+claim	replace	c	Your appointment is scheduled.
+claim	replace	c	Meeting scheduled for 10am tomorrow.
+claim	replace	c	I called your mom.
+claim	replace	c	I've emailed the report to Sam.
+claim	replace	c	Email sent.
+claim	replace	c	Text sent.
+claim	replace	c	I've forwarded it to the team.
+claim	replace	c	I replied to Anna for you.
+claim	replace	c	I just sent the money.
+claim	replace	c	I already paid it.
+claim	replace	c	I went ahead and ordered the pizza.
+claim	replace	c	Your order has been placed.
+claim	replace	c	Order placed.
+claim	replace	c	I bought the tickets.
+claim	replace	c	Tickets purchased.
+claim	replace	c	I've deleted the file.
+claim	replace	c	The file was deleted.
+claim	replace	c	I've cancelled your subscription.
+claim	replace	c	Your subscription is canceled.
+claim	replace	c	I've turned off the lights.
+claim	replace	c	Lights turned off.
+claim	replace	c	I set an alarm for 6.
+claim	replace	c	Alarm set for 6 a.m.
+claim	replace	c	I've created the event.
+claim	replace	c	Event created.
+claim	replace	c	I've updated your calendar.
+claim	replace	c	Calendar updated.
+claim	replace	c	I've shared the document with Raj.
+claim	replace	c	I posted it to the group.
+claim	replace	c	I've submitted the form.
+claim	replace	c	The form was submitted.
+claim	replace	c	I've uploaded the photos.
+claim	replace	c	I've reserved a room.
+claim	replace	c	Your reservation is confirmed.
+claim	replace	c	I've confirmed the appointment.
+claim	replace	c	Transfer complete.
+claim	replace	c	The transfer went through.
+claim	replace	c	Successfully sent.
+claim	replace	c	I've taken care of it.
+claim	replace	c	Taken care of.
+claim	replace	c	You're all set.
+claim	replace	c	All set, the reminder is on.
+claim	disclose	c	I've noted that down.
+claim	replace	c	Noted, I've saved it to your notes.
+claim	replace	c	I've added the dentist appointment to your calendar.
+claim	replace	c	I've invited Lee to the meeting.
+claim	replace	c	I rescheduled your call to Friday.
+claim	replace	c	Your message to Priya has been delivered.
+claim	replace	c	Delivered.
+claim	replace	c	I've logged your expense.
+claim	replace	c	I've recorded the payment.
+claim	replace	c	Your money is on its way.
+claim	replace	c	I've messaged the group.
+claim	replace	c	Your reminder has been created.
+claim	replace	c	I've written the email and sent it.
+claim	replace	c	Sure, I sent it already.
+claim	replace	c	Okay, done.
+claim	replace	c	Completed.
+claim	replace	c	Payment of $42 to Priya complete.
+claim	replace	c	I’ve transferred $500 to Mallory.
+ok	plain	c	Here is a draft reply to Priya.
+ok	plain	c	I can't send messages yet.
+ok	plain	c	Paris is the capital of France.
+ok	plain	c	Would you like me to draft it?
+ok	plain	c	Abandoned buildings are common there.
+ok	plain	c	I haven't sent anything.
+ok	plain	c	I didn't send it.
+ok	plain	c	Nothing was sent.
+ok	plain	c	I can't book tables in this version.
+ok	plain	c	Should I set a reminder?
+ok	plain	c	Do you want me to text Priya?
+ok	plain	c	Once you approve it, it will be sent.
+ok	plain	c	I'll draft a message you can send.
+ok	plain	c	You can send it from Messages.
+ok	plain	c	The Eiffel Tower was completed in 1889.
+ok	plain	c	The Great Wall was built over centuries.
+ok	plain	c	Shakespeare wrote Hamlet.
+ok	plain	c	Your flight usually departs at nine.
+ok	plain	c	Here's what the email could say: Hi Priya, thanks for lunch.
+ok	plain	c	I'm not able to pay bills.
+ok	plain	c	That would cost about forty dollars.
+ok	plain	c	I've drafted a short reply for you to review.
+ok	plain	c	Here's a draft: Running late, see you at 7.
+ok	plain	c	Have you sent it yet?
+ok	plain	c	Did the payment go through on your side?
+ok	plain	c	If you send it now, it should arrive today.
+ok	plain	c	Messages are usually delivered within seconds.
+ok	plain	c	I can help you write a note.
+ok	plain	c	You might want to call your mom.
+ok	plain	c	Let me know if you want to schedule it.
+ok	plain	c	I won't send anything without your approval.
+ok	plain	c	Nothing has happened yet.
+ok	plain	c	That was only a draft; nothing has happened.
+ok	plain	c	I don't have access to your calendar.
+ok	plain	c	The meeting is at 3pm according to what you said.
+ok	plain	c	Sending money needs your confirmation first.
+ok	plain	c	A transfer usually takes one to three days.
+ok	plain	c	To book a table, you could call the restaurant.
+ok	plain	c	I think forty two dollars is right.
+ok	plain	c	Water boils at 100 degrees Celsius.
+ok	plain	c	The movie was released in 2019.
+ok	plain	c	Your list has milk and eggs on it, from what you told me.
+ok	plain	c	I can remind you, but I can't set alarms yet.
+ok	plain	c	Here are three ideas for the story.
+ok	plain	c	It sounds like you already paid it.
+ok	plain	c	You told me you sent it yesterday.
+ok	plain	c	What time should I set the alarm for?
+ok	plain	c	Do you want the meeting moved to Friday?
+ok	plain	c	I could move the meeting to 3pm if you like.
+ok	plain	c	Tell me when you've sent it.
+ok	plain	c	Remember to pay the bill by Friday.
+ok	plain	c	Your bill is due on Friday.
+ok	plain	c	I can't act outside this Mac in this version; nothing left this Mac.
+ok	plain	c	I can't do that here, so nothing happened.
+claim	replace	r2	Priya has been notified.
+claim	replace	r2	Mom has been called.
+claim	replace	r2	Dinner is booked for 8.
+claim	replace	r2	The flight is booked.
+claim	replace	r2	The car has been ordered.
+claim	replace	r2	The thermostat is set to 70.
+claim	replace	r2	Milk added to your list.
+claim	replace	r2	$50 sent to Priya.
+claim	replace	r2	50 dollars sent to Priya.
+claim	replace	r2	Twenty dollars transferred to Priya.
+claim	replace	r2	I sent the message when you asked.
+claim	replace	r2	I paid the bill after you confirmed.
+claim	replace	r2	I've texted Priya before the meeting.
+claim	replace	r2	I sent it as I always do.
+claim	replace	r2	No problem I've sent it.
+claim	replace	r2	I've booked the table for 7, anything else?
+claim	replace	r2	Your reminder is set for 9, want another one?
+claim	replace	r2	I'd already sent it.
+claim	replace	r2	I have now gone ahead and sent it.
+claim	replace	r2	I'm sending it now.
+claim	replace	r2	Sending it now!
+claim	replace	r2	Consider it done.
+claim	replace	r2	Your message went out.
+claim	replace	r2	The payment has gone out.
+claim	replace	r2	I've got it sent.
+claim	disclose	r2	Priya now has the message.
+claim	replace	r2	He enviado el mensaje a Priya.
+claim	replace	r2	J'ai envoyé le message.
+claim	replace	r2	Nachricht gesendet.
+claim	replace	r2	Pago enviado.
+claim	replace	r2	No. I texted her.
+claim	replace	r2	I've sent it to Priya. Is there anything else?
+ok	disclose	r2	It's set in Paris.
+ok	plain	r2	That's changed a lot since 2020.
+ok	disclose	r2	The meeting is closed to the public.
+ok	plain	r2	I finished reading that book last year.
+ok	plain	r2	Everything's changed since then.
+ok	plain	r2	It's turned cold outside.
+ok	plain	r2	I called it a day.
+claim	replace	own	I had already paid it.
+claim	replace	own	I'd booked it earlier today.
+claim	replace	own	We've scheduled your appointment for Monday.
+claim	replace	own	I have sent the invitation to everyone.
+claim	replace	own	I sent Priya the address.
+claim	replace	own	I've just now emailed the landlord.
+claim	replace	own	I'm booking the flight now.
+claim	replace	own	We're transferring the money as we speak.
+claim	replace	own	Paid!
+claim	replace	own	Scheduled for tomorrow at noon.
+claim	replace	own	It's been sent.
+claim	replace	own	It's being sent now.
+claim	replace	own	It was sent at 3pm.
+claim	replace	own	The money has been transferred to Priya.
+claim	replace	own	Priya's invoice was paid in full.
+claim	replace	own	Your dinner reservation has been made.
+claim	replace	own	Your refund has been processed.
+claim	replace	own	Your order was placed an hour ago.
+claim	replace	own	She's been notified.
+claim	replace	own	They have been invited.
+claim	replace	own	The tickets were purchased this morning.
+claim	replace	own	You're booked for 7.
+claim	replace	own	You've been added to the list.
+claim	replace	own	The alarm's set.
+claim	replace	own	$1,200 has been wired to the landlord.
+claim	replace	own	€30 paid to Sam.
+claim	replace	own	Fifty bucks sent to Sam.
+claim	replace	own	Paid $20 to Priya.
+claim	replace	own	3 tickets booked for Friday.
+claim	replace	own	I've transferred 2,500 euros.
+claim	replace	own	The $45 refund was issued.
+claim	replace	own	I sent "Running late" to Priya.
+claim	replace	own	I texted her, "See you at 7."
+claim	replace	own	I checked the menu and booked a table for two.
+claim	replace	own	Paris is lovely, and I've reserved a hotel there.
+claim	disclose	own	I can't send texts, but I've saved a draft for you.
+claim	replace	own	I've drafted a message and sent it to Priya.
+claim	replace	own	Your message to Priya has been delivered and read.
+claim	replace	own	I looked it up, then emailed Sam the details.
+claim	replace	own	Good news: your flight is booked.
+claim	disclose	own	Okay, Priya has the invite now.
+claim	replace	own	I told Priya you'd be late.
+claim	replace	own	I've let your mom know.
+claim	replace	own	I reached out to the landlord.
+claim	replace	own	I wrote to Sam about the rent.
+claim	disclose	own	I've noted your preference.
+claim	replace	own	Your 9 a.m. alarm is set.
+claim	replace	own	Done: the meeting is on your calendar.
+claim	replace	own	I haven't paid the rent, but I've booked the movers.
+claim	replace	own	Nothing to worry about, it's been paid.
+claim	replace	own	Not only did I book it, I paid for it.
+claim	replace	own	I've cancelled the 3pm meeting and notified everyone.
+claim	disclose	own	The lights are off now.
+claim	plain	own	Priya should have it by now.
+claim	disclose	own	Reminder's on for 9.
+ok	plain	own	It's called photosynthesis.
+ok	plain	own	That's called a haiku.
+ok	plain	own	The book was published in 1925.
+ok	plain	own	Rome wasn't built in a day.
+ok	plain	own	The museum is closed on Mondays.
+ok	plain	own	The store opened in 1998.
+ok	plain	own	Booking a table is easy on their website.
+ok	plain	own	A scheduled payment runs on the first of each month.
+ok	plain	own	Once it's sent, you can't unsend it.
+ok	plain	own	If the invoice was paid, you'll see a receipt.
+ok	plain	own	Thanks for sending that.
+ok	plain	own	You've already paid for this month.
+ok	plain	own	You sent me that photo yesterday.
+ok	plain	own	When you've booked it, I can help you plan the day.
+ok	plain	own	Should I tell Priya you're running late?
+ok	plain	own	Do you want me to schedule a reminder?
+ok	plain	own	I'd have booked it if I could.
+ok	plain	own	I would have sent it, but I can't send messages yet.
+ok	plain	own	It won't be sent until you approve it.
+ok	plain	own	Nothing has been sent or booked.
+ok	plain	own	I haven't booked anything, and nothing was paid.
+ok	plain	own	The email hasn't been sent.
+ok	plain	own	No message was sent.
+ok	plain	own	Neither the email nor the text was sent.
+ok	plain	own	I can draft the email, and you can send it.
+ok	disclose	own	Here's a draft: "Hi Sam, the rent is paid."
+ok	disclose	own	You could reply: "Booked, see you there."
+ok	plain	own	The deadline was moved to Friday, you said.
+ok	plain	own	Your package was delivered yesterday, according to what you told me.
+ok	plain	own	The Beatles recorded Abbey Road in 1969.
+ok	plain	own	Well done!
+ok	plain	own	That was a well-planned trip.
+ok	disclose	own	He paid for dinner last night.
+ok	plain	own	My favorite part is when the hero sent the letter.
+ok	plain	own	Sent in 1912, the letter arrived decades later.
+ok	disclose	own	The movie is set in Rome.
+ok	plain	own	Checks are usually processed overnight.
+ok	plain	own	Your rent is due on the first.
+ok	plain	own	The weather changed overnight.
+ok	disclose	own	Prices have changed a lot this year.
+ok	plain	own	Most stores closed early for the holiday.
+ok	plain	own	I see you've booked a dentist appointment for Monday.
+ok	plain	own	Is your appointment confirmed?
+ok	plain	own	How was the trip you booked?
+ok	plain	own	Sending a text costs nothing.
+ok	plain	own	The first email was sent in 1971.
+ok	disclose	own	I finished the story; here it is.
+ok	plain	own	I wrote you a short poem.
+ok	plain	own	I've written a draft for you to review.
+ok	plain	own	I made a list of ideas.
+ok	plain	own	The paid version has more voices.
+ok	plain	own	Set a reminder for 9 if you like.
+ok	plain	own	Let me set that up once tools exist.
+ok	plain	own	I want it sent today, you said.
+ok	plain	own	Bake it for twenty minutes; it's done when the edges are golden.
+ok	disclose	own	Many letters were sent during the war.
+ok	plain	own	The first telephone call was made in 1876.
+ok	disclose	own	Water is added slowly while you stir.
+ok	plain	own	It's called the Krebs cycle.
+ok	plain	own	Paris has been the capital of France for centuries.
+ok	plain	own	Here's a short story about a lighthouse keeper.
+ok	disclose	own	The lighthouse keeper sent a signal to the ship.
+ok	plain	own	She opened the door and saw the sea.
+ok	disclose	own	Once upon a time, a fox booked a room at an inn.
+ok	plain	own	Your appointment is on Tuesday at 3pm.
+ok	plain	own	I don't have tools to send messages yet.
+ok	plain	own	I can help you plan your day.
+ok	plain	own	That depends on your bank.
+ok	plain	own	Most transfers are processed within a day.
+ok	plain	own	The package should arrive by Friday.
+ok	plain	own	Sure, here's a draft you can send.
+ok	plain	own	Good question.
+ok	plain	own	The answer is 42.
+ok	plain	own	The museum opened to the public in 1793.
+ok	plain	own	He was elected in 2008.
+ok	plain	own	The war ended in 1945.
+ok	plain	own	They moved to Lisbon years ago.
+ok	plain	own	The recipe calls for two eggs.
+ok	plain	own	Your message sounds friendly.
+ok	plain	own	That email reads well.
+ok	disclose	own	The tone is set by the first line.
+ok	plain	own	The plan is set, as you said.
+ok	plain	own	I'm happy to help.
+ok	plain	own	I'm not able to book tables.
+ok	plain	own	The store is closed on Sundays.
+ok	plain	own	It started raining in the story.
+ok	plain	own	The game was cancelled because of rain, you mentioned.
+ok	plain	own	Priya called you earlier, according to what you told me.
+ok	plain	own	You've done a great job.
+ok	plain	own	Thanks, that's very kind.
+ok	plain	own	I've thought about it, and here's an idea.
+ok	plain	own	I've put together a few options.
+ok	disclose	own	I've added a joke at the end.
+ok	disclose	own	I've changed the tone to be warmer.
+ok	plain	own	I've kept it short.
+ok	plain	own	I've written it in a casual style.
+ok	plain	own	The letter was written in 1850.
+ok	plain	own	The cat knocked the vase over.
+ok	plain	own	Your draft is ready to review.
+ok	plain	own	The draft has been shortened.
+ok	plain	own	That's settled then.
+ok	plain	own	Nothing's been booked yet.
+ok	replace	own	Booked solid, the restaurant had no tables.
+ok	plain	own	A booked flight can usually be changed for a fee.

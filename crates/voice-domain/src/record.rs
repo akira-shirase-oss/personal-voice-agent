@@ -39,6 +39,12 @@ pub enum Record {
         turn: TurnId,
         index: u32,
     },
+    /// A reply sentence that might claim completion was spoken with the draft disclosure after
+    /// it ("… Nothing has been done.").
+    ClaimDisclosed {
+        turn: TurnId,
+        index: u32,
+    },
     /// Written in place of a record too large to store (over 64 KiB): never silently missing.
     RecordTooLarge {
         bytes: u64,
@@ -57,7 +63,7 @@ pub enum Record {
     },
     /// What was sent to synthesis, exactly: what the assistant said, interrupted or not.
     /// `index` is the model's sentence number (none for session-authored text); `model_text`
-    /// is the model's sentence when the session replaced it.
+    /// is the model's sentence when the session replaced it or appended the disclosure.
     Spoken {
         turn: TurnId,
         call: CallId,

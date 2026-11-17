@@ -488,6 +488,42 @@ fn a_model_claiming_completion_is_not_spoken_without_evidence() {
     assert!(out.iter().any(|o| matches!(o, Output::Record(Record::Inferred { proposal: Proposal::Reply { reply }, .. }) if reply.contains("sent"))));
 }
 
+/// Fail closed: a sentence that only might claim completion is spoken with the disclosure after
+/// it, so a false positive costs a clause; a plain sentence is spoken as written.
+#[test]
+fn a_possible_claim_is_spoken_with_the_disclosure() {
+    let mut h = H::new();
+    let (turn, lm) = h.heard("where is the film set", Some(0.99));
+    h.ok(C::LmKind {
+        call: lm,
+        kind: ProposalKind::Reply,
+    });
+    let out = h.ok(C::LmSentence {
+        call: lm,
+        index: 0,
+        text: "It's set in Paris.".into(),
+    });
+    let spoken = H::tts_calls(&out);
+    assert_eq!(spoken[0].2, "It's set in Paris. Nothing has been done.");
+    assert!(out.contains(&Output::Record(Record::ClaimDisclosed { turn, index: 0 })));
+    assert!(out.iter().any(|o| matches!(
+        o,
+        Output::Record(Record::Spoken { model_text: Some(m), .. }) if m == "It's set in Paris."
+    )));
+    let out = h.ok(C::LmSentence {
+        call: lm,
+        index: 1,
+        text: "Paris is the capital of France.".into(),
+    });
+    assert_eq!(H::tts_calls(&out)[0].2, "Paris is the capital of France.");
+    let out = h.ok(C::LmSentence {
+        call: lm,
+        index: 2,
+        text: "Priya has been notified.".into(),
+    });
+    assert_eq!(H::tts_calls(&out)[0].2, voice_domain::guard::DRAFT_DISCLAIMER);
+}
+
 /// Failure case: provider stalls → stop at the deadline, degraded, nothing invented.
 #[test]
 fn a_stalled_model_hits_its_deadline_and_late_output_is_dropped() {
@@ -1246,11 +1282,19 @@ impl Checker {
                         "synthesis requested for a turn below the playback fence"
                     );
                     assert_eq!(Some(*turn), s.active_turn(), "synthesis only for the active turn");
-                    if voice_domain::guard::claims_completion(text) {
-                        assert!(
-                            self.executed_ok.contains(turn),
-                            "spoken completion claim without evidence: {text}"
-                        );
+                    if !self.executed_ok.contains(turn) {
+                        // Without evidence a claim is never spoken bare: it is replaced, or it
+                        // ends with the disclosure.
+                        match voice_domain::guard::classify(text) {
+                            voice_domain::guard::Verdict::Plain => {}
+                            voice_domain::guard::Verdict::Disclose => assert!(
+                                text.ends_with(voice_domain::guard::DRAFT_DISCLOSURE),
+                                "possible completion claim spoken without its disclosure: {text}"
+                            ),
+                            voice_domain::guard::Verdict::Replace => {
+                                panic!("spoken completion claim without evidence: {text}")
+                            }
+                        }
                     }
                 }
                 _ => {}
