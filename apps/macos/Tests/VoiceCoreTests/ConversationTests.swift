@@ -20,6 +20,10 @@ actor Recorder {
         Task { for await e in events { await self.add(e) } }
     }
     private func add(_ e: ConversationEvent) { seen.append(e) }
+    func recentDegraded() -> (Stage, FailureReason)? {
+        for e in seen.reversed() { if case .degraded(_, let stage, let reason) = e { return (stage, reason) } }
+        return nil
+    }
 
     /// The next event (after the previous match) satisfying `match`, or nil at the timeout.
     func next(timeout: Duration = .seconds(10), _ match: @Sendable (ConversationEvent) -> Bool) async -> ConversationEvent? {
@@ -349,8 +353,13 @@ struct ModelTests {
         await OnDevice.speechReady() && ModelTests.available && OnDevice.systemVoice && haveBinary
     })
     func endToEnd() async throws {
+        // Deadlines long enough that machine load cannot expire them: this test proves the
+        // path works, so any degraded turn is a broken path, never "the machine was busy".
+        // How fast it is belongs to the bench (scripts/bench-e2e.sh), which records load.
+        let generous = ["stt_finalize_ms": "30000", "lm_first_ms": "60000", "lm_total_ms": "120000", "tts_first_audio_ms": "30000"]
         let (c, r, pump) = try makeConversation(
-            "e2e", model: FoundationModelsProvider(), synthesizer: SystemVoiceSynthesizer(), recognizer: AppleSpeechRecognizer())
+            "e2e", model: FoundationModelsProvider(), synthesizer: SystemVoiceSynthesizer(), recognizer: AppleSpeechRecognizer(),
+            limits: generous)
         defer { pump.stop() }
         try await startWithConsent(c, r)
         await c.pushToTalkDown()
@@ -358,23 +367,16 @@ struct ModelTests {
         let pcm = try Audio.read(repoRoot.appending(path: "fixtures/audio/capital-question.wav"))
         for slice in Audio.slices(pcm, frames: 1_600) { await c.feed(slice) }
         await c.pushToTalkUp()
-        let (_, outcome, timing) = try #require(await r.next(timeout: .seconds(30)) { closed($0) != nil }.flatMap(closed))
+        let (_, outcome, timing) = try #require(await r.next(timeout: .seconds(150)) { closed($0) != nil }.flatMap(closed))
+        let degraded = await r.recentDegraded()
+        #expect(outcome == .completed, "the on-device path failed: \(outcome), \(degraded.map { "\($0)" } ?? "no degraded event")")
+        #expect(pump.loudBlocks.withLock { $0 } > 0, "the reply was heard")
+        let heard = await r.seen.compactMap { if case .heard(_, let t) = $0 { t } else { nil } }.first ?? ""
+        #expect(Transcripts.wordErrorRate(reference: "What is the capital of France?", hypothesis: heard) <= 0.2, "heard: \(heard)")
         func ms(_ d: Duration?) -> Double { d.map { Double($0.components.attoseconds) / 1e15 + Double($0.components.seconds) * 1000 } ?? -1 }
-        // The invariant, whatever the machine's load: a turn either completes and is heard, or
-        // degrades at a deadline and says nothing. How often it completes, and how fast, is the
-        // bench's job (scripts/bench-e2e.sh records load average with every run).
-        switch outcome {
-        case .completed:
-            #expect(pump.loudBlocks.withLock { $0 } > 0, "a completed turn was heard")
-            print(
-                "METRIC e2e_ms end_to_first_audio=\(ms(timing.endToFirstAudio)) stt=\(ms(timing.recognizerFinalize)) lm_first_sentence=\(ms(timing.modelFirstSentence)) tts_first_audio=\(ms(timing.synthesisFirstAudio))"
-            )
-        case .degraded:
-            #expect(pump.loudBlocks.withLock { $0 } == 0, "a degraded turn speaks nothing")
-            print("NOTE e2e turn degraded at a provider deadline; nothing was spoken (check uptime: the model may be starved)")
-        default:
-            Issue.record("unexpected outcome \(outcome)")
-        }
+        print(
+            "METRIC e2e_ms end_to_first_audio=\(ms(timing.endToFirstAudio)) stt=\(ms(timing.recognizerFinalize)) lm_first_sentence=\(ms(timing.modelFirstSentence)) tts_first_audio=\(ms(timing.synthesisFirstAudio))"
+        )
         await c.shutdown()
     }
 }
