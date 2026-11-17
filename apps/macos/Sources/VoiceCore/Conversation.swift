@@ -75,6 +75,9 @@ public struct ConversationConfig: Sendable {
     public var idleHeartbeatInterval: Duration = .seconds(5)
     /// How long a ping may wait behind a `forget`, which deletes files before it answers.
     public var forgetTimeout: Duration = .seconds(30)
+    /// A service that has not said `ready` this long after its launch (hung in startup or
+    /// recovery; it answers no ping before then) is replaced. Generous: recovery reads every log.
+    public var startupTimeout: Duration = .seconds(30)
     /// On quit, how long the service has to close its session after stdin closes before it
     /// gets SIGTERM (then SIGKILL): the app never leaves a child holding the data directory.
     public var shutdownGrace: Duration = .seconds(1)
@@ -153,10 +156,15 @@ public actor Conversation {
     private var fatal: String?
     /// Consecutive launches refused with `already_running`.
     private var blockedAttempts = 0
+    /// The user turned listening off. The app's own truth: push-to-talk is refused here, and a
+    /// service that reports capture granted (one that never read the revocation) is told again.
+    private var userRevokedCapture = false
     /// The heartbeat ping awaiting its pong, if any.
     private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
     private var pingSeq: UInt64 = 0
     private var lastPingAt: ContinuousClock.Instant?
+    /// When the current service was launched.
+    private var startedAt: ContinuousClock.Instant?
     /// The current service has said `ready`: it is pinged from then on, turn or no turn.
     private var sessionUp = false
     /// A `forget` was sent and not yet answered.
@@ -180,6 +188,7 @@ public actor Conversation {
         process = p
         pendingPing = nil
         lastPingAt = nil
+        startedAt = clock.now
         sessionUp = false
         forgetPending = false
         startHeartbeat(epoch)
@@ -216,7 +225,13 @@ public actor Conversation {
             p.kill()
             return false
         }
-        guard sessionUp else { return true }
+        guard sessionUp else {
+            // No `ready` yet: it cannot answer pings, so only a startup deadline can find a hang.
+            guard let launched = startedAt, clock.now - launched > config.startupTimeout else { return true }
+            publish(.serviceUnresponsive)
+            p.kill()
+            return false
+        }
         let active = currentTurn != nil || capturing != nil || keyHeld
         let idleDue = lastPingAt.map { clock.now - $0 >= config.idleHeartbeatInterval } ?? true
         if active || idleDue { ping() }
@@ -356,16 +371,35 @@ public actor Conversation {
     // MARK: User actions
 
     public func setCaptureConsent(_ grant: Bool) {
+        userRevokedCapture = !grant
         if !grant {
             stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+            if let c = capturing { stopMicrophone(c) }
             // Speech heard under the revoked consent must not reach a later prompt.
             config.model.forget()
+            // Durable before the service hears of it: a service that never reads this message
+            // (hung, or dying) is replaced by one that starts revoked.
+            ConsentToken.revoke(dataDir: config.dataDir)
         }
         send(.consent(scope: .capture, grant: grant, rightsReview: nil))
     }
 
+    /// A service says capture is granted though the user turned it off: revoke again, and show
+    /// it off.
+    private func reassertRevocation(_ state: ConsentState) -> ConsentState {
+        guard userRevokedCapture, state.capture else { return state }
+        ConsentToken.revoke(dataDir: config.dataDir)
+        send(.consent(scope: .capture, grant: false, rightsReview: nil))
+        return ConsentState(capture: false, personalVoice: state.personalVoice)
+    }
+
     public func pushToTalkDown() {
         keyHeld = true
+        // Listening is off: nothing reaches the service and the microphone never opens.
+        if userRevokedCapture {
+            publish(.notice("consent_required"))
+            return
+        }
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
         if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         // Every press checks the service is alive; the microphone opens only on its answer.
@@ -440,7 +474,8 @@ public actor Conversation {
 
     private func handle(_ m: ServiceMessage) {
         switch m {
-        case .ready(_, let session, let consent, let recovered):
+        case .ready(_, let session, let reported, let recovered):
+            let consent = reassertRevocation(reported)
             self.consent = consent
             sessionUp = true
             blockedAttempts = 0
@@ -450,7 +485,7 @@ public actor Conversation {
             publish(.turnOpened(turn))
         case .capture(let turn, on: true):
             beginRecognition(turn)
-            if keyHeld {
+            if keyHeld && !userRevokedCapture {
                 capturing = turn
                 publish(.capture(turn, on: true))
                 capLocally(turn)
@@ -492,7 +527,8 @@ public actor Conversation {
             publish(.turnClosed(turn, outcome, t))
         case .degraded(let turn, let stage, let reason):
             publish(.degraded(turn, stage, reason))
-        case .consentState(let state):
+        case .consentState(let reported):
+            let state = reassertRevocation(reported)
             consent = state
             publish(.consent(state))
         case .notice(let code, _):

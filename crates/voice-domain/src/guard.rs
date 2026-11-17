@@ -13,8 +13,8 @@
 //!   The session speaks [`DRAFT_DISCLAIMER`] instead.
 //! - [`Verdict::Disclose`] — it might say so: a less certain form, such as a general verb with
 //!   a pronoun subject ("It's set for 9"), a third party's action ("Priya sent the money"), or
-//!   a claim inside a quoted draft. The session speaks the sentence followed by
-//!   [`DRAFT_DISCLOSURE`], so a false positive costs a clause, not the sentence.
+//!   a claim inside a quoted draft. The session speaks it as written, and its turn ends with
+//!   [`DRAFT_DISCLOSURE`].
 //! - [`Verdict::Plain`] — no completed action is asserted: spoken as written.
 //!
 //! A verb is not a claim when its own clause makes it one of: a question ("Have you sent
@@ -25,9 +25,12 @@
 //! only when it governs that verb: "I paid the bill after you confirmed" and "No problem I've
 //! sent it" are still claims, and so is the first clause of "I've booked it, anything else?".
 //!
-//! It is a classifier for English, with a short list of other languages' participles; its
-//! measured miss and false-positive rates are recorded in D-027. What was spoken is ledgered,
-//! so a slip is visible. `fixtures/claims/corpus.tsv` pins every verdict.
+//! It is a classifier for English, with a short list of other languages' participles, and on
+//! phrasings it was never tuned on it misses most claims (D-027: `fixtures/claims/held-out.tsv`).
+//! So it is not the safety net: the turn is. A reply turn whose request may ask for an action
+//! ([`request_may_ask_for_action`]), or with any sentence flagged here, ends with one spoken
+//! [`DRAFT_DISCLOSURE`]. What was spoken is ledgered, so a slip is visible.
+//! `fixtures/claims/corpus.tsv` pins every sentence verdict.
 
 /// How the session speaks one model sentence while its turn has no executed evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,7 +45,7 @@ pub enum Verdict {
 
 /// What the session speaks instead of a sentence that claims completion.
 pub const DRAFT_DISCLAIMER: &str = "That was only a draft; nothing has happened.";
-/// What the session speaks after a sentence that might claim completion.
+/// What the session speaks once at the end of a turn that may have claimed an action.
 pub const DRAFT_DISCLOSURE: &str = "Nothing has been done.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -995,6 +998,91 @@ fn sentences(text: &str) -> Vec<(&str, bool)> {
     out
 }
 
+/// Opens an informational request ("What is…", "Tell me…"): unless it names an action or a
+/// task, the reply to it needs no turn-level disclosure.
+const INFORMATIONAL: &[&str] = &[
+    "what",
+    "what's",
+    "whats",
+    "when",
+    "when's",
+    "where",
+    "where's",
+    "who",
+    "who's",
+    "whose",
+    "why",
+    "how",
+    "how's",
+    "which",
+    "is",
+    "are",
+    "was",
+    "were",
+    "do",
+    "does",
+    "can",
+    "could",
+    "would",
+    "will",
+    "should",
+    "tell",
+    "explain",
+    "describe",
+    "define",
+    "summarize",
+    "summarise",
+    "translate",
+    "compare",
+    "list",
+    "show",
+    "give",
+    "help",
+    "write",
+    "draft",
+    "suggest",
+    "recommend",
+];
+
+/// Whether a heard request may ask for something to be done on the user's behalf, so that a
+/// reply to it may claim it was done. Fails closed: only a question or an informational request
+/// that names no action verb (in any form) and no task counts as informational; any other
+/// request, statements included, may ask for an action. A turn that answers such a request ends
+/// with the turn-level disclosure (D-027).
+pub fn request_may_ask_for_action(heard: &str) -> bool {
+    let lowered = heard.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
+    let w = words(&lowered);
+    let names_action = w.iter().enumerate().any(|(i, t)| {
+        // "tell me", "remind me" differ: telling the user is what the assistant does.
+        if matches!(*t, "tell" | "telling") && matches!(w.get(i + 1), Some(&("me" | "us"))) {
+            return false;
+        }
+        is(t, TASK_NOUNS) || is(t, FOREIGN) || action_form(t)
+    });
+    // "Did you…", "Have you…", "Has it been…": asking whether something was done.
+    let asks_if_done = w.windows(2).any(|p| {
+        matches!(p[0], "did" | "have" | "has" | "had") && matches!(p[1], "you" | "it" | "that" | "they" | "she" | "he")
+    });
+    if names_action || asks_if_done {
+        return true;
+    }
+    let question = lowered.trim_end().ends_with('?');
+    let informational = question || w.first().is_some_and(|f| is(f, INFORMATIONAL));
+    !informational
+}
+
+/// Any form of an action verb: its base, third person, past, participle or progressive.
+fn action_form(word: &str) -> bool {
+    let stem = |suffix: &str| word.strip_suffix(suffix);
+    verb(word).is_some()
+        || VERBS.iter().any(|e| {
+            word == e.lemma
+                || stem("s") == Some(e.lemma)
+                || stem("es") == Some(e.lemma)
+                || (e.lemma.ends_with('y') && stem("ies").is_some_and(|s| e.lemma.strip_suffix('y') == Some(s)))
+        })
+}
+
 /// Classifies one reply sentence (or several: each is judged and the strongest verdict wins).
 pub fn classify(text: &str) -> Verdict {
     let lowered = text
@@ -1011,16 +1099,6 @@ pub fn classify(text: &str) -> Verdict {
 /// Whether a sentence would be replaced or disclosed: it may claim that an action happened.
 pub fn claims_completion(text: &str) -> bool {
     classify(text) != Verdict::Plain
-}
-
-/// The sentence followed by [`DRAFT_DISCLOSURE`].
-pub fn disclosed(sentence: &str) -> String {
-    let s = sentence.trim_end();
-    if s.chars().last().is_some_and(char::is_alphanumeric) {
-        format!("{s}. {DRAFT_DISCLOSURE}")
-    } else {
-        format!("{s} {DRAFT_DISCLOSURE}")
-    }
 }
 
 fn classify_sentence(sentence: &str, question: bool) -> Verdict {
@@ -1306,7 +1384,6 @@ mod tests {
     fn session_texts_are_plain() {
         assert_eq!(classify(DRAFT_DISCLAIMER), Verdict::Plain);
         assert_eq!(classify(DRAFT_DISCLOSURE), Verdict::Plain);
-        assert_eq!(classify(&disclosed("It's set in Paris.")), Verdict::Disclose);
     }
 
     #[test]
@@ -1319,14 +1396,5 @@ mod tests {
             classify("I've sent it to Priya. Is there anything else?"),
             Verdict::Replace
         );
-    }
-
-    #[test]
-    fn disclosure_keeps_the_sentence() {
-        assert_eq!(
-            disclosed("It's set in Paris."),
-            "It's set in Paris. Nothing has been done."
-        );
-        assert_eq!(disclosed("Sending it"), "Sending it. Nothing has been done.");
     }
 }

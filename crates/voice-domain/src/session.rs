@@ -143,6 +143,10 @@ struct Turn {
     heard: Option<Heard>,
     /// A tool returned success with evidence in this turn.
     executed: bool,
+    /// The heard request may ask for an action (D-027).
+    asks_action: bool,
+    /// A reply sentence of this turn was replaced or flagged as a possible claim.
+    flagged: bool,
     phase: Phase,
 }
 
@@ -335,6 +339,8 @@ impl Session {
             id,
             heard: None,
             executed: false,
+            asks_action: false,
+            flagged: false,
             phase: Phase::Capturing { capture },
         });
         out.push(Output::Record(Record::TurnOpened { turn: id }));
@@ -581,6 +587,7 @@ impl Session {
             t.heard = Some(Heard { text, min_confidence });
             return self.close(Outcome::Empty, out);
         }
+        t.asks_action = guard::request_may_ask_for_action(&text);
         out.push(Output::Send(ServiceMessage::LmRequest {
             call: lm,
             turn: t.id,
@@ -679,15 +686,14 @@ impl Session {
             match guard::classify(&spoken) {
                 guard::Verdict::Plain => {}
                 guard::Verdict::Replace => {
+                    t.flagged = true;
                     out.push(Output::Record(Record::ClaimSuppressed { turn: t.id, index }));
                     model_text = Some(std::mem::replace(&mut spoken, guard::DRAFT_DISCLAIMER.to_owned()));
                 }
                 guard::Verdict::Disclose => {
+                    // Spoken as written; the turn ends with the disclosure.
+                    t.flagged = true;
                     out.push(Output::Record(Record::ClaimDisclosed { turn: t.id, index }));
-                    // The chunk stays within its bound with the disclosure appended.
-                    let room = max_chars.saturating_sub(guard::DRAFT_DISCLOSURE.len() + 2);
-                    let kept: String = spoken.chars().take(room).collect();
-                    model_text = Some(std::mem::replace(&mut spoken, guard::disclosed(&kept)));
                 }
             }
         }
@@ -766,6 +772,7 @@ impl Session {
                         self.speak(sentence, Some(u32::try_from(i).unwrap_or(u32::MAX)), out);
                     }
                 }
+                self.disclose_turn(out);
                 self.maybe_finish(out);
             }
             Proposal::Action { tool, slots, .. } => {
@@ -805,6 +812,23 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Fails closed for the whole turn (D-027). No tool can run in this release, and a sentence
+    /// classifier cannot catch every way of saying something was done ("Is it booked? It is."),
+    /// so a reply turn whose request may ask for an action, or with any sentence replaced or
+    /// flagged, ends with one spoken "Nothing has been done.", recorded as `turn_disclosed`.
+    fn disclose_turn(&mut self, out: &mut Vec<Output>) {
+        let Some(t) = self.turn.as_ref() else { return };
+        if t.executed || !(t.asks_action || t.flagged) {
+            return;
+        }
+        out.push(Output::Record(Record::TurnDisclosed {
+            turn: t.id,
+            request: t.asks_action,
+            flagged: t.flagged,
+        }));
+        self.speak(guard::DRAFT_DISCLOSURE, None, out);
     }
 
     /// Speaks session-authored text, then closes the turn with `outcome`.

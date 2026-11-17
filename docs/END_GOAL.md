@@ -88,23 +88,23 @@ proof gate in `ROADMAP.md`:
    Enroll only your own voice or a speaker with explicit rights; consent and
    deletion scope are recorded. Revocation stops capture/playback
    immediately and prevents any further use of the revoked scope, also when
-   the disk is full (it fails closed) and with only one service per data
-   directory.
+   the disk is full (it fails closed), with only one service per data
+   directory, and when the service never reads it (hung or dying): the app
+   removes the consent token itself before sending the revocation, refuses
+   push-to-talk while listening is off, and revokes again if a replacement
+   service reports capture granted.
 2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
    recognizer's output, the assistant's inference and tool-result
    evidence. The ledger is what happened; the model's narration is not. A
    reply is drafted text, and while a turn has no executed evidence the
-   completion-claim guard fails closed: a sentence that says an action
-   happened is replaced by a draft disclaimer, and one that only might is
-   spoken with "Nothing has been done." after it. Claims are found by a
-   structural classifier (past, perfect, passive and headline forms of
-   action verbs, completion phrases; questions, negations, futures,
-   conditionals and the user's own actions excluded only where they govern
-   the verb), pinned by a phrasing corpus (`fixtures/claims/corpus.tsv`,
-   D-027). On that corpus it misses 1 of 169 claims and alters 16 of 165
-   plain sentences (15 by the disclosure, 1 replaced); it was tuned on that
-   corpus, so ordinary phrasings outside it can still slip, and what was
-   spoken is recorded too.
+   guard fails closed at the turn level: a reply turn whose request may ask
+   for an action, or with any sentence that may claim one, ends with one
+   spoken "Nothing has been done.", and a sentence that clearly says an
+   action happened is also replaced by a draft disclaimer. The sentence
+   classifier alone misses most claims it was not tuned on (84% of a
+   held-out set, D-027); with the turn-level disclosure, every held-out
+   claim answering a request ended disclosed, and 1 of 4 unprompted claims
+   (in reply to a plain question) did not. What was spoken is recorded too.
 3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
    interruption playback stops and downstream work is cancelled; a late
    text/audio chunk from an old turn can never play over a new one; an

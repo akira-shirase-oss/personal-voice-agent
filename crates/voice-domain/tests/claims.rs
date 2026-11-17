@@ -9,7 +9,7 @@
     reason = "test code: a panic is the failure report, and the rates are printed for D-027"
 )]
 
-use voice_domain::guard::{DRAFT_DISCLOSURE, Verdict, classify, disclosed};
+use voice_domain::guard::{Verdict, classify};
 
 struct Line {
     truth: &'static str,
@@ -121,13 +121,4 @@ fn the_rates_recorded_in_d027_hold() {
     assert!(missed <= 1, "claims missed: {missed}");
     assert!(fp_replaced <= 1, "plain sentences replaced: {fp_replaced}");
     assert!(fp_disclosed <= 15, "plain sentences disclosed: {fp_disclosed}");
-}
-
-#[test]
-fn a_disclosed_sentence_keeps_its_words_and_ends_with_the_disclosure() {
-    for l in corpus().iter().filter(|l| l.verdict == Verdict::Disclose) {
-        let said = disclosed(l.sentence);
-        assert!(said.starts_with(l.sentence.trim_end()), "{said}");
-        assert!(said.ends_with(DRAFT_DISCLOSURE), "{said}");
-    }
 }

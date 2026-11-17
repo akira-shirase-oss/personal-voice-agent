@@ -149,8 +149,8 @@ settled it, it is listed under **Open questions** rather than guessed.
   transcripts now have controls. "Delete history" (`forget` with scope
   `capture`, acting on that consent's deletion scope) deletes every session
   log, the live one included (rotated into a fresh log that records the
-  deletion), and closed logs older than 30 days are deleted at start
-  (`--retention-days`). Both are tested: a sentinel transcript is found
+  deletion), and closed logs older than 30 days are deleted at start and
+  every hour while the session stays open (`--retention-days`). Both are tested: a sentinel transcript is found
   nowhere under the data directory afterwards. Copies in snapshots or
   backups made before the exclusion are not reached. "Delete history" and a
   capture revocation also clear the model's in-memory recap (D-025), so deleted
@@ -241,8 +241,28 @@ settled it, it is listed under **Open questions** rather than guessed.
   real output, so they are an upper bound on how well it does, not a guarantee. It reads
   English, plus a short list of other languages' participles of send/pay/book/transfer (any of
   them counts as a claim; their negation is not parsed). `tests/claims.rs` pins every verdict
-  and fails if a rate rises. Trade-off: a disclosed sentence sounds odd ("It's set in Paris.
-  Nothing has been done."); a fabricated "done" sounds true.
+  and fails if a rate rises.
+  *Amended (third review): the sentence classifier is not reliable on new text, so the guard
+  now fails closed at the turn level.* No tool can run in V0–V2, so a reply turn ends with one
+  spoken "Nothing has been done." (session-authored, ledgered as `turn_disclosed`) whenever its
+  heard request may ask for an action, or any of its sentences was replaced or flagged. The
+  request test fails closed too: only a question or an informational request ("what…",
+  "tell me…", "explain…") naming no action verb in any form and no task noun counts as purely
+  informational; every other request, statements included, gets the disclosure. Per-sentence
+  `Replace` stays on top for clear claims; a flagged (`Disclose`) sentence is now spoken as
+  written, since the turn carries the disclosure. Measured on `fixtures/claims/held-out.tsv`
+  (83 lines, written before the run and never used for tuning: the 39 phrasings a third review
+  published, which were mostly its misses, plus 44 new): the **sentence classifier alone missed
+  51 of 61 claims (84%)** and replaced 6 of 22 plain sentences (27%, all from the review's
+  published misses); **with the turn-level disclosure, 1 of 61 claims was spoken with no
+  disclosure at all (2%) and 0 of the 57 that answer a request asking for an action**. The one
+  miss is an unprompted claim in reply to an informational question ("What's two plus two?" →
+  "Four, and your reminder is in."), which only the sentence classifier can catch; 1 of the 4
+  such held-out claims got through. The cost: 12 of 22 plain replies also got the disclosure
+  (55%; 5 of the 15 written for this file). The code before this amendment spoke 51 of the 61
+  claims with no disclosure. `tests/held_out.rs` pins only that every claim answering its
+  request ends disclosed; the rates are printed, not pinned. Trade-off: "Nothing has been
+  done." after some replies that never needed it; a fabricated "done" sounds true.
 
 ## Open questions
 

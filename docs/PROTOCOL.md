@@ -24,6 +24,11 @@ durations only, never content (D-011).
   app has died, so its parent is launchd: SIGTERM, then SIGKILL) and starts again, and
   otherwise waits for the other copy, retrying after 250 ms, doubling to at most 5 s, for as
   long as it takes.
+- The app keeps the user's capture choice itself. Before it sends a revocation it removes the
+  service's consent token (`<data-dir>/consent.capture.granted`: unlinked, or set to 0000), so
+  a service that never reads the message is replaced by one that starts revoked. While the
+  choice is "off" the app sends no `ptt_down` and opens no microphone, and a `ready` or
+  `consent_state` that says capture is granted is answered with the revocation again.
 - On quit the app sends `shutdown` and closes stdin, then sends SIGTERM if the service has
   not exited within 1 s and SIGKILL 0.5 s later, and quits only once it has exited.
 - Golden lines for both sides live in `fixtures/protocol/`; the Rust and

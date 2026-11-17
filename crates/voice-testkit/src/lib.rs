@@ -274,5 +274,18 @@ pub async fn reply_turn(stub: &mut Stub, heard_text: &str, sentences: &[&str]) -
         stub.send(&C::TtsStarted { call }).await;
         stub.send(&C::TtsFinished { call }).await;
     }
-    stub.until(|m| matches!(m, S::TurnClosed { .. })).await.0
+    // Any chunk requested after the reply (the turn-level disclosure) is played too.
+    loop {
+        match stub
+            .until(|m| matches!(m, S::TtsRequest { .. } | S::TurnClosed { .. }))
+            .await
+            .0
+        {
+            S::TtsRequest { call, .. } => {
+                stub.send(&C::TtsStarted { call }).await;
+                stub.send(&C::TtsFinished { call }).await;
+            }
+            closed => return closed,
+        }
+    }
 }

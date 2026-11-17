@@ -563,9 +563,9 @@ async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_wo
         "Pago enviado.",
     ];
     let plain = [
-        ("It's set in Paris.", "It's set in Paris. Nothing has been done."),
-        ("That's changed a lot since 2020.", "That's changed a lot since 2020."),
-        ("I called it a day.", "I called it a day."),
+        "It's set in Paris.",
+        "That's changed a lot since 2020.",
+        "I called it a day.",
     ];
     let dir = voice_testkit::temp_data_dir("claims-fail-closed");
     let c = config(&dir);
@@ -594,13 +594,26 @@ async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_wo
     for claim in claims {
         let said = say(&mut stub, claim).await;
         assert!(
-            said == voice_domain::guard::DRAFT_DISCLAIMER || said.ends_with(voice_domain::guard::DRAFT_DISCLOSURE),
+            said == voice_domain::guard::DRAFT_DISCLAIMER
+                || voice_domain::guard::classify(claim) == voice_domain::guard::Verdict::Disclose,
             "spoken without evidence: {claim} -> {said}"
         );
     }
-    for (sentence, expected) in plain {
-        assert_eq!(say(&mut stub, sentence).await, expected);
+    for sentence in plain {
+        assert_eq!(say(&mut stub, sentence).await, sentence, "spoken as written");
     }
+    // The reply ends: the turn ends with the disclosure, spoken once.
+    stub.send(&lm_done(
+        lm,
+        Proposal::Reply {
+            reply: claims.join(" "),
+        },
+    ))
+    .await;
+    let (S::TtsRequest { text, .. }, _) = stub.until(|m| matches!(m, S::TtsRequest { .. })).await else {
+        unreachable!()
+    };
+    assert_eq!(text, voice_domain::guard::DRAFT_DISCLOSURE);
     stub.send(&C::Interrupt).await;
     stub.until(|m| matches!(m, S::TurnClosed { .. })).await;
     shutdown(stub, handle).await;
@@ -612,7 +625,11 @@ async fn ordinary_claims_are_never_spoken_bare_and_plain_sentences_keep_their_wo
         claims.len() + 1,
         "every guarded sentence is on record"
     );
-    assert!(disclosed >= 1, "the possible claim was disclosed, not replaced");
+    assert!(
+        recs.iter()
+            .any(|r| r["kind"] == "turn_disclosed" && r["request"] == true),
+        "the turn-level disclosure is on record"
+    );
 }
 
 /// What was said is evidence too: every chunk sent to synthesis is in the ledger with its
@@ -814,6 +831,38 @@ async fn closed_sessions_past_retention_are_deleted_at_start() {
     shutdown(stub, handle).await;
     assert!(!old.exists(), "a 40-day-old session is past the 30-day default");
     assert!(recent.exists(), "a recent session is kept");
+}
+
+/// Retention also runs while the session stays open: an app left running for days must still
+/// expire old logs, not only at its next start.
+#[tokio::test]
+async fn retention_also_runs_while_the_session_is_open() {
+    let dir = voice_testkit::temp_data_dir("retention-open");
+    let mut c = config(&dir);
+    c.retention_every = Duration::from_millis(100);
+    let (stub, _, handle) = start(c).await;
+    // A closed session found only after the start-time pass, 40 days old.
+    let old = dir.join("ledger").join("0001.closed.log");
+    std::fs::write(&old, b"").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_hours(40 * 24))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while old.exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !old.exists(),
+        "a log past retention is deleted while the session is open"
+    );
+    shutdown(stub, handle).await;
+    assert!(
+        ledger(&dir).iter().any(|r| r["kind"] == "history_expired"),
+        "the expiry is on record"
+    );
 }
 
 /// D-011 as a test: transcripts and replies reach the ledger, never the logs.

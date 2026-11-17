@@ -48,6 +48,9 @@ pub struct Config<E> {
     pub log: Log,
     /// Closed session logs older than this are deleted at start (D-018); `None` keeps them.
     pub retention: Option<Duration>,
+    /// How often retention runs again while the session is open (an app left open for days
+    /// must still expire old logs).
+    pub retention_every: Duration,
 }
 
 impl<E> Config<E> {
@@ -62,6 +65,7 @@ impl<E> Config<E> {
             io_timeout: Duration::from_secs(2),
             log,
             retention: Some(Duration::from_hours(30 * 24)),
+            retention_every: Duration::from_hours(1),
         }
     }
 }
@@ -124,6 +128,9 @@ struct Actor<E> {
     ledger_path: PathBuf,
     ledger_faults: watch::Receiver<Option<Fault>>,
     bad_lines: BadLines,
+    retention: Option<Duration>,
+    retention_every: Duration,
+    next_retention: Instant,
     summary: Summary,
 }
 
@@ -214,6 +221,7 @@ where
         io_timeout,
         log,
         retention,
+        retention_every,
     } = config;
     let (out_tx, out_rx) = mpsc::channel::<ServiceMessage>(OUT_QUEUE);
     let writer_task = tokio::spawn(write_loop(writer, out_rx));
@@ -256,6 +264,9 @@ where
                 })
                 .await;
             actor.expire(retention).await;
+            actor.retention = retention;
+            actor.retention_every = retention_every;
+            actor.next_retention = Instant::now() + retention_every;
             let ready = ServiceMessage::Ready {
                 protocol: PROTOCOL_VERSION,
                 session: session_id.clone(),
@@ -325,6 +336,9 @@ impl<E: ToolExecutor> Actor<E> {
             ledger_path,
             ledger_faults,
             bad_lines: BadLines::default(),
+            retention: None,
+            retention_every: Duration::from_hours(1),
+            next_retention: Instant::now(),
             summary: Summary {
                 session,
                 reason: EndReason::Eof,
@@ -493,6 +507,12 @@ impl<E: ToolExecutor> Actor<E> {
                 }
                 () = sleep_until(next_deadline.unwrap_or_else(Instant::now)), if next_deadline.is_some() => {
                     self.fire_due().await.map(|()| None)
+                }
+                () = sleep_until(self.next_retention), if self.retention.is_some() => {
+                    // Only closed logs past the period are deleted; the live one never is.
+                    self.next_retention = Instant::now() + self.retention_every;
+                    self.expire(self.retention).await;
+                    Ok(None)
                 }
                 Some(joined) = self.tasks.join_next(), if !self.tasks.is_empty() => {
                     if joined.is_err() {

@@ -8,8 +8,12 @@
 > budget at p95 (2,036 ms against 2,000), and both ledger smokes recorded at
 > `d8b78cc` failed their thresholds (saturated append p99 554 ms against
 > 50 ms; one durable append p99 155 ms against 20 ms) on a disk another
-> process was driving. `docs/ROADMAP.md` lists what is done, with its
-> evidence, and what is owed.
+> process was driving. The completion-claim guard's sentence classifier
+> misses most claims it was not tuned on (84% of a held-out set), so every
+> reply turn that may claim an action ends with "Nothing has been done.";
+> on the held-out set 1 of 61 claims still got through, in reply to a plain
+> question. `docs/ROADMAP.md` lists what is done, with its evidence, and
+> what is owed.
 
 A voice interface that learns your style without taking uncontrolled
 actions in your name. Push-to-talk conversations on macOS: a Swift/SwiftUI

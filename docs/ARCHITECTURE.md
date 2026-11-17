@@ -93,8 +93,10 @@ deadline → app finalizes and returns the heard text and confidence
 (**heard**) → service sends `lm_request` (heard text as quoted data, never
 raw audio) → the model streams a structured proposal: its `kind` first,
 then reply sentences → for a reply, each sentence goes through the
-completion-claim guard (replaced, disclosed or spoken as written, D-027)
-and becomes a `tts_request` tagged with turn N
+completion-claim guard (replaced, or spoken as written) and becomes a
+`tts_request` tagged with turn N; a turn whose request may ask for an
+action, or with a flagged sentence, ends with one spoken "Nothing has been
+done." (D-027)
 → for an action, the policy decides: refuse, confirm (heard text shown
 verbatim) or execute → a tool result is recorded (**executed**) → only a
 successful result with evidence lets the service say "done".
@@ -126,7 +128,9 @@ budget is spent) instead of showing "restarting" forever. A service that stops
 answering without exiting is found by `ping`: once it is ready, every
 second while a turn is open or the key is held, every five seconds between
 turns, and on every key press; a ping unanswered for 3 s (30 s behind a
-`forget`) stops the microphone and playback and replaces the service.
+`forget`) stops the microphone and playback and replaces the service. Before
+`ready` a service answers no ping, so one that has not said `ready` 30 s
+after its launch (hung in startup or recovery) is replaced too.
 
 ## Consistency
 

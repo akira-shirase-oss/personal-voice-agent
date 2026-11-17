@@ -328,9 +328,11 @@ impl ConsentTokens {
             Ok(()) => File::open(&self.dir)?.sync_all(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(unlink) => {
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|_| unlink)?;
-                // The mode change is metadata; make it durable through the file itself.
-                File::open(&self.dir)?.sync_all()
+                // The mode is the file's own metadata: change it through an open handle and sync
+                // that file (a directory sync does not cover it). Opened while still readable.
+                let f = File::open(&path).map_err(|_| unlink)?;
+                f.set_permissions(fs::Permissions::from_mode(0o000))?;
+                f.sync_all()
             }
         }
     }
