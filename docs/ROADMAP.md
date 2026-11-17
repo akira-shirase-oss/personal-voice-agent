@@ -22,6 +22,11 @@ next turn spoken, model unavailable, the fastest tap, a hung service while holdi
 delete history), 100 consented utterances quiet/noisy, and three one-hour sessions with
 stop-playback p95 and zero stale chunks.
 
+**Owed from the reviews (High):** a revocation the service never reads is lost. If the user
+revokes while the service is hung or dying, the replacement service reports capture consent
+granted and the next key press opens capture. Also: the completion-claim guard misses about
+half of the claims it was not tuned on (D-027).
+
 **Owed in code:** one shared audio engine for capture and playback, so echo cancellation can
 reference the assistant's output (D-023 limitation); the model's first-sentence latency
 (`docs/LATENCY.md`).
