@@ -96,6 +96,8 @@ final class AppModel {
     func pushToTalkUp() {
         guard holding, let conversation else { return }
         holding = false
+        // The microphone stops on the key, not on a reply from anything else.
+        stopMicrophone()
         Task { await conversation.pushToTalkUp() }
     }
 
@@ -189,7 +191,7 @@ final class AppModel {
                 banner = "Recovered after an unexpected stop: \(recovered.abandonedTurns) unfinished turn(s) closed."
             }
         case .turnOpened(let t): row(t) { _ in }
-        case .capture(_, let on): if on { startMicrophone() } else { stopMicrophone() }
+        case .capture(_, let on): if on && holding { startMicrophone() } else { stopMicrophone() }
         case .heard(let t, let text): row(t) { $0.heard = text }
         case .speaking(let t, let text): row(t) { $0.spoken.append(text) }
         case .confirm(let turn, let digest, let heard, let tool, let slots, let reasons):

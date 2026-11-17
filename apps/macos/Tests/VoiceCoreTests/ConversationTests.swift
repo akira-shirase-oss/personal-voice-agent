@@ -196,6 +196,46 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// The key comes up before the service's `capture on` arrives: the microphone must never
+    /// open (it used to record until the service's capture limit).
+    @Test("a quick tap never opens the microphone")
+    func quickTap() async throws {
+        let (c, r, pump) = try makeConversation("quicktap", limits: ["capture_max_ms": "3000"])
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        await c.pushToTalkDown()
+        await c.pushToTalkUp()  // before any reply from the service
+        let t0 = ContinuousClock.now
+        #expect(await r.next(timeout: .seconds(2)) { closed($0) != nil } != nil, "the tapped turn closes promptly")
+        #expect(ContinuousClock.now - t0 < .seconds(1))
+        let opened = await r.seen.contains { if case .capture(_, on: true) = $0 { true } else { false } }
+        #expect(!opened, "the microphone was turned on after the key had come up")
+        await c.shutdown()
+    }
+
+    /// Holding the key past the app's own capture cap stops capture, whatever the service does.
+    @Test("capture stops at the app's own cap, independent of the service")
+    func localCaptureCap() async throws {
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: try tempDataDir("localcap"),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hello", minConfidence: 0.95)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.limits = ["capture_max_ms": "30000"]
+        config.localCaptureMax = .milliseconds(300)
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        await c.pushToTalkDown()  // and never released
+        #expect(await r.next(isCaptureOn) != nil)
+        let on = ContinuousClock.now
+        #expect(await r.next(timeout: .seconds(2)) { if case .capture(_, on: false) = $0 { true } else { false } } != nil)
+        #expect(ContinuousClock.now - on < .milliseconds(800), "stopped by the local cap, not the service's 30 s")
+        await c.shutdown()
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")

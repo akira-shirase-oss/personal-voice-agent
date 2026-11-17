@@ -48,6 +48,8 @@ public struct ConversationConfig: Sendable {
     public var offlinePlayback = false
     public var playerSampleRate: Double = 22_050
     public var maxRestarts = 5
+    /// The app's own bound on one push-to-talk capture, independent of the service.
+    public var localCaptureMax: Duration = .seconds(60)
 
     public init(binary: URL, dataDir: URL, recognizer: any SpeechRecognizing, model: any LanguageModeling, synthesizer: any SpeechSynthesizing) {
         self.binary = binary
@@ -91,7 +93,11 @@ public actor Conversation {
     private var process: SessionProcess?
     private var consent = ConsentState(capture: false, personalVoice: false)
     private var currentTurn: TurnID?
+    /// The turn whose audio is being captured: the microphone is on exactly while this is set.
     private var capturing: TurnID?
+    /// Whether push-to-talk is held, as the user's last key event says — the app's own truth,
+    /// independent of the service's round trip.
+    private var keyHeld = false
     private var recognition: [TurnID: Task<(any RecognitionSession)?, Never>] = [:]
     /// Sessions that have started; audio is appended to them synchronously, in order.
     private var sessions: [TurnID: any RecognitionSession] = [:]
@@ -156,9 +162,8 @@ public actor Conversation {
         sessions.removeAll()
         pendingAudio.removeAll()
         timing.removeAll()
-        if let c = capturing { emit.yield(.capture(c, on: false)) }
+        if let c = capturing { stopMicrophone(c) }
         currentTurn = nil
-        capturing = nil
         guard !stopping else { return }
         guard restarts < config.maxRestarts else {
             emit.yield(.serviceGaveUp)
@@ -182,15 +187,31 @@ public actor Conversation {
     }
 
     public func pushToTalkDown() {
+        keyHeld = true
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
         if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         send(.pttDown)
     }
 
+    /// Key up: capture stops here and now, before any reply from the service. If the service
+    /// has not turned capture on yet, it never will be: see `.capture(on: true)`.
     public func pushToTalkUp() {
+        keyHeld = false
         guard let t = capturing else { return }
-        timing[t, default: TurnTiming()].pttUp = clock.now
-        send(.pttUp(turn: t))
+        release(t)
+    }
+
+    /// Ends capture for `turn` locally and tells the service push-to-talk is up.
+    private func release(_ turn: TurnID) {
+        stopMicrophone(turn)
+        timing[turn, default: TurnTiming()].pttUp = clock.now
+        send(.pttUp(turn: turn))
+    }
+
+    private func stopMicrophone(_ turn: TurnID) {
+        guard capturing == turn else { return }
+        capturing = nil
+        emit.yield(.capture(turn, on: false))
     }
 
     public func interrupt() {
@@ -237,9 +258,21 @@ public actor Conversation {
         case .turnOpened(let turn):
             currentTurn = turn
             emit.yield(.turnOpened(turn))
-        case .capture(let turn, let on):
-            if on { beginCapture(turn) } else { endCapture(turn) }
-            emit.yield(.capture(turn, on: on))
+        case .capture(let turn, on: true):
+            beginRecognition(turn)
+            if keyHeld {
+                capturing = turn
+                emit.yield(.capture(turn, on: true))
+                capLocally(turn)
+            } else {
+                // The key came up before the service answered: the microphone never opens,
+                // and the (empty) turn ends at once.
+                pendingAudio.removeValue(forKey: turn)
+                timing[turn, default: TurnTiming()].pttUp = clock.now
+                send(.pttUp(turn: turn))
+            }
+        case .capture(let turn, on: false):
+            stopMicrophone(turn)
         case .sttRequest(let call, let turn, _):
             finishRecognition(call: call, turn: turn)
         case .lmRequest(let call, let turn, _, let heard):
@@ -291,13 +324,27 @@ public actor Conversation {
             task.cancel()
             synthesisTail.removeValue(forKey: turn)
         }
-        if let c = capturing, c < fence { endCapture(c) }
+        if let c = capturing, c < fence { stopMicrophone(c) }
     }
 
     // MARK: Providers
 
-    private func beginCapture(_ turn: TurnID) {
-        capturing = turn
+    /// The app's own capture limit: whatever the service does, capture ends here.
+    private func capLocally(_ turn: TurnID) {
+        let limit = config.localCaptureMax
+        let epochAtStart = epoch
+        Task { [weak self] in
+            try? await Task.sleep(for: limit)
+            await self?.localCapReached(turn, epochAtStart)
+        }
+    }
+
+    private func localCapReached(_ turn: TurnID, _ e: UInt64) {
+        guard e == epoch, capturing == turn else { return }
+        release(turn)
+    }
+
+    private func beginRecognition(_ turn: TurnID) {
         pendingAudio[turn] = []
         let recognizer = config.recognizer
         recognition[turn] = Task { [weak self] in
@@ -314,12 +361,8 @@ public actor Conversation {
         sessions[turn] = session
     }
 
-    private func endCapture(_ turn: TurnID) {
-        if capturing == turn { capturing = nil }
-    }
-
     private func finishRecognition(call: CallID, turn: TurnID) {
-        endCapture(turn)
+        stopMicrophone(turn)
         let started = recognition[turn]
         let process = self.process
         track(call, turn, Task { [weak self] in
