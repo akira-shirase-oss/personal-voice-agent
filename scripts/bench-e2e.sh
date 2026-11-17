@@ -11,15 +11,20 @@ cd "$(dirname "$0")/.."
 # Homebrew cargo ignores rust-toolchain.toml; use rustup's proxies when present.
 if command -v brew >/dev/null && [ -d "$(brew --prefix rustup 2>/dev/null)/bin" ]; then export PATH="$(brew --prefix rustup)/bin:$PATH"; fi
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+if [ -n "$(git status --porcelain -- apps crates Cargo.lock)" ] && [ "${PVA_ALLOW_DIRTY:-}" != 1 ]; then
+  echo "refusing to record from a dirty tree: commit first, so the result names the code it measured" >&2
+  echo "(PVA_ALLOW_DIRTY=1 records anyway, marked -dirty)" >&2
+  exit 2
+fi
 commit="$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain -- apps crates Cargo.lock)" ] || echo '-dirty')"
 cargo build --quiet --release --locked -p voice-session
 swift build --quiet -c release --package-path apps/macos --product VoiceBench
-load_before="$(uptime | sed 's/.*load average[s]*: //')"
+load_before="$(uptime | sed 's/.*load average[s]*: //' | tr -s ', ' ' ')"
 set +e
 out="$(PVA_SESSION_BINARY="$PWD/target/release/voice-session" apps/macos/.build/release/VoiceBench "$@")"
 status=$?
 set -e
-load_after="$(uptime | sed 's/.*load average[s]*: //')"
+load_after="$(uptime | sed 's/.*load average[s]*: //' | tr -s ', ' ' ')"
 scenario=e2e-latency
 title="End-to-end latency on this Mac"
 if [ "${1:-}" = "player-storm" ]; then scenario=player-storm; title="Interrupt storm through the turn-fenced player"; fi
@@ -34,8 +39,8 @@ cat > "$file" <<MD
 - Machine: $(sysctl -n machdep.cpu.brand_string), $(($(sysctl -n hw.memsize) / 1073741824)) GB, $(sysctl -n hw.ncpu) cores
 - OS: macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))
 - Commit: ${commit}
-- Load average before: ${load_before}
-- Load average after: ${load_after}
+- Load average (1 / 5 / 15 min) before: ${load_before}
+- Load average (1 / 5 / 15 min) after: ${load_after}
 - Command: \`scripts/bench-e2e.sh $*\`
 - Providers: SpeechAnalyzer/SpeechTranscriber, FoundationModels, AVSpeechSynthesizer (all on-device)
 - Audio: committed synthetic fixtures fed at real time in 100 ms slices; playback rendered offline
