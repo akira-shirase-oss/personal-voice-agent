@@ -38,11 +38,11 @@ public final class SessionProcess: @unchecked Sendable {
     }
 
     /// Starts `binary --data-dir dataDir [--limit k=v]...`.
-    public init(binary: URL, dataDir: URL, limits: [String: String] = [:]) throws {
+    public init(binary: URL, dataDir: URL, limits: [String: String] = [:], eventBuffer: Int = 8_192) throws {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else { throw SessionProcessError.binaryMissing(binary.path) }
         // Service messages are never dropped silently: the stream is large and bounded, and an
         // app that falls this far behind is treated like a dead session.
-        (events, continuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .bufferingOldest(8_192))
+        (events, continuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .bufferingOldest(eventBuffer))
         process.executableURL = binary
         process.arguments = ["--data-dir", dataDir.path] + limits.sorted { $0.key < $1.key }.flatMap { ["--limit", "\($0.key)=\($0.value)"] }
         process.standardInput = stdin
@@ -60,17 +60,21 @@ public final class SessionProcess: @unchecked Sendable {
         _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         do { try process.run() } catch { throw SessionProcessError.launchFailed }
         alive.set(true)
-        startReading()
+        startReading(pid: process.processIdentifier)
         // Drain stderr so the child's log writer never blocks; its lines are content-free (D-011).
         stderr.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
     }
 
     public var pid: Int32 { process.processIdentifier }
     public var isRunning: Bool { alive.isSet }
+    /// Set when the event buffer overflowed: the session was ended rather than thinned out.
+    public var overflowed: Bool { overflow.isSet }
+    private let overflow = Flag()
 
-    private func startReading() {
+    private func startReading(pid: Int32) {
         let handle = stdout.fileHandleForReading
         let continuation = self.continuation
+        let overflow = self.overflow
         Thread.detachNewThread {
             var pending = Data()
             var discarding = false
@@ -86,7 +90,12 @@ public final class SessionProcess: @unchecked Sendable {
                         continue
                     }
                     if let message = try? LineCodec.decodeService(Data(line)) {
-                        if case .dropped = continuation.yield(.message(message)) { continuation.yield(.undecodable) }
+                        if case .dropped = continuation.yield(.message(message)), !overflow.isSet {
+                            // The app fell this far behind: a session that has lost messages
+                            // cannot be trusted. End it; the stream finishes on its exit.
+                            overflow.set(true)
+                            Foundation.kill(pid, SIGKILL)
+                        }
                     } else {
                         continuation.yield(.undecodable)
                     }

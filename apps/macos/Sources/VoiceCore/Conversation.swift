@@ -26,6 +26,8 @@ public enum ConversationEvent: Sendable {
     case serviceFailed(String)
     /// The service stopped answering while a turn was open; it is being replaced.
     case serviceUnresponsive
+    /// The app fell behind and this many older events were discarded; state shown may be stale.
+    case eventsDropped(Int)
     /// A `forget` was carried out (D-018): how many session logs and bytes were deleted.
     case forgotten(files: UInt32, bytes: UInt64)
 }
@@ -61,6 +63,8 @@ public struct ConversationConfig: Sendable {
     /// ping goes unanswered for `heartbeatTimeout`.
     public var heartbeatInterval: Duration = .seconds(1)
     public var heartbeatTimeout: Duration = .seconds(3)
+    /// Bound on conversation events waiting for the app to read them.
+    public var eventBuffer = 4_096
 
     public init(binary: URL, dataDir: URL, recognizer: any SpeechRecognizing, model: any LanguageModeling, synthesizer: any SpeechSynthesizing) {
         self.binary = binary
@@ -119,6 +123,10 @@ public actor Conversation {
     private var callTurn: [CallID: TurnID] = [:]
     private var timing: [TurnID: TurnTiming] = [:]
     private var restarts = 0
+    /// Older events discarded because the app fell behind (reported, never silent).
+    private var droppedEvents = 0
+    /// The process whose exit has been handled (its stream may also end without `.exited`).
+    private var exitHandled: ObjectIdentifier?
     /// One per launch of the service; tags every chunk so a restarted session (which numbers
     /// turns from 1 again) is never confused with the one that died.
     private var epoch: UInt64 = 0
@@ -134,7 +142,7 @@ public actor Conversation {
     public init(_ config: ConversationConfig) throws {
         self.config = config
         player = try TurnFencedPlayer(format: Audio.monoFloat(config.playerSampleRate), offline: config.offlinePlayback)
-        (events, emit) = AsyncStream.makeStream(of: ConversationEvent.self, bufferingPolicy: .bufferingNewest(4_096))
+        (events, emit) = AsyncStream.makeStream(of: ConversationEvent.self, bufferingPolicy: .bufferingNewest(config.eventBuffer))
     }
 
     // MARK: Lifecycle
@@ -150,6 +158,7 @@ public actor Conversation {
         try p.send(.hello(protocol: protocolVersion, client: "voice-agent-macos/0.1.0"))
         Task { [weak self] in
             for await event in p.events { await self?.handle(event, from: p) }
+            await self?.streamEnded(p)
         }
     }
 
@@ -171,7 +180,7 @@ public actor Conversation {
         if let pending = pendingPing {
             guard clock.now - pending.sentAt > config.heartbeatTimeout else { return true }
             // Hung: stop everything here, then replace it (the exit starts a new session).
-            emit.yield(.serviceUnresponsive)
+            publish(.serviceUnresponsive)
             if let c = capturing { stopMicrophone(c) }
             player.stop(fence: TurnID(UInt64.max), epoch: epoch)
             p.kill()
@@ -197,9 +206,27 @@ public actor Conversation {
     public func killServiceForDrill() { process?.kill() }
     public var servicePID: Int32? { process?.pid }
 
+    /// Every event goes through here. If the bounded buffer must discard an older event, the
+    /// app is told at once, as the newest event, how many have been lost so far.
+    private func publish(_ e: ConversationEvent) {
+        if case .dropped = emit.yield(e) {
+            droppedEvents += 1
+            if case .dropped = emit.yield(.eventsDropped(droppedEvents + 1)) { droppedEvents += 1 }
+        }
+    }
+
+    /// The process's event stream ended: if its exit was not seen (the exit event itself can be
+    /// lost when the buffer overflowed), handle it now.
+    private func streamEnded(_ p: SessionProcess) {
+        guard exitHandled != ObjectIdentifier(p) else { return }
+        if p.overflowed { publish(.notice("service_messages_overflowed")) }
+        handleExit(-1, of: p)
+    }
+
     private func handleExit(_ status: Int32, of p: SessionProcess) {
-        guard p === process else { return }
-        emit.yield(.serviceExited(status))
+        guard p === process, exitHandled != ObjectIdentifier(p) else { return }
+        exitHandled = ObjectIdentifier(p)
+        publish(.serviceExited(status))
         // The session is gone: stop its audio and drop all of its call state. The next
         // session reuses turn and call numbers from 1, so nothing of this one may linger.
         player.stop(fence: TurnID(UInt64.max), epoch: epoch)
@@ -217,16 +244,16 @@ public actor Conversation {
         currentTurn = nil
         guard !stopping else { return }
         if let fatal {
-            emit.yield(.serviceFailed(fatal))
+            publish(.serviceFailed(fatal))
             return
         }
         guard restarts < config.maxRestarts else {
-            emit.yield(.serviceGaveUp)
+            publish(.serviceGaveUp)
             return
         }
         restarts += 1
         let attempt = restarts
-        emit.yield(.serviceRestarting(attempt: attempt))
+        publish(.serviceRestarting(attempt: attempt))
         Task { [weak self] in
             // Bounded backoff: 100 ms, 200 ms, 400 ms, ...
             try? await Task.sleep(for: .milliseconds(100 << (attempt - 1)))
@@ -266,7 +293,7 @@ public actor Conversation {
     private func stopMicrophone(_ turn: TurnID) {
         guard capturing == turn else { return }
         capturing = nil
-        emit.yield(.capture(turn, on: false))
+        publish(.capture(turn, on: false))
     }
 
     public func interrupt() {
@@ -294,7 +321,7 @@ public actor Conversation {
     public func forgetHistory() { send(.forget(scope: .capture)) }
 
     private func send(_ m: ClientMessage) {
-        do { try process?.send(m) } catch { emit.yield(.notice("service_not_running")) }
+        do { try process?.send(m) } catch { publish(.notice("service_not_running")) }
     }
 
     // MARK: Service messages
@@ -303,7 +330,7 @@ public actor Conversation {
         guard p === process else { return }
         switch event {
         case .exited(let status): handleExit(status, of: p)
-        case .undecodable: emit.yield(.notice("undecodable_service_line"))
+        case .undecodable: publish(.notice("undecodable_service_line"))
         case .message(let m): handle(m)
         }
     }
@@ -312,15 +339,15 @@ public actor Conversation {
         switch m {
         case .ready(_, let session, let consent, let recovered):
             self.consent = consent
-            emit.yield(.ready(session: session, consent: consent, recovered: recovered))
+            publish(.ready(session: session, consent: consent, recovered: recovered))
         case .turnOpened(let turn):
             currentTurn = turn
-            emit.yield(.turnOpened(turn))
+            publish(.turnOpened(turn))
         case .capture(let turn, on: true):
             beginRecognition(turn)
             if keyHeld {
                 capturing = turn
-                emit.yield(.capture(turn, on: true))
+                publish(.capture(turn, on: true))
                 capLocally(turn)
             } else {
                 // The key came up before the service answered: the microphone never opens,
@@ -334,11 +361,11 @@ public actor Conversation {
         case .sttRequest(let call, let turn, _):
             finishRecognition(call: call, turn: turn)
         case .lmRequest(let call, let turn, _, let heard):
-            emit.yield(.heard(turn, heard))
+            publish(.heard(turn, heard))
             runModel(call: call, turn: turn, heard: heard)
         case .ttsRequest(let call, let turn, let seq, let text, let voice, _):
             if timing[turn]?.firstTTSRequest == nil { timing[turn, default: TurnTiming()].firstTTSRequest = clock.now }
-            emit.yield(.speaking(turn, text))
+            publish(.speaking(turn, text))
             speak(call: call, turn: turn, seq: seq, text: text, voice: voice)
         case .cancel(let call):
             calls.removeValue(forKey: call)?.cancel()
@@ -346,7 +373,7 @@ public actor Conversation {
         case .stopPlayback(let fence):
             stopLocalWork(fence: fence)
         case .confirmRequest(let turn, let digest, let heard, let tool, let slots, let reasons):
-            emit.yield(.confirm(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons))
+            publish(.confirm(turn: turn, digest: digest, heard: heard, tool: tool, slots: slots, reasons: reasons))
         case .turnClosed(let turn, let outcome):
             let t = timing.removeValue(forKey: turn) ?? TurnTiming()
             if currentTurn == turn { currentTurn = nil }
@@ -357,23 +384,23 @@ public actor Conversation {
             pendingAudio.removeValue(forKey: turn)
             synthesisTail.removeValue(forKey: turn)
             restarts = 0
-            emit.yield(.turnClosed(turn, outcome, t))
+            publish(.turnClosed(turn, outcome, t))
         case .degraded(let turn, let stage, let reason):
-            emit.yield(.degraded(turn, stage, reason))
+            publish(.degraded(turn, stage, reason))
         case .consentState(let state):
             consent = state
-            emit.yield(.consent(state))
+            publish(.consent(state))
         case .notice(let code, _):
-            emit.yield(.notice(code))
+            publish(.notice(code))
         case .flushed:
-            emit.yield(.notice("flushed"))
+            publish(.notice("flushed"))
         case .pong(let seq):
             if pendingPing?.seq == seq { pendingPing = nil }
         case .forgotten(_, let files, let bytes):
-            emit.yield(.forgotten(files: files, bytes: bytes))
+            publish(.forgotten(files: files, bytes: bytes))
         case .error(let code, _):
             if Self.fatalCodes.contains(code) { fatal = code }
-            emit.yield(.notice(code))
+            publish(.notice(code))
         }
     }
 

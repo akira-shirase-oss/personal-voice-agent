@@ -302,6 +302,40 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// Conversation events the app has not read yet are bounded; if some are lost, the app is
+    /// told how many, instead of silently missing (for example) a turn's close.
+    @Test("lost conversation events are reported, not silent")
+    func lostEventsReported() async throws {
+        var config = ConversationConfig(
+            binary: sessionBinary, dataDir: try tempDataDir("lost"),
+            recognizer: ScriptedRecognizer(heard: HeardText(text: "hi", minConfidence: 0.9)),
+            model: DeterministicTestProvider(), synthesizer: ToneSynthesizer())
+        config.offlinePlayback = true
+        config.eventBuffer = 8
+        let c = try Conversation(config)
+        try await c.start()
+        for i in 0..<40 { await c.setCaptureConsent(i % 2 == 0) }
+        try await Task.sleep(for: .milliseconds(500))  // nobody reads yet
+        var consents = 0
+        var reported = false
+        let reader = Task {
+            for await e in c.events {
+                if case .consent = e { consents += 1 }
+                if "\(e)".hasPrefix("eventsDropped") { reported = true }
+                if consents >= 40 || reported { break }
+            }
+            return (consents, reported)
+        }
+        let stop = Task {
+            try await Task.sleep(for: .seconds(3))
+            reader.cancel()
+        }
+        let (got, told) = await reader.value
+        stop.cancel()
+        #expect(got >= 40 || told, "events were lost without a word: \(got) of 40 consent changes seen")
+        await c.shutdown()
+    }
+
     /// A second app on the same data directory: its service refuses to start, and the app says
     /// so instead of restarting it in a loop.
     @Test("a second instance reports 'already running' and does not restart its service")
