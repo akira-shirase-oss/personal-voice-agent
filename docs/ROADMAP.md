@@ -22,8 +22,7 @@ next turn spoken, model unavailable, the fastest tap, a hung service while holdi
 delete history), 100 consented utterances quiet/noisy, and three one-hour sessions with
 stop-playback p95 and zero stale chunks.
 
-**Owed from the reviews:** LOW19 (a flood of malformed lines stretches deadlines), LOW20 (V3
-consent hazards, PROTOCOL's nonexistent `external_effect` reason, the app's hard-coded
+**Owed from the reviews:** LOW20 (V3 consent hazards, PROTOCOL's nonexistent `external_effect` reason, the app's hard-coded
 "Executed" line), and the residual case where both the consent token's unlink and the
 revocation's log write fail (a restart could come back granted).
 

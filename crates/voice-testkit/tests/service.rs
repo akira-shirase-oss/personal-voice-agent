@@ -884,6 +884,65 @@ async fn the_protocol_refuses_garbage_without_dropping_the_session() {
     assert_eq!(summary.reason, EndReason::Eof);
 }
 
+/// A flood of malformed lines must neither hold back a deadline nor flood the app with replies:
+/// a due timer is served before the next inbound line, and malformed lines are answered at most
+/// a few times a second. (An independent review measured a 200 ms model deadline stretched to
+/// 464 ms by such a flood, with an `error` sent for every line.)
+#[tokio::test]
+async fn a_flood_of_malformed_lines_neither_stretches_a_deadline_nor_floods_the_app() {
+    let dir = voice_testkit::temp_data_dir("flood");
+    let mut c = config(&dir);
+    c.limits.lm_first_ms = 200;
+    let (mut stub, _, handle) = start(c).await;
+    grant_capture(&mut stub).await;
+    let (_, _lm) = heard(&mut stub, "tell me something", 0.99).await;
+    let armed = Instant::now();
+    let (mut w, mut r) = stub.into_parts();
+    let flood = tokio::spawn(async move {
+        let batch = b"not json\n".repeat(4_096);
+        let until = Instant::now() + Duration::from_millis(1_500);
+        while Instant::now() < until && w.write_all(&batch).await.is_ok() {
+            tokio::task::yield_now().await;
+        }
+        w
+    });
+    let (mut errors, mut degraded) = (0u64, None);
+    loop {
+        let wait = Duration::from_millis(if degraded.is_some() { 250 } else { 5_000 });
+        match tokio::time::timeout(wait, r.next_line()).await {
+            Ok(Ok(Some(line))) => match serde_json::from_str::<S>(&line).unwrap() {
+                S::Error { .. } => errors += 1,
+                S::Degraded {
+                    stage: Stage::Lm,
+                    reason: FailureReason::Deadline,
+                    ..
+                } if degraded.is_none() => degraded = Some(armed.elapsed()),
+                _ => {}
+            },
+            Err(_) if degraded.is_some() && !flood.is_finished() => {}
+            _ => break,
+        }
+    }
+    let mut w = flood.await.unwrap();
+    let degraded = degraded.expect("the model deadline fired during the flood");
+    println!("flood: degraded after {degraded:?}, {errors} error replies");
+    assert!(
+        degraded < Duration::from_millis(600),
+        "a 200 ms deadline held back to {degraded:?} by a flood of malformed lines"
+    );
+    assert!(
+        errors <= 40,
+        "{errors} error replies for one flood: the app is flooded back"
+    );
+    w.shutdown().await.unwrap();
+    while let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_secs(5), r.next_line()).await {}
+    assert_eq!(
+        handle.await.unwrap().unwrap().reason,
+        EndReason::Eof,
+        "the session survived the flood"
+    );
+}
+
 #[tokio::test]
 async fn a_wrong_protocol_version_ends_the_handshake() {
     let (app, service) = tokio::io::duplex(64 * 1024);

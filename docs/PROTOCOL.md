@@ -9,7 +9,10 @@ durations only, never content (D-011).
 - A line longer than **65,536 bytes** is rejected (`error`
   `line_too_long`) and discarded up to its newline.
 - Unknown `type` or malformed JSON → `error` `bad_message`; the session
-  continues.
+  continues. At most 8 malformed lines a second are answered; the rest are
+  counted, and the next answer's `detail` says how many went unanswered. A
+  flood of them never delays a deadline: a due timer is served before the
+  next inbound line.
 - The first app message must be `hello`; anything else first is
   `error` `hello_required`.
 - stdin EOF ends the session cleanly (`session_closed` is recorded).

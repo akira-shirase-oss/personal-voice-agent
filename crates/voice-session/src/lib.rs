@@ -29,6 +29,8 @@ use voice_domain::tools::{ToolOutcome, ToolRegistry};
 use voice_domain::{CallId, Input, Limits, Output, Session};
 
 const IN_QUEUE: usize = 256;
+/// Malformed lines answered with an `error` per second; the rest are counted, not answered.
+const BAD_LINE_REPLIES_PER_S: u32 = 8;
 const OUT_QUEUE: usize = 256;
 const TOOL_QUEUE: usize = 64;
 
@@ -121,7 +123,36 @@ struct Actor<E> {
     max_records: u64,
     ledger_path: PathBuf,
     ledger_faults: watch::Receiver<Option<Fault>>,
+    bad_lines: BadLines,
     summary: Summary,
+}
+
+/// Rate limit for the replies to malformed lines: a flood of them must not flood the app (or
+/// fill the reply queue until the session ends).
+#[derive(Default)]
+struct BadLines {
+    window: Option<Instant>,
+    answered: u32,
+    unanswered: u64,
+}
+
+impl BadLines {
+    /// Whether this malformed line gets a reply, and how many before it went unanswered.
+    fn admit(&mut self, now: Instant) -> Option<u64> {
+        if self
+            .window
+            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(1))
+        {
+            self.window = Some(now);
+            self.answered = 0;
+        }
+        if self.answered >= BAD_LINE_REPLIES_PER_S {
+            self.unanswered += 1;
+            return None;
+        }
+        self.answered += 1;
+        Some(std::mem::take(&mut self.unanswered))
+    }
 }
 
 /// Opens the store off the async thread; on failure tells the app why (a code, no paths).
@@ -293,6 +324,7 @@ impl<E: ToolExecutor> Actor<E> {
             max_records: p.max_records,
             ledger_path,
             ledger_faults,
+            bad_lines: BadLines::default(),
             summary: Summary {
                 session,
                 reason: EndReason::Eof,
@@ -419,7 +451,7 @@ impl<E: ToolExecutor> Actor<E> {
                     let _ = self.error("hello_required", "send hello first").await;
                 }
                 Some(framing::Inbound::Bad(code)) => {
-                    let _ = self.error(code, "malformed line").await;
+                    let _ = self.bad_line(code).await;
                 }
                 Some(framing::Inbound::ReadError) => return Err(EndReason::ReadError),
                 Some(framing::Inbound::Eof) | None => return Err(EndReason::Eof),
@@ -434,12 +466,19 @@ impl<E: ToolExecutor> Actor<E> {
         consent_faults: &mut watch::Receiver<Option<Fault>>,
     ) -> EndReason {
         loop {
+            // Inbound lines are taken first (biased), so a flood of them would hold back every
+            // deadline; a due timer is served before the next line instead.
+            if self.timers.next().is_some_and(|at| at <= Instant::now())
+                && let Err(Stop::ClientGone) = self.fire_due().await
+            {
+                return EndReason::ClientUnresponsive;
+            }
             let next_deadline = self.timers.next();
             let result = tokio::select! {
                 biased;
                 inbound = in_rx.recv() => match inbound {
                     Some(framing::Inbound::Message(msg)) => self.message(msg).await,
-                    Some(framing::Inbound::Bad(code)) => self.error(code, "malformed line").await.map(|()| None),
+                    Some(framing::Inbound::Bad(code)) => self.bad_line(code).await.map(|()| None),
                     Some(framing::Inbound::ReadError) => return EndReason::ReadError,
                     Some(framing::Inbound::Eof) | None => return EndReason::Eof,
                 },
@@ -676,6 +715,23 @@ impl<E: ToolExecutor> Actor<E> {
             .send_timeout(msg, self.io_timeout)
             .await
             .map_err(|_| Stop::ClientGone)
+    }
+
+    /// Answers a malformed line, within the rate limit.
+    async fn bad_line(&mut self, code: &str) -> Result<(), Stop> {
+        let Some(unanswered) = self.bad_lines.admit(Instant::now()) else {
+            return Ok(());
+        };
+        if unanswered == 0 {
+            return self.error(code, "malformed line").await;
+        }
+        self.log
+            .event("malformed_lines_unanswered", &[("count", unanswered.into())]);
+        self.error(
+            code,
+            &format!("malformed line; {unanswered} earlier ones were not answered"),
+        )
+        .await
     }
 
     async fn error(&self, code: &str, detail: &str) -> Result<(), Stop> {

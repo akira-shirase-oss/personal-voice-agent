@@ -106,6 +106,11 @@ impl Stub {
         }
     }
 
+    /// The raw write half and line reader, for a test that writes and reads at the same time.
+    pub fn into_parts(self) -> (WriteHalf<DuplexStream>, Lines<BufReader<ReadHalf<DuplexStream>>>) {
+        (self.w, self.r)
+    }
+
     /// Closes the app's side of the pipe (the service sees EOF).
     pub async fn close(mut self) {
         let _ = self.w.shutdown().await;
