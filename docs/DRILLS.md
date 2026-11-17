@@ -52,6 +52,9 @@ While a reply is playing, switch **Listen while I hold Space** off.
 
 - Expect: speech stops, the turn shows `consent revoked`, and holding Space is refused with
   the banner asking you to turn listening on.
+- Then turn listening on, run `pkill -STOP -f 'VoiceAgent.app/Contents/MacOS/voice-session'`,
+  switch listening off, and hold Space. Expect: the session is replaced within a few seconds,
+  the toggle stays off, and the microphone indicator never comes on.
 
 ## Drill 5 — the service crashes
 

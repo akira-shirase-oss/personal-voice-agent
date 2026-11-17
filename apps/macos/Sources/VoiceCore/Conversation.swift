@@ -153,6 +153,9 @@ public actor Conversation {
     private var fatal: String?
     /// Consecutive launches refused with `already_running`.
     private var blockedAttempts = 0
+    /// The user turned listening off. The app's own truth: push-to-talk is refused here, and a
+    /// service that reports capture granted (one that never read the revocation) is told again.
+    private var userRevokedCapture = false
     /// The heartbeat ping awaiting its pong, if any.
     private var pendingPing: (seq: UInt64, sentAt: ContinuousClock.Instant)?
     private var pingSeq: UInt64 = 0
@@ -356,16 +359,35 @@ public actor Conversation {
     // MARK: User actions
 
     public func setCaptureConsent(_ grant: Bool) {
+        userRevokedCapture = !grant
         if !grant {
             stopLocalWork(fence: currentTurn.map { TurnID($0.raw + 1) })
+            if let c = capturing { stopMicrophone(c) }
             // Speech heard under the revoked consent must not reach a later prompt.
             config.model.forget()
+            // Durable before the service hears of it: a service that never reads this message
+            // (hung, or dying) is replaced by one that starts revoked.
+            ConsentToken.revoke(dataDir: config.dataDir)
         }
         send(.consent(scope: .capture, grant: grant, rightsReview: nil))
     }
 
+    /// A service says capture is granted though the user turned it off: revoke again, and show
+    /// it off.
+    private func reassertRevocation(_ state: ConsentState) -> ConsentState {
+        guard userRevokedCapture, state.capture else { return state }
+        ConsentToken.revoke(dataDir: config.dataDir)
+        send(.consent(scope: .capture, grant: false, rightsReview: nil))
+        return ConsentState(capture: false, personalVoice: state.personalVoice)
+    }
+
     public func pushToTalkDown() {
         keyHeld = true
+        // Listening is off: nothing reaches the service and the microphone never opens.
+        if userRevokedCapture {
+            publish(.notice("consent_required"))
+            return
+        }
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
         if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
         // Every press checks the service is alive; the microphone opens only on its answer.
@@ -440,7 +462,8 @@ public actor Conversation {
 
     private func handle(_ m: ServiceMessage) {
         switch m {
-        case .ready(_, let session, let consent, let recovered):
+        case .ready(_, let session, let reported, let recovered):
+            let consent = reassertRevocation(reported)
             self.consent = consent
             sessionUp = true
             blockedAttempts = 0
@@ -450,7 +473,7 @@ public actor Conversation {
             publish(.turnOpened(turn))
         case .capture(let turn, on: true):
             beginRecognition(turn)
-            if keyHeld {
+            if keyHeld && !userRevokedCapture {
                 capturing = turn
                 publish(.capture(turn, on: true))
                 capLocally(turn)
@@ -492,7 +515,8 @@ public actor Conversation {
             publish(.turnClosed(turn, outcome, t))
         case .degraded(let turn, let stage, let reason):
             publish(.degraded(turn, stage, reason))
-        case .consentState(let state):
+        case .consentState(let reported):
+            let state = reassertRevocation(reported)
             consent = state
             publish(.consent(state))
         case .notice(let code, _):

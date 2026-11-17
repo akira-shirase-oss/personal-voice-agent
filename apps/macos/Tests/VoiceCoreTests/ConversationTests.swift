@@ -441,6 +441,56 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// A revocation the service never reads must still hold. `how`: "hung" (SIGSTOP, then the
+    /// heartbeat replaces it), "killed" (SIGKILL before it reads), or "granted" (the replacement
+    /// still reports granted: the token was re-created behind the app's back, as when the service
+    /// created it for an earlier grant just before dying). In every case the replacement must
+    /// not open capture on the next key press, and the app must show listening off.
+    @Test("a revocation the service never reads still holds after it is replaced", arguments: ["hung", "killed", "granted"])
+    func revocationTheServiceNeverRead(_ how: String) async throws {
+        let config = try hungConfig("lost-revoke-\(how)", idle: .seconds(60))
+        let c = try Conversation(config)
+        let r = Recorder(c.events)
+        let pump = OfflineRenderPump(c.player)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        let pid = try #require(await c.servicePID)
+        kill(pid, SIGSTOP)
+        defer { kill(pid, SIGKILL) }
+        await c.setCaptureConsent(false)  // queued in the pipe; the stopped service never reads it
+        switch how {
+        case "hung":
+            // Holding the key keeps the heartbeat at its fast interval, so the hang is found
+            // and the service replaced; the press itself is refused locally.
+            await c.pushToTalkDown()
+            #expect(await r.next(timeout: .seconds(4)) { if case .serviceUnresponsive = $0 { true } else { false } } != nil)
+            await c.pushToTalkUp()
+        case "killed":
+            kill(pid, SIGKILL)
+        default:
+            FileManager.default.createFile(atPath: config.dataDir.appending(path: "consent.capture.granted").path, contents: nil, attributes: [.posixPermissions: 0o600])
+            kill(pid, SIGKILL)
+        }
+        let ready = await r.next(timeout: .seconds(8), isReady)
+        guard case .ready(_, let consent, _)? = ready else { Issue.record("no replacement service"); return }
+        #expect(!consent.capture, "the replacement is shown revoked")
+        if how == "granted" {
+            #expect(await r.next(timeout: .seconds(3)) { if case .consent(let s) = $0 { !s.capture } else { false } } != nil, "revoked again and confirmed")
+        }
+        await c.pushToTalkDown()
+        let opened = await r.next(timeout: .seconds(1), isCaptureOn)
+        #expect(opened == nil, "capture opened after the user revoked it")
+        await c.pushToTalkUp()
+        await c.shutdown()
+        // And the next start on this data directory is revoked too.
+        let again = try Conversation(config)
+        let r3 = Recorder(again.events)
+        try await again.start()
+        guard case .ready(_, let next, _)? = await r3.next(isReady) else { Issue.record("no ready"); return }
+        #expect(!next.capture, "a later start is revoked")
+        await again.shutdown()
+    }
+
     /// A turn interrupted while capturing must release its recognizer (a `SpeechAnalyzer` keeps
     /// its model for the process lifetime and would otherwise wait forever).
     @Test("an interrupted capture releases its recognition session")

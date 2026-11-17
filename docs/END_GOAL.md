@@ -88,8 +88,11 @@ proof gate in `ROADMAP.md`:
    Enroll only your own voice or a speaker with explicit rights; consent and
    deletion scope are recorded. Revocation stops capture/playback
    immediately and prevents any further use of the revoked scope, also when
-   the disk is full (it fails closed) and with only one service per data
-   directory.
+   the disk is full (it fails closed), with only one service per data
+   directory, and when the service never reads it (hung or dying): the app
+   removes the consent token itself before sending the revocation, refuses
+   push-to-talk while listening is off, and revokes again if a replacement
+   service reports capture granted.
 2. **Heard ≠ inferred ≠ executed.** Separate ledger records for the
    recognizer's output, the assistant's inference and tool-result
    evidence. The ledger is what happened; the model's narration is not. A

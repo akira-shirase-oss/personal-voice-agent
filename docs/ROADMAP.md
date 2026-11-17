@@ -22,10 +22,6 @@ next turn spoken, model unavailable, the fastest tap, a hung service while holdi
 delete history), 100 consented utterances quiet/noisy, and three one-hour sessions with
 stop-playback p95 and zero stale chunks.
 
-**Owed from the reviews (High):** a revocation the service never reads is lost. If the user
-revokes while the service is hung or dying, the replacement service reports capture consent
-granted and the next key press opens capture.
-
 **Known residual (D-027):** a claim made in reply to a plain informational question is caught
 only by the sentence classifier (1 of 4 such held-out claims got through).
 

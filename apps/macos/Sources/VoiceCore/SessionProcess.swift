@@ -211,6 +211,28 @@ public enum ServiceLock {
     }
 }
 
+/// The service's capture-consent token (D-017): `consent.capture.granted` in the data directory.
+/// A starting service counts capture consent only while the token exists with its owner's read
+/// and write bits. The app removes it itself before it sends a revocation, so a service that is
+/// hung or dies before reading the revocation is replaced by one that starts revoked.
+public enum ConsentToken {
+    /// Unlinks the token (no free space needed), or sets it to 0000 if it cannot be unlinked.
+    /// True when the token no longer grants.
+    @discardableResult
+    public static func revoke(dataDir: URL) -> Bool {
+        let path = dataDir.appending(path: "consent.capture.granted").path
+        if unlink(path) == 0 || errno == ENOENT {
+            let dir = open(dataDir.path, O_RDONLY)
+            if dir >= 0 {
+                _ = fsync(dir)
+                close(dir)
+            }
+            return true
+        }
+        return chmod(path, 0) == 0
+    }
+}
+
 /// Where the app finds `voice-session`: next to its own executable (a bundled app), then
 /// `PVA_SESSION_BINARY`, then the repository's cargo output (development).
 public enum SessionBinary {
