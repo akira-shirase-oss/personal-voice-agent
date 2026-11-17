@@ -103,8 +103,9 @@ proof gate in `ROADMAP.md`:
    action happened is also replaced by a draft disclaimer. The sentence
    classifier alone misses most claims it was not tuned on (84% of a
    held-out set, D-027); with the turn-level disclosure, every held-out
-   claim answering a request ended disclosed, and 1 of 4 unprompted claims
-   (in reply to a plain question) did not. What was spoken is recorded too.
+   claim answering a request ended disclosed (a reply cut off early is
+   disclosed in the record and the window), and 5 of 8 claims made inside
+   answers to plain questions were not. What was spoken is recorded too.
 3. **Interrupt means stop.** Bounded buffers and session/turn IDs; on
    interruption playback stops and downstream work is cancelled; a late
    text/audio chunk from an old turn can never play over a new one; an

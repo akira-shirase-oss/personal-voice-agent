@@ -138,6 +138,10 @@ pub struct Session {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one turn, each read on its own"
+)]
 struct Turn {
     id: TurnId,
     heard: Option<Heard>,
@@ -147,6 +151,11 @@ struct Turn {
     asks_action: bool,
     /// A reply sentence of this turn was replaced or flagged as a possible claim.
     flagged: bool,
+    /// A tool call was sent: its result may be uncertain, so "nothing has been done" would not
+    /// be known to be true.
+    tool_sent: bool,
+    /// The turn-level disclosure was given.
+    disclosed: bool,
     phase: Phase,
 }
 
@@ -341,6 +350,8 @@ impl Session {
             executed: false,
             asks_action: false,
             flagged: false,
+            tool_sent: false,
+            disclosed: false,
             phase: Phase::Capturing { capture },
         });
         out.push(Output::Record(Record::TurnOpened { turn: id }));
@@ -462,6 +473,25 @@ impl Session {
 
     fn close(&mut self, outcome: Outcome, out: &mut Vec<Output>) {
         let Some(t) = self.turn.take() else { return };
+        // A turn that qualified for the disclosure but ended another way (a model failure or
+        // deadline, an interrupt, a revocation, a refusal): it cannot be spoken any more, so it
+        // is recorded and the app shows it with the turn (D-027).
+        // A disclosure that was being spoken when the turn was cut off may not have been heard,
+        // so the app is told either way; the record is written once.
+        let qualified = (t.asks_action || t.flagged) && !t.executed && !t.tool_sent;
+        if qualified && outcome != Outcome::Completed {
+            if !t.disclosed {
+                out.push(Output::Record(Record::TurnDisclosed {
+                    turn: t.id,
+                    request: t.asks_action,
+                    flagged: t.flagged,
+                }));
+            }
+            out.push(Output::Send(ServiceMessage::Notice {
+                code: "nothing_done".into(),
+                turn: Some(t.id),
+            }));
+        }
         out.push(Output::Record(Record::TurnClosed { turn: t.id, outcome }));
         out.push(Output::Send(ServiceMessage::TurnClosed { turn: t.id, outcome }));
     }
@@ -819,10 +849,11 @@ impl Session {
     /// so a reply turn whose request may ask for an action, or with any sentence replaced or
     /// flagged, ends with one spoken "Nothing has been done.", recorded as `turn_disclosed`.
     fn disclose_turn(&mut self, out: &mut Vec<Output>) {
-        let Some(t) = self.turn.as_ref() else { return };
-        if t.executed || !(t.asks_action || t.flagged) {
+        let Some(t) = self.turn.as_mut() else { return };
+        if t.executed || t.tool_sent || !(t.asks_action || t.flagged) {
             return;
         }
+        t.disclosed = true;
         out.push(Output::Record(Record::TurnDisclosed {
             turn: t.id,
             request: t.asks_action,
@@ -900,6 +931,7 @@ impl Session {
         }));
         out.push(Output::Execute { call, action });
         out.push(arm(call, TimerKind::Total, self.limits.tool_ms));
+        t.tool_sent = true;
         t.phase = Phase::Executing { tool: call };
     }
 

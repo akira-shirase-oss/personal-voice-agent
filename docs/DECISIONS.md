@@ -247,8 +247,11 @@ settled it, it is listed under **Open questions** rather than guessed.
   spoken "Nothing has been done." (session-authored, ledgered as `turn_disclosed`) whenever its
   heard request may ask for an action, or any of its sentences was replaced or flagged. The
   request test fails closed too: only a question or an informational request ("what…",
-  "tell me…", "explain…") naming no action verb in any form and no task noun counts as purely
-  informational; every other request, statements included, gets the disclosure. Per-sentence
+  "tell me…", "explain…") naming no action verb in any form and no task noun, and not phrased
+  as a request ("could you…", "will you…", "please…"), counts as purely informational; every
+  other request, statements included, gets the disclosure. A qualifying turn cut off before the
+  reply ends (interrupt, model failure, deadline, revocation) gets it too: recorded, and shown
+  by the app with the turn (`notice nothing_done`), since it can no longer be spoken. Per-sentence
   `Replace` stays on top for clear claims; a flagged (`Disclose`) sentence is now spoken as
   written, since the turn carries the disclosure. Measured on `fixtures/claims/held-out.tsv`
   (83 lines, written before the run and never used for tuning: the 39 phrasings a third review
@@ -263,6 +266,12 @@ settled it, it is listed under **Open questions** rather than guessed.
   claims with no disclosure. `tests/held_out.rs` pins only that every claim answering its
   request ends disclosed; the rates are printed, not pinned. Trade-off: "Nothing has been
   done." after some replies that never needed it; a fabricated "done" sounds true.
+  *Recomputed after a final check* (polite-question requests such as "could you sort out the
+  plumber?" were treated as plain questions; 9 of its turns added, 92 lines): the sentence
+  classifier alone misses 58 of 70 claims (83%); with the turn-level disclosure **5 of 70 get
+  no disclosure (7%), all of them claims inside answers to plain questions (5 of 8 such), and
+  0 of the 62 that answer a request**. Plain replies unchanged: 6 of 22 replaced, 12 of 22
+  disclosed.
 
 ## Open questions
 

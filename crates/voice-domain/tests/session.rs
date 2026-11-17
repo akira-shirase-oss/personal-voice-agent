@@ -559,6 +559,74 @@ fn a_turn_ends_with_the_disclosure_when_its_request_or_a_sentence_may_claim_an_a
     assert_eq!(said, [voice_domain::guard::DRAFT_DISCLAIMER, disclosure]);
 }
 
+/// A reply cut off before `lm_done` (an interrupt, a model failure, a deadline) still gets the
+/// turn-level disclosure when the turn qualified: recorded, and sent to the app as `nothing_done`
+/// (it can no longer be spoken). A plain question cut off gets none, nor does a turn whose tool
+/// call was sent (its result may be uncertain).
+#[test]
+fn a_cut_off_turn_that_qualified_is_still_disclosed() {
+    let speak_two = |h: &mut H, heard: &str| {
+        let (turn, lm) = h.heard(heard, Some(0.99));
+        h.ok(C::LmKind {
+            call: lm,
+            kind: ProposalKind::Reply,
+        });
+        for (i, text) in ["Is the table for two booked?", "It is."].iter().enumerate() {
+            h.ok(C::LmSentence {
+                call: lm,
+                index: u32::try_from(i).unwrap(),
+                text: (*text).into(),
+            });
+        }
+        (turn, lm)
+    };
+    let disclosed = |out: &[Output], turn: TurnId| {
+        let recorded = out
+            .iter()
+            .any(|o| matches!(o, Output::Record(Record::TurnDisclosed { turn: t, .. }) if *t == turn));
+        let told = H::sent(out).contains(&S::Notice {
+            code: "nothing_done".into(),
+            turn: Some(turn),
+        });
+        (recorded, told)
+    };
+    for how in ["interrupt", "model failure", "deadline"] {
+        let mut h = H::new();
+        let (turn, lm) = speak_two(&mut h, "book a table for two at eight");
+        let out = match how {
+            "interrupt" => h.ok(C::Interrupt),
+            "model failure" => h.ok(C::LmFailed {
+                call: lm,
+                reason: FailureReason::Error,
+            }),
+            _ => h
+                .step(Input::TimerFired(Timer {
+                    call: lm,
+                    kind: TimerKind::Total,
+                }))
+                .unwrap(),
+        };
+        assert!(H::closed(&out).is_some(), "{how}: the turn ends");
+        assert_eq!(disclosed(&out, turn), (true, true), "{how}: recorded and told");
+    }
+    let mut h = H::new();
+    let (turn, _) = speak_two(&mut h, "what is the capital of France");
+    let out = h.ok(C::Interrupt);
+    assert_eq!(
+        disclosed(&out, turn),
+        (false, false),
+        "a plain question gets no disclosure"
+    );
+    let mut h = H::new();
+    let (turn, lm) = h.heard("note milk", Some(0.99));
+    h.ok(done(
+        lm,
+        action("fixture.note", vec![slot("text", SlotKind::Text, "milk")]),
+    ));
+    let out = h.ok(C::Interrupt);
+    assert_eq!(disclosed(&out, turn), (false, false), "a sent tool call may have run");
+}
+
 /// Failure case: provider stalls → stop at the deadline, degraded, nothing invented.
 #[test]
 fn a_stalled_model_hits_its_deadline_and_late_output_is_dropped() {
