@@ -772,8 +772,16 @@ impl<E: ToolExecutor> Actor<E> {
         }
         self.tasks.shutdown().await;
         let reason = self.summary.reason;
+        // `clean` is only "the app chose to end" — an end the service forced (the client
+        // unreachable, its input broken, a handshake refused) is named for what it was.
         let closed = Record::SessionClosed {
-            reason: CloseReason::Clean,
+            reason: match reason {
+                EndReason::Shutdown | EndReason::Eof => CloseReason::Clean,
+                EndReason::ClientUnresponsive | EndReason::ReadError | EndReason::HandshakeTimeout => {
+                    CloseReason::ClientGone
+                }
+                EndReason::ProtocolMismatch => CloseReason::Refused,
+            },
         };
         let durable = self.ledger.append_durable(closed, self.io_timeout).await.is_ok();
         let _ = self.ledger.close(self.io_timeout).await;

@@ -1021,3 +1021,78 @@ async fn closing_stdin_mid_turn_closes_the_turn_honestly() {
     let k = kinds(&ledger(&dir));
     assert_eq!(&k[k.len() - 3..], ["interrupted", "turn_closed", "session_closed"]);
 }
+
+/// A writer whose sink is already closed — the shape a dead stdout reader produces the first
+/// time the service flushes. `write_loop` only flushes when the out queue reads empty, so an
+/// always-failing writer makes the EPIPE land on `ready` itself instead of waiting for a flood
+/// to fill the `BufWriter`. (The stalled-reader variant — the app alive but never draining —
+/// reaches the same verdict through the queue's fill + send deadline and needs thousands of
+/// queued messages, so `client_gone.rs` covers the real-pipe shape at the binary level.)
+struct DeadWriter;
+
+impl tokio::io::AsyncWrite for DeadWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// A client that stops reading can never act on a request: once the writer task is dead, the
+/// next service message meets a dead channel and the session ends `client_unresponsive` — and
+/// the ledger names the end `client_gone`, never `clean`, which is only "the app chose to end".
+/// A headless session would hold the data-dir lock and refuse the restarted app forever, so
+/// ending bounded is the only honest answer.
+#[tokio::test]
+async fn a_client_that_stops_reading_is_ended_and_ledgered_as_client_gone() {
+    let dir = voice_testkit::temp_data_dir("unread");
+    let (app, service) = tokio::io::duplex(64 * 1024);
+    let (sr, _sw) = tokio::io::split(service);
+    let (_ar, mut aw) = tokio::io::split(app);
+    let handle = tokio::spawn(voice_session::run(sr, DeadWriter, config(&dir)));
+    aw.write_all(b"{\"type\":\"hello\",\"protocol\":1,\"client\":\"gone\"}\n")
+        .await
+        .unwrap();
+    // The pause between lines is the point: while the app is quiet the out queue drains empty,
+    // the writer flushes, the EPIPE kills it — and the next `send` lands on the dead channel and
+    // ends the session. A back-to-back flood never creates that post-death send: every message
+    // is queued while the writer is still alive, and no send is left over after it dies.
+    let sender = tokio::spawn(async move {
+        let ping = b"{\"type\":\"ping\"}\n";
+        for _ in 0..10 {
+            if aw.write_all(ping).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        aw
+    });
+    let summary = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("a dead reader ends the session within bounds")
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.reason, EndReason::ClientUnresponsive);
+    let mut aw = sender.await.unwrap();
+    let _ = aw.shutdown().await;
+    let recs = ledger(&dir);
+    let closed = recs.iter().rev().find(|r| r["kind"] == "session_closed").unwrap();
+    assert_eq!(
+        closed["reason"], "client_gone",
+        "the ledger names an unreachable client, not 'clean'"
+    );
+}

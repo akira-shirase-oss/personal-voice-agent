@@ -144,6 +144,13 @@ pub enum CloseReason {
     Clean,
     /// The service exited without closing; closed by the next start's recovery.
     Crashed,
+    /// The service ended the session because the app was unreachable: a message could not be
+    /// delivered inside the I/O deadline, the input side broke, or no `hello` arrived in time.
+    /// A session that ended this way frees the data-dir lock, so a restarted app is not refused.
+    ClientGone,
+    /// The client was refused before the session opened: a protocol version the service does
+    /// not speak.
+    Refused,
 }
 
 /// What recovery found in one unclosed session.

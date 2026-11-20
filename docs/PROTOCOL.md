@@ -15,7 +15,16 @@ durations only, never content (D-011).
   next inbound line.
 - The first app message must be `hello`; anything else first is
   `error` `hello_required`.
-- stdin EOF ends the session cleanly (`session_closed` is recorded).
+- stdin EOF ends the session cleanly (`session_closed` `clean` is recorded).
+- A client the service cannot reach ends the session from the service side: a message that cannot
+  be delivered inside the I/O deadline (the app's reader dead or stalled — a dead stdout reader
+  EPIPEs the writer task), a stdin read error, or no `hello` in time all end the session as
+  `client_unresponsive`, and `session_closed` records `client_gone` — never `clean`, which is
+  reserved for "the app chose to end". A refused handshake records `refused`; a service that died
+  before it could close is closed `crashed` by the next start's recovery. The session does not
+  linger headless: it holds the data-dir lock, so staying alive would refuse a restarted app
+  forever. When the service exits, the app's `.exited` event arrives, the session is restarted,
+  and any turn in flight is abandoned (recovered at the next open).
 - A service that cannot open its data directory sends one `error` before exiting:
   `already_running` (another service holds the directory's lock; exit code 6),
   `store_corrupt` (exit 3) or `store_io` (exit 4). The app does not restart it for the last
