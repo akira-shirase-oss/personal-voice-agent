@@ -32,6 +32,8 @@ jobs:
       - run: scripts/check-toolchain.sh
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # voice-attacks (tests/attacks) drives the real binary over pipes: build it first.
+      - run: cargo build --locked -p voice-session
       - name: cargo test (in a private temp dir; tests may leave no data directory behind)
         run: |
           export TMPDIR="$(mktemp -d)"

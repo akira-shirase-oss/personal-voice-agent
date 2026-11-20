@@ -15,6 +15,8 @@ export TMPDIR="$scratch/"
 scripts/check-toolchain.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+# voice-attacks drives the real binary over pipes, so it must exist before the tests run.
+cargo build --locked -p voice-session
 cargo test --workspace --locked
 scripts/check-architecture.sh
 
