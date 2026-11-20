@@ -73,9 +73,11 @@ covers the JSON bytes exactly and the JSON is
   4,000,000 records, after which new turns are refused as degraded
   (`ledger_full`) rather than dropped silently.
 - Files are created with mode 0600 inside a directory the app marks as
-  excluded from backup. A data or ledger directory that already exists
-  with group/other access is tightened to 0700 at open; a stricter mode
-  is never loosened.
+  excluded from backup. Anything already there — a data or ledger
+  directory, the consent log, a session log (closed ones too), the lock
+  file, a consent token — has group/other access stripped at open. Owner
+  bits are never added: a stricter mode is left alone and whatever the
+  store cannot use fails the open honestly.
 
 ## Components
 

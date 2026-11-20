@@ -231,8 +231,25 @@ fn sync_dir(dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn create_dir(path: &Path) -> Result<(), StoreError> {
+/// Group/other access is stripped from `path` — never granted: a stricter mode is left
+/// untouched, and whatever needs it then fails honestly where it cannot be read or
+/// traversed. The mode is the object's own metadata, so the change is made durable
+/// through the object itself (a directory sync does not cover a file's).
+fn strip_group_other(path: &Path, meta: &fs::Metadata) -> Result<(), StoreError> {
     use std::os::unix::fs::PermissionsExt;
+    let mode = meta.permissions().mode();
+    if mode & 0o077 != 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o077)).map_err(io_err(path))?;
+        if meta.is_dir() {
+            sync_dir(path)?;
+        } else {
+            File::open(path).and_then(|f| f.sync_all()).map_err(io_err(path))?;
+        }
+    }
+    Ok(())
+}
+
+fn create_dir(path: &Path) -> Result<(), StoreError> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -240,13 +257,25 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
         .map_err(io_err(path))?;
     // `.mode(0o700)` applies only to directories the builder creates; one that already
     // existed keeps its mode. The data directory holds heard transcripts and must be
-    // private, so group/other access bits are removed and the change made durable.
-    // Bits are never added: a stricter mode is left alone and the open then fails
-    // honestly where the directory cannot be written.
-    let mode = fs::metadata(path).map_err(io_err(path))?.permissions().mode();
-    if mode & 0o077 != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_err(path))?;
-        sync_dir(path)?;
+    // private, so group/other access is stripped and the change made durable.
+    let meta = fs::metadata(path).map_err(io_err(path))?;
+    strip_group_other(path, &meta)
+}
+
+/// Every pre-existing entry under a data-directory component keeps its mode when the
+/// store reopens it — the lock, the consent log and tokens in the data directory, each
+/// session log under `ledger/` (closed ones too). A restored backup or a manual chmod
+/// leaves group/other access in place: strip it before the files are read or appended.
+/// Anything that is not a plain file or directory — a stray symlink, a fifo — is left
+/// alone, never followed or removed.
+fn strip_tree(dir: &Path) -> Result<(), StoreError> {
+    for entry in fs::read_dir(dir).map_err(io_err(dir))? {
+        let entry = entry.map_err(io_err(dir))?;
+        // DirEntry::metadata does not follow symlinks.
+        let meta = entry.metadata().map_err(io_err(&entry.path()))?;
+        if meta.is_file() || meta.is_dir() {
+            strip_group_other(&entry.path(), &meta)?;
+        }
     }
     Ok(())
 }
@@ -407,6 +436,10 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     let lock = lock_dir(dir)?;
     let ledger_dir = dir.join("ledger");
     create_dir(&ledger_dir)?;
+    // Files the store reopens keep the mode they had; strip group/other access before
+    // anything is read or appended.
+    strip_tree(dir)?;
+    strip_tree(&ledger_dir)?;
     let mut recovered = Recovered::default();
 
     let consent_path = dir.join("consent.log");
@@ -873,7 +906,89 @@ mod tests {
             "a directory the store cannot write fails to open"
         );
         assert_eq!(mode(&stuck.0), 0o500, "its mode is untouched");
+        // 0555 has group/other access: those bits are stripped — and no owner bit is
+        // ever added, so the store still cannot write and the open fails honestly.
+        fs::set_permissions(&stuck.0, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(open(&stuck, 10).is_err());
+        assert_eq!(mode(&stuck.0), 0o500, "only group/other bits were removed");
         fs::set_permissions(&stuck.0, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// Files as well: `OpenOptions`' `.mode(0o600)` applies only to files that open call
+    /// creates, so every file the store reopens keeps the mode it had — a restored backup
+    /// or a manual chmod leaves group/other access on the consent log, session logs
+    /// (closed ones too), the lock file and consent tokens. Strip it at open, never
+    /// grant: a revoked token is never resurrected, and a file the store cannot use
+    /// fails the open honestly rather than gaining owner bits.
+    #[test]
+    fn an_existing_loose_file_is_tightened_at_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        let dir = temp_dir("filemode");
+        write_consent(&dir, &[consent(true)]);
+        fs::create_dir(dir.join("ledger")).unwrap();
+        write_lines(
+            &dir.join("ledger").join("0001.log"),
+            &[Record::TurnOpened { turn: TurnId(1) }],
+        );
+        write_lines(
+            &dir.join("ledger").join("0000.closed.log"),
+            &[Record::TurnOpened { turn: TurnId(1) }],
+        );
+        ConsentTokens::new(&dir).grant(ConsentScope::Capture).unwrap();
+        fs::write(dir.join("lock"), b"99999999\n").unwrap();
+        for f in [
+            dir.join("consent.log"),
+            dir.join("ledger").join("0001.log"),
+            dir.join("ledger").join("0000.closed.log"),
+            dir.join("consent.capture.granted"),
+            dir.join("lock"),
+        ] {
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        // A symlink inside the data directory is not a store file: leave it — and
+        // whatever it points at — alone.
+        let outside = temp_dir("filemode-out");
+        let target = outside.join("target.log");
+        fs::write(&target, b"not the store's").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("stray")).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let opened = open(&dir, 10).unwrap();
+        assert_eq!(mode(&dir.join("consent.log")), 0o600);
+        assert_eq!(mode(&dir.join("consent.capture.granted")), 0o600);
+        assert_eq!(mode(&dir.join("lock")), 0o600);
+        assert_eq!(mode(&dir.join("ledger").join("0000.closed.log")), 0o600);
+        // The crashed log is tightened before it is scanned and renamed closed.
+        assert_eq!(mode(&dir.join("ledger").join("0001.closed.log")), 0o600);
+        assert!(opened.consent_state.capture, "a grant survives a token's tightening");
+        assert_eq!(mode(&target), 0o644, "a symlink's target is left alone");
+        drop(opened);
+        // A second open keeps the tightened modes.
+        open(&dir, 10).unwrap();
+        assert_eq!(mode(&dir.join("consent.log")), 0o600);
+
+        // A revoked token has no group/other bits to strip and is never given owner
+        // bits either: consent stays revoked, the token removed.
+        let dead = temp_dir("filemode-dead");
+        write_consent(&dead, &[consent(true)]);
+        ConsentTokens::new(&dead).grant(ConsentScope::Capture).unwrap();
+        fs::set_permissions(dead.join("consent.capture.granted"), fs::Permissions::from_mode(0o000)).unwrap();
+        let opened = open(&dead, 10).unwrap();
+        assert!(!opened.consent_state.capture, "a revoked token is never resurrected");
+        assert!(!dead.join("consent.capture.granted").exists());
+        drop(opened);
+
+        // A file the store cannot use is left alone: the open fails honestly rather
+        // than add owner bits it did not have.
+        let stuck = temp_dir("filemode-stuck");
+        write_consent(&stuck, &[consent(true)]);
+        fs::set_permissions(stuck.join("consent.log"), fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(
+            open(&stuck, 10).is_err(),
+            "a consent log the store cannot write fails the open"
+        );
+        assert_eq!(mode(&stuck.join("consent.log")), 0o400, "its mode is untouched");
     }
 
     #[test]
