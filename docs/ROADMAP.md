@@ -29,9 +29,11 @@ caught only by the sentence classifier (5 of 8 such held-out claims got through)
 reference the assistant's output (D-023 limitation); the model's first-sentence latency
 (`docs/LATENCY.md`).
 
-**Owed to a quiet machine:** `scripts/perf.sh ledger --records 1000000` and
-`scripts/perf.sh turns --events 1000000 --interrupt-every 10 --stall-every 100`; a long
-`scripts/bench-e2e.sh` soak to settle the memory growth seen over three rounds.
+**Owed to a dispatched CI run** (`.github/workflows/load.yml`, ubuntu; its Linux fsync
+numbers are that platform's, not the Mac's): `scripts/perf.sh ledger --records 1000000`
+and `scripts/perf.sh turns --events 1000000 --interrupt-every 10 --stall-every 100`.
+**Still owed to this Mac when quiet:** a long `scripts/bench-e2e.sh` soak to settle the
+memory growth seen over three rounds.
 
 ## Later contracts
 
