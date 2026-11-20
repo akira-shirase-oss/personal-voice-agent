@@ -1,7 +1,7 @@
 //! The completion-claim guard on phrasings it was never tuned on (`fixtures/claims/held-out.tsv`),
 //! through the real reducer: the heard request, the reply streamed sentence by sentence, then
 //! `lm_done`. The rates are printed for D-027 (`cargo test --test held_out -- --nocapture`);
-//! the one pin is that every claim answering its request ends with the turn-level disclosure.
+//! the one pin is that every claim, answering or not, ends with the turn-level disclosure.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -168,7 +168,7 @@ fn run(line: &Line) -> Turn {
 }
 
 #[test]
-fn every_held_out_claim_answering_its_request_ends_with_the_disclosure() {
+fn every_held_out_claim_ends_with_the_disclosure() {
     let lines = held_out();
     assert!(
         lines.len() >= 80,
@@ -177,7 +177,7 @@ fn every_held_out_claim_answering_its_request_ends_with_the_disclosure() {
     );
     let undisclosed: Vec<String> = lines
         .iter()
-        .filter(|l| l.truth == "claim" && l.group != "unprompted")
+        .filter(|l| l.truth == "claim")
         .filter_map(|l| {
             let t = run(l);
             (!t.disclosed).then(|| format!("{} -> {:?}", l.request, t.spoken))
