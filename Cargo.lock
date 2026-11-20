@@ -262,6 +262,7 @@ name = "voice-session"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",

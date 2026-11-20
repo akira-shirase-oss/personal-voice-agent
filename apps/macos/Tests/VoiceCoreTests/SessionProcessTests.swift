@@ -60,4 +60,28 @@ struct SessionProcessTests {
             #expect(!p.isRunning, "run \(run): the process is known to be down")
         }
     }
+
+    /// `createDirectory`'s attributes apply only to a directory it creates; one that
+    /// already existed keeps its mode. A loose data directory is tightened at prepare —
+    /// a stricter one is never loosened, and owner bits are never added.
+    @Test("an existing loose data directory is tightened at prepare")
+    func tightensAnExistingLooseDirectory() throws {
+        let fm = FileManager.default
+        func mode(_ url: URL) throws -> Int {
+            try #require(fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) & 0o7777
+        }
+        let loose = TestScratch.url("dirmode")
+        try fm.createDirectory(at: loose, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        _ = try DataDirectory.prepare(loose)
+        #expect(try mode(loose) == 0o700, "group/other access is removed")
+        // 0555 has group/other access: those bits go, owner-write is never added.
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: loose.path)
+        _ = try? DataDirectory.prepare(loose)
+        #expect(try mode(loose) == 0o500, "only group/other bits are stripped, never granted")
+        // A stricter directory is left untouched.
+        let strict = TestScratch.url("dirmode-strict")
+        try fm.createDirectory(at: strict, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o500])
+        _ = try? DataDirectory.prepare(strict)
+        #expect(try mode(strict) == 0o500, "a stricter mode is never loosened")
+    }
 }
