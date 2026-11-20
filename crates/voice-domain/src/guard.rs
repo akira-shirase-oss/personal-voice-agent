@@ -29,7 +29,10 @@
 //! phrasings it was never tuned on it misses most claims (D-027: `fixtures/claims/held-out.tsv`).
 //! So it is not the safety net: the turn is. A reply turn whose request may ask for an action
 //! ([`request_may_ask_for_action`]), or with any sentence flagged here, ends with one spoken
-//! [`DRAFT_DISCLOSURE`]. What was spoken is ledgered, so a slip is visible.
+//! [`DRAFT_DISCLOSURE`]. And because a request that asked for no action cannot produce an
+//! evidenced claim, sentences on an informational turn also pass the recall-tilted
+//! [`uninvited_action`] screen: a possible claim is still spoken, but its turn ends disclosed.
+//! What was spoken is ledgered, so a slip is visible.
 //! `fixtures/claims/corpus.tsv` pins every sentence verdict.
 
 /// How the session speaks one model sentence while its turn has no executed evidence.
@@ -1113,6 +1116,317 @@ pub fn claims_completion(text: &str) -> bool {
     classify(text) != Verdict::Plain
 }
 
+/// Arrangement-state idioms: a person, task or thing reported as put where it should be.
+const ARRANGEMENT: &[&[&str]] = &[
+    &["in", "the", "loop"],
+    &["on", "the", "list"],
+    &["on", "the", "rota"],
+    &["on", "the", "roster"],
+    &["on", "the", "docket"],
+    &["on", "the", "calendar"],
+    &["on", "the", "schedule"],
+    &["in", "the", "diary"],
+    &["in", "the", "calendar"],
+    &["in", "the", "schedule"],
+    &["in", "the", "post"],
+    &["in", "the", "mail"],
+    &["in", "the", "works"],
+    &["in", "the", "pipeline"],
+    &["down", "for"],
+    &["waiting", "for", "you"],
+    &["expecting", "you"],
+    &["coming", "your", "way"],
+    &["paid", "up"],
+    &["squared", "away"],
+    &["good", "to", "go"],
+    &["in", "hand"],
+    &["under", "control"],
+    &["dealt", "with"],
+    &["seen", "to"],
+    &["sorted", "out"],
+    &["ironed", "out"],
+    &["firmed", "up"],
+    &["locked", "in"],
+    &["lined", "up"],
+    &["pencilled", "in"],
+    &["penciled", "in"],
+    &["slated", "for"],
+];
+
+/// Things a "has" or "got" can deliver: "she has the files", "he's got the paperwork".
+const DELIVERABLES: &[&str] = &[
+    "file",
+    "files",
+    "key",
+    "keys",
+    "parcel",
+    "parcels",
+    "package",
+    "packages",
+    "score",
+    "scores",
+    "news",
+    "result",
+    "results",
+    "paperwork",
+    "document",
+    "documents",
+    "form",
+    "forms",
+    "cash",
+    "cheque",
+    "check",
+    "confirmation",
+    "receipt",
+    "ticket",
+    "tickets",
+    "pass",
+    "passes",
+    "seat",
+    "seats",
+    "copy",
+    "copies",
+    "info",
+    "information",
+    "details",
+    "goods",
+    "mail",
+    "invite",
+    "invites",
+];
+
+/// Words between "has"/"got" and what is held.
+const POSSESSION_FILLERS: &[&str] = &[
+    "now", "already", "the", "a", "an", "your", "my", "her", "his", "their", "our", "some", "just", "finally", "also",
+    "even", "still",
+];
+
+/// Irregular participles an "-ed" shape cannot mark ("I've dealt with it", "it was left").
+const IRREGULAR_DONE: &[&str] = &[
+    "taken", "dealt", "made", "done", "gone", "put", "left", "seen", "heard", "read", "met", "kept", "given", "found",
+    "meant", "lent", "spent", "rung", "brought", "thought", "sought", "caught", "taught", "sold", "held", "handled",
+];
+
+/// "-ed" words that describe a state, not a completed act: "I'm tired", "it was noted" is a
+/// claim but "I'm worried" is not, and only the lexicon misses them here.
+const PARTICIPLE_ADJECTIVES: &[&str] = &[
+    "tired",
+    "worried",
+    "surprised",
+    "bored",
+    "confused",
+    "excited",
+    "pleased",
+    "disappointed",
+    "embarrassed",
+    "frustrated",
+    "relieved",
+    "amazed",
+    "ashamed",
+    "prepared",
+    "interested",
+    "married",
+    "afraid",
+    "involved",
+    "related",
+    "based",
+    "used",
+    "supposed",
+    "located",
+    "expected",
+    "delighted",
+    "thrilled",
+    "satisfied",
+    "concerned",
+    "convinced",
+    "depressed",
+    "impressed",
+    "offended",
+    "stunned",
+    "terrified",
+    "exhausted",
+    "fascinated",
+    "motivated",
+    "overwhelmed",
+    "encouraged",
+    "entertained",
+    "annoyed",
+    "appalled",
+    "astonished",
+    "bewildered",
+    "comforted",
+    "determined",
+    "disgusted",
+    "distressed",
+    "disturbed",
+    "energized",
+    "enlightened",
+    "honoured",
+    "honored",
+    "horrified",
+    "humiliated",
+    "inclined",
+    "inspired",
+    "insulted",
+    "intrigued",
+    "irritated",
+    "limited",
+    "minded",
+    "qualified",
+    "saddened",
+    "scared",
+    "skilled",
+    "spirited",
+    "strained",
+    "stressed",
+    "structured",
+    "suited",
+    "tempered",
+    "touched",
+    "troubled",
+    "united",
+    "crowded",
+    "detailed",
+    "gifted",
+    "talented",
+    "accustomed",
+    "addicted",
+    "assorted",
+    "beloved",
+    "blessed",
+    "crooked",
+    "learned",
+    "marked",
+    "ragged",
+    "rugged",
+    "sacred",
+    "wicked",
+    "wretched",
+];
+
+/// Whether `t` looks like a completed form the verb lexicon does not know.
+fn past_shaped(t: &str) -> bool {
+    if is(t, PARTICIPLE_ADJECTIVES) || is(t, BE) || is(t, HAVE) || is_number(t) {
+        return false;
+    }
+    is(t, IRREGULAR_DONE) || t.strip_suffix("ed").is_some_and(|stem| stem.len() >= 3)
+}
+
+/// Whether a sentence asserts an action consequence the request never asked for (D-027). A
+/// reply to an informational request has no executed evidence to draw on — nothing was asked
+/// to be done and in this release nothing can have been — so where `classify` is a precision
+/// instrument, this screen is deliberately recall-tilted and the session only ever lets a
+/// positive earn the turn disclosure. It catches the claim shapes the classifier
+/// structurally cannot: an action verb it does not know under a first-person subject ("I
+/// sorted that"), a delivery stated as possession with any definite or quantified object
+/// ("she's got it", "he has the forty dollars"), and the arrangement idioms ("in the loop",
+/// "your reminder is in", "squared away").
+pub fn uninvited_action(text: &str) -> bool {
+    let lowered = text
+        .to_lowercase()
+        .replace(['\u{2019}', '\u{2018}', '`'], "'")
+        .replace(['\u{201c}', '\u{201d}', '«', '»'], "\"");
+    sentences(&lowered).into_iter().any(|(sentence, question)| {
+        let clauses = clauses(sentence);
+        let last = clauses.len().saturating_sub(1);
+        clauses.iter().enumerate().any(|(n, clause)| {
+            !clause.quoted && !is_question(&clause.words, question && n == last) && uninvited_clause(&clause.words)
+        })
+    })
+}
+
+fn uninvited_clause(w: &[&str]) -> bool {
+    assistant_accomplished(w) || delivery_as_possession(w) || arrangement_state(w)
+}
+
+/// "I sorted that", "I've noted it", "we dropped it off", "I made a note": the assistant
+/// reports doing something. On a turn that asked for no action the lexicon's own judgment
+/// is beside the point — a completed form under a first-person subject is an uninvited
+/// claim whether or not `classify` has a verb for it (its task-only verbs only claim next
+/// to a task word, so "made a note" is otherwise missed).
+fn assistant_accomplished(w: &[&str]) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        if !past_shaped(t) {
+            return false;
+        }
+        let ctx = scan_back(w, i);
+        ctx.subject == Subject::First && !ctx.governed
+    })
+}
+
+/// "She's got it", "he has the forty dollars", "Sam has the files": a delivery stated as
+/// possession. `phrases` names a few objects; an uninvited one may be anything definite
+/// (it/them/the…) or quantified ("forty dollars", "three tickets"), while "she has a
+/// brother" stays a fact about her.
+fn delivery_as_possession(w: &[&str]) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        if !matches!(*t, "has" | "have" | "got") {
+            return false;
+        }
+        let after = &w[i + 1..];
+        let Some((j, object)) = after
+            .iter()
+            .take(5)
+            .enumerate()
+            .find(|(_, x)| !is(x, POSSESSION_FILLERS))
+        else {
+            return false;
+        };
+        let delivered = matches!(*object, "it" | "them" | "that" | "this" | "everything")
+            || is(object, TASK_NOUNS)
+            || is(object, TASK_STRONG)
+            || is(object, DELIVERABLES)
+            || (is_number(object)
+                && after[j + 1..]
+                    .first()
+                    .is_some_and(|n| is_number(n) || is(n, TASK_NOUNS) || is(n, DELIVERABLES)));
+        if !delivered {
+            return false;
+        }
+        let ctx = scan_back(w, i);
+        !ctx.governed
+            && matches!(
+                ctx.subject,
+                Subject::First | Subject::Third | Subject::Thing | Subject::Noun { .. }
+            )
+    })
+}
+
+/// "Your reminder is in", "it's in": a task or thing reported in the state "in" — and the
+/// arrangement idioms a state can be phrased as.
+fn arrangement_state(w: &[&str]) -> bool {
+    for phrase in ARRANGEMENT {
+        if let Some(i) = w.windows(phrase.len()).position(|win| win == *phrase)
+            && !scan_back(w, i).governed
+        {
+            return true;
+        }
+    }
+    w.iter()
+        .enumerate()
+        .any(|(i, t)| *t == "in" && i >= 1 && arranged_in(w, i))
+}
+
+/// "Your reminder is in", "it's in", "you're in": the state "in" claimed for a task, a thing
+/// or a person — at a clause's end or before a time adverb, where "in" is the state itself
+/// rather than the start of a place phrase ("the shop is in town").
+fn arranged_in(w: &[&str], i: usize) -> bool {
+    // "reminder is in", "it is in": BE before "in", a task or thing before BE.
+    let via_be = i >= 2
+        && is(w[i - 1], BE)
+        && (is(w[i - 2], TASK_NOUNS) || matches!(w[i - 2], "it" | "they" | "that" | "this" | "everything" | "all"));
+    // "it's in", "you're in": the auxiliary is inside the pronoun's contraction.
+    let via_pronoun = pronoun(w[i - 1])
+        .is_some_and(|(subject, aux, _)| aux && matches!(subject, Subject::Second | Subject::Third | Subject::Thing));
+    (via_be || via_pronoun)
+        && w.get(i + 1)
+            .copied()
+            .is_none_or(|n| matches!(n, "now" | "already" | "too" | "finally" | "for" | "as" | "since"))
+        && !w[..i]
+            .iter()
+            .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+}
+
 fn classify_sentence(sentence: &str, question: bool) -> Verdict {
     let all = words(sentence);
     let hearsay = HEARSAY.iter().any(|p| has_phrase(&all, p));
@@ -1408,5 +1722,70 @@ mod tests {
             classify("I've sent it to Priya. Is there anything else?"),
             Verdict::Replace
         );
+    }
+
+    /// The uninvited-assertion screen: claim shapes the classifier has no rule for. These are
+    /// the shapes the held-out set's "unprompted" group exercises; none is written from it —
+    /// each names the rule family it belongs to.
+    #[test]
+    fn uninvited_claims_the_classifier_misses() {
+        for s in [
+            // The assistant reports doing something the lexicon has no verb for.
+            "I sorted that this morning.",
+            "I juggled a few things and it's sorted.",
+            "I've nudged her about it.",
+            "We dropped the keys off earlier.",
+            "I dealt with it.",
+            "I made a note of that.",
+            // A delivery or transfer stated as possession.
+            "She's got it now.",
+            "She has the forty dollars you owed her.",
+            "Priya has the files.",
+            "He's got the paperwork.",
+            "Sam has three tickets for Friday.",
+            // A task or person reported in its arranged state.
+            "Your reminder is in.",
+            "It's in.",
+            "Your mum's in the loop about you running late.",
+            "He's on the list.",
+            "It's squared away.",
+            "She's expecting you at six.",
+        ] {
+            assert!(uninvited_action(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn uninvited_screen_leaves_plain_answers_alone() {
+        for s in [
+            // Facts, including ones with the same surface shapes.
+            "She has a brother in Leeds.",
+            "She has two kids.",
+            "It's early morning in Tokyo.",
+            "The shop is in town.",
+            "Jane Austen wrote it, in 1813.",
+            "Plants turn sunlight into food.",
+            "Bread, olives and wine were staples.",
+            "Your package is scheduled to arrive Thursday.",
+            // The user's own doings and possessions are not the assistant's claims.
+            "You sorted it yourself.",
+            "You've got it.",
+            // Governed forms: questions, negations, modals, conditionals.
+            "Has she got it?",
+            "I didn't sort anything.",
+            "I could sort it if you like.",
+            "She hasn't got it yet.",
+            "Once the reminder is in, it stays.",
+            "Is your reminder in?",
+            // Feelings and states are not accomplishments.
+            "I'm tired.",
+            "I was worried about that.",
+            "I know the answer.",
+            "I think it's going to rain.",
+            // A quote is the draft's words; the session keeps `classify`'s reading of it.
+            "The note says: your reminder is in.",
+        ] {
+            assert!(!uninvited_action(s), "{s}");
+        }
     }
 }

@@ -713,7 +713,15 @@ impl Session {
         if let Some(index) = index
             && !t.executed
         {
-            match guard::classify(&spoken) {
+            // A request that asked for no action cannot produce an evidenced claim, so on an
+            // informational turn the recall-tilted uninvited-assertion screen also applies:
+            // a possible claim is still spoken, but its turn ends disclosed (D-027).
+            let verdict = guard::classify(&spoken).max(if !t.asks_action && guard::uninvited_action(&spoken) {
+                guard::Verdict::Disclose
+            } else {
+                guard::Verdict::Plain
+            });
+            match verdict {
                 guard::Verdict::Plain => {}
                 guard::Verdict::Replace => {
                     t.flagged = true;

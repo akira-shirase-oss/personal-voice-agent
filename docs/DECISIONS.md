@@ -274,6 +274,18 @@ settled it, it is listed under **Open questions** rather than guessed.
   no disclosure (7%), all of them claims inside answers to plain questions (5 of 8 such), and
   0 of the 62 that answer a request**. Plain replies unchanged: 6 of 22 replaced, 12 of 22
   disclosed.
+  *Amended (unprompted claims): a request that asked for no action cannot produce an evidenced
+  claim, so on an informational turn a second, recall-tilted screen (`guard::uninvited_action`)
+  also applies.* It catches the shapes the classifier structurally misses — an action verb the
+  lexicon does not know under a first-person subject ("I sorted that"), a delivery stated as
+  possession with a definite or quantified object ("she has the forty dollars", "she's got
+  it"), and the arrangement idioms ("in the loop", "your reminder is in") — using the same
+  question/negation/modal/second-person machinery. A positive is capped at *Disclose* (the
+  sentence is still spoken; the turn ends with the disclosure), so a false positive costs the
+  disclosure, never content. On the held-out set: **0 of 70 claims now get no disclosure (0 of
+  8 unprompted, was 5 of 8)**, and the false-positive numbers are unchanged — 6 of 22 plain
+  replies replaced, 12 of 22 disclosed, all in the classifier, none added by the screen. The
+  held-out pin now covers every claim, unprompted included.
 
 ## Open questions
 
