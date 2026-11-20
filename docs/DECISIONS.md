@@ -191,10 +191,12 @@ settled it, it is listed under **Open questions** rather than guessed.
   where the device supports it. Audio from people other than an enrolled
   speaker is never retained or used for a profile — no audio is retained
   at all in the first release. *Limitation (2026-11-16): capture and playback
-  run on separate AVAudioEngines, so voice processing on the capture engine
-  has no reference to the assistant's own output and cannot cancel it; the
-  stop-before-capture ordering is the mitigation that is actually in place
-  and tested. Sharing one engine for both is owed, with Drill 3 as its check.*
+  ran on separate AVAudioEngines, so voice processing on the capture engine
+  had no reference to the assistant's own output and could not cancel it.
+  (2026-11-20: one engine now serves both — capture taps the player's
+  running engine for the press — so the canceller has its reference;
+  whether it cancels well is Drill 3's live check. The stop-before-capture
+  ordering is unchanged and stays the tested mitigation.)*
 
 - **D-024 — Warm, reused speech output.** One long-lived `AVSpeechSynthesizer`, one
   utterance at a time, warmed with a short phrase at start. Probed on this Mac: a fresh

@@ -33,6 +33,11 @@
 - **Audio never crosses the process boundary.** Only text and control
   messages do. Audio lives in bounded buffers in the app and is never
   written to disk.
+- **Capture and playback share one `AVAudioEngine`.** The microphone is
+  tapped while push-to-talk is held and the tap is removed on release;
+  the engine itself belongs to the player and runs for the session's
+  life, so voice processing can reference the assistant's own output
+  for echo cancellation (D-023).
 
 ## Sources of truth
 

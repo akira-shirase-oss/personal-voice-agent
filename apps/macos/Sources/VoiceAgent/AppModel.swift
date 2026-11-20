@@ -167,7 +167,8 @@ final class AppModel {
         // One consumer, so buffers reach the recognizer in capture order.
         Task { for await pcm in stream { await conversation.feed(pcm) } }
         do {
-            try capture.start { pcm in continuation.yield(pcm) }
+            // The player's engine, so voice processing can reference what is playing (D-023).
+            try capture.start(on: conversation.player.engine) { pcm in continuation.yield(pcm) }
             micOn = true
         } catch {
             banner = micGranted ? "The microphone could not start." : "Microphone access is off. Allow it to talk."

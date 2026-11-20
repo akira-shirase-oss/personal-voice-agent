@@ -25,9 +25,7 @@ stop-playback p95 and zero stale chunks.
 **Known residual (D-027):** a claim made inside an answer to a plain informational question is
 caught only by the sentence classifier (5 of 8 such held-out claims got through).
 
-**Owed in code:** one shared audio engine for capture and playback, so echo cancellation can
-reference the assistant's output (D-023 limitation); the model's first-sentence latency
-(`docs/LATENCY.md`).
+**Owed in code:** the model's first-sentence latency (`docs/LATENCY.md`).
 
 **Delivered on CI** (`.github/workflows/load.yml`, ubuntu; its Linux fsync numbers are
 that platform's, not the Mac's): `scripts/perf.sh ledger --records 1000000` — durable
