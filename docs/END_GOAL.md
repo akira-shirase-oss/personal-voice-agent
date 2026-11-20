@@ -101,8 +101,8 @@ proof gate in `ROADMAP.md`:
    for an action, or with any sentence that may claim one, ends with one
    spoken "Nothing has been done.", and a sentence that clearly says an
    action happened is also replaced by a draft disclaimer. The sentence
-   classifier alone misses most claims it was not tuned on (84% of a
-   held-out set, D-027); with the turn-level disclosure, every held-out
+   classifier alone misses most claims it was not tuned on (83% — 58 of
+   70 claims on the held-out set, D-027); with the turn-level disclosure, every held-out
    claim answering a request ended disclosed (a reply cut off early is
    disclosed in the record and the window), and 5 of 8 claims made inside
    answers to plain questions were not. What was spoken is recorded too.

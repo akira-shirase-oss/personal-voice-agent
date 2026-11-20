@@ -1,0 +1,193 @@
+name: load
+
+# The two million-scale load scenarios the first release still owes (D-022, ROADMAP
+# "owed to a quiet machine"), run on a GitHub ubuntu runner because this Mac is a
+# shared, loaded machine and its numbers are development observations, not
+# evidence (AGENTS.md, the load-test standard).
+#
+#   ledger — 1,000,000 appends through the ledger writer, submit → durable-ack
+#   turns  — 1,000,000 actor inputs of scripted turns through the real session
+#            actor on an in-memory pipe, every 10th interrupted mid-speech, every
+#            100th stalled into its model deadline
+#
+# What a run proves: on this runner's Linux kernel, filesystem and recorded load,
+# the measured latencies met — or missed — the thresholds below, and the record
+# says which. What it does NOT prove: macOS behaviour. fsync on the runner's
+# filesystem differs in cost and semantics from the APFS volume the app writes to
+# on a Mac, and nothing here measures audio, on-device models or what a user
+# hears; those stay owed to the Mac's own benches and drills. And if the recorded
+# filesystem under the run's data dir is a memory filesystem (tmpfs/ramfs), the
+# durable-append numbers say nothing about fsync at all — check the recorded
+# "Filesystem" line before reading them.
+#
+# Thresholds, written down before the first run and enforced inside the runner
+# (a miss exits 1, fails the job, and the result file records FAIL — a miss is
+# evidence, never re-run until green; AGENTS.md):
+#
+#   ledger: append-to-durable p99 <= 50 ms            LEDGER_P99_MAX_MS
+#   turns:  reply and interrupted turn p99 <= 10 ms   TURN_P99_MAX_MS
+#           every scripted late provider result dropped (late_dropped_min)
+#           zero unscripted degraded turns            (unexpected_degraded_max)
+#
+# Source: the constants in crates/voice-testkit/src/bin/voice-perf.rs — the
+# budgets live in the code so a run can never silently measure against a
+# different bar; the scenarios are D-022.
+#
+# Results land as artifacts (pass or fail), one markdown file per scenario in the
+# same format as perf/results/*, carrying machine, OS, commit, load average and
+# the run URL. The maintainer reviews and commits them under perf/results/.
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: 'ledger appends'
+        required: false
+        default: '1000000'
+      events:
+        description: 'actor inputs through the session actor'
+        required: false
+        default: '1000000'
+      interrupt_every:
+        description: 'every Nth turn interrupted mid-speech (0 = never)'
+        required: false
+        default: '10'
+      stall_every:
+        description: 'every Nth turn stalls into its model deadline (0 = never)'
+        required: false
+        default: '100'
+
+permissions:
+  contents: read
+
+# A second dispatch queues behind the running one; a run in progress is never
+# cancelled — a truncated million-run is no evidence at all.
+concurrency:
+  group: load
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ledger:
+    name: ledger — ${{ inputs.records || '1000000' }} durable appends
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RECORDS: ${{ inputs.records || '1000000' }}
+    steps:
+      # Third-party actions are pinned to commit SHAs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Budget this run enforces (declared before the run; source in the runner)
+        run: |
+          grep -nE 'LEDGER_P99_MAX_MS' crates/voice-testkit/src/bin/voice-perf.rs
+          echo "budget: append-to-durable p99 <= LEDGER_P99_MAX_MS ms"
+      - name: Run the scenario (result file is written whether it passes or fails)
+        run: |
+          case "$RECORDS" in ''|*[!0-9]*) echo "records must be a number, got: '$RECORDS'" >&2; exit 2;; esac
+          scripts/perf.sh ledger --records "$RECORDS"
+      - name: Record the platform this ran on
+        if: always()
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/load-artifact"
+          mkdir -p "$stage"
+          git ls-files --others --exclude-standard -- perf/results/ | while IFS= read -r f; do
+            cp "$f" "$stage/"
+          done
+          ls "$stage"/*.md >/dev/null 2>&1 || { echo "perf.sh wrote no result file" >&2; exit 1; }
+          fstype="$(stat -f -c %T "${TMPDIR:-/tmp}")"
+          for f in "$stage"/*.md; do
+            cat >> "$f" <<MD
+
+          ## CI environment (appended by .github/workflows/load.yml)
+
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (attempt ${GITHUB_RUN_ATTEMPT})
+          - Runner: ${RUNNER_NAME} — ${RUNNER_OS} ${RUNNER_ARCH}, kernel $(uname -r)
+          - Data dir filesystem (${TMPDIR:-/tmp}): ${fstype}
+          - Thresholds: the constants in crates/voice-testkit/src/bin/voice-perf.rs at the run's commit
+
+          What this proves on this Linux runner, the durable-append latencies at the recorded
+          load met the budgets or missed them. It does not prove macOS behaviour: fsync cost
+          and semantics differ from the APFS volume the app writes on a Mac. If the filesystem
+          above is a memory filesystem, the durable numbers say nothing about fsync at all.
+          MD
+          done
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: load-ledger-${{ env.RECORDS }}
+          path: ${{ runner.temp }}/load-artifact
+          if-no-files-found: error
+
+  turns:
+    name: turns — ${{ inputs.events || '1000000' }} actor inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EVENTS: ${{ inputs.events || '1000000' }}
+      INTERRUPT_EVERY: ${{ inputs.interrupt_every || '10' }}
+      STALL_EVERY: ${{ inputs.stall_every || '100' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Budgets this run enforces (declared before the run; source in the runner)
+        run: |
+          grep -nE 'TURN_P99_MAX_MS|late_expected|unexpected_degraded' crates/voice-testkit/src/bin/voice-perf.rs
+          echo "budget: reply + interrupted turn p99 <= TURN_P99_MAX_MS ms; every late result dropped; 0 unscripted degraded"
+      - name: Run the scenario (result file is written whether it passes or fails)
+        run: |
+          for v in EVENTS INTERRUPT_EVERY STALL_EVERY; do
+            n="${!v}"
+            case "$n" in ''|*[!0-9]*) echo "$v must be a number, got: '$n'" >&2; exit 2;; esac
+          done
+          scripts/perf.sh turns --events "$EVENTS" --interrupt-every "$INTERRUPT_EVERY" --stall-every "$STALL_EVERY"
+      - name: Record the platform this ran on
+        if: always()
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/load-artifact"
+          mkdir -p "$stage"
+          git ls-files --others --exclude-standard -- perf/results/ | while IFS= read -r f; do
+            cp "$f" "$stage/"
+          done
+          ls "$stage"/*.md >/dev/null 2>&1 || { echo "perf.sh wrote no result file" >&2; exit 1; }
+          fstype="$(stat -f -c %T "${TMPDIR:-/tmp}")"
+          for f in "$stage"/*.md; do
+            cat >> "$f" <<MD
+
+          ## CI environment (appended by .github/workflows/load.yml)
+
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (attempt ${GITHUB_RUN_ATTEMPT})
+          - Runner: ${RUNNER_NAME} — ${RUNNER_OS} ${RUNNER_ARCH}, kernel $(uname -r)
+          - Data dir filesystem (${TMPDIR:-/tmp}): ${fstype}
+          - Thresholds: the constants in crates/voice-testkit/src/bin/voice-perf.rs at the run's commit
+
+          What this proves on this Linux runner, the per-turn latencies at the recorded load
+          met the budgets or missed them, and stale provider output stayed dropped through the
+          interrupt storm. It does not prove macOS behaviour or anything audible: the turns
+          run against stub providers on an in-memory pipe — real recognition, model and
+          synthesis latency stay owed to this Mac's benches and live drills.
+          MD
+          done
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: load-turns-${{ env.EVENTS }}
+          path: ${{ runner.temp }}/load-artifact
+          if-no-files-found: error

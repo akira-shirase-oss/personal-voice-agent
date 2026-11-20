@@ -232,11 +232,23 @@ fn sync_dir(dir: &Path) -> Result<(), StoreError> {
 }
 
 fn create_dir(path: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(path)
-        .map_err(io_err(path))
+        .map_err(io_err(path))?;
+    // `.mode(0o700)` applies only to directories the builder creates; one that already
+    // existed keeps its mode. The data directory holds heard transcripts and must be
+    // private, so group/other access bits are removed and the change made durable.
+    // Bits are never added: a stricter mode is left alone and the open then fails
+    // honestly where the directory cannot be written.
+    let mode = fs::metadata(path).map_err(io_err(path))?.permissions().mode();
+    if mode & 0o077 != 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_err(path))?;
+        sync_dir(path)?;
+    }
+    Ok(())
 }
 
 fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
@@ -830,6 +842,38 @@ mod tests {
         let mut v = Vec::new();
         scan_and_repair::<Record>(path, |r| v.push(r.clone())).unwrap();
         v
+    }
+
+    /// The builder's `.mode(0o700)` applies only to directories it creates; a data directory
+    /// that already exists keeps its mode. Any group/other access must be removed at open —
+    /// and a stricter mode must never be loosened: the open then fails honestly instead.
+    #[test]
+    fn an_existing_loose_data_directory_is_tightened_at_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        let dir = temp_dir("dirmode");
+        fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let ledger = dir.join("ledger");
+        fs::create_dir(&ledger).unwrap();
+        fs::set_permissions(&ledger, fs::Permissions::from_mode(0o755)).unwrap();
+        let opened = open(&dir, 10).unwrap();
+        assert_eq!(mode(&dir.0), 0o700, "the data directory is tightened");
+        assert_eq!(mode(&ledger), 0o700, "the ledger directory is tightened");
+        drop(opened);
+        // A second open keeps the tightened mode.
+        open(&dir, 10).unwrap();
+        assert_eq!(mode(&dir.0), 0o700);
+
+        // A stricter directory is never loosened: opening it fails rather than grant
+        // permissions it did not have.
+        let stuck = temp_dir("dirmode-stuck");
+        fs::set_permissions(&stuck.0, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(
+            open(&stuck, 10).is_err(),
+            "a directory the store cannot write fails to open"
+        );
+        assert_eq!(mode(&stuck.0), 0o500, "its mode is untouched");
+        fs::set_permissions(&stuck.0, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

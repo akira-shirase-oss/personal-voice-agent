@@ -1,7 +1,7 @@
 # Personal Voice Agent
 
 > **Status — first release (V0–V2) built and tested on this Mac; not yet
-> shippable.** Two independent reviews' findings are fixed with tests,
+> shippable.** Four review rounds' findings are fixed with tests,
 > except those `docs/ROADMAP.md` lists as owed. The live microphone drills,
 > the human evaluation set, the million-scale load runs and a long soak are
 > owed. Two measured misses stand: the on-device model misses the latency
