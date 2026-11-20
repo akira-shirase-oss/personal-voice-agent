@@ -118,7 +118,12 @@ pub struct Scan {
 /// line anywhere but the end is an error: the log is append-only, so only the last write
 /// can be torn.
 pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&T)) -> Result<Scan, StoreError> {
-    let file = match OpenOptions::new().read(true).write(true).open(path) {
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Scan::default()),
         Err(e) => return Err(io_err(path)(e)),
@@ -243,7 +248,12 @@ fn strip_group_other(path: &Path, meta: &fs::Metadata) -> Result<(), StoreError>
         if meta.is_dir() {
             sync_dir(path)?;
         } else {
-            File::open(path).and_then(|f| f.sync_all()).map_err(io_err(path))?;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+                .and_then(|f| f.sync_all())
+                .map_err(io_err(path))?;
         }
     }
     Ok(())
@@ -266,14 +276,25 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
 /// store reopens it — the lock, the consent log and tokens in the data directory, each
 /// session log under `ledger/` (closed ones too). A restored backup or a manual chmod
 /// leaves group/other access in place: strip it before the files are read or appended.
+/// The store has no other subdirectories: `allowed_dir` names the one a sweep may
+/// tighten (the data directory's `ledger/`); any other directory is refused at open.
 /// Anything that is not a plain file or directory — a stray symlink, a fifo — is left
 /// alone, never followed or removed.
-fn strip_tree(dir: &Path) -> Result<(), StoreError> {
+fn strip_tree(dir: &Path, allowed_dir: Option<&str>) -> Result<(), StoreError> {
     for entry in fs::read_dir(dir).map_err(io_err(dir))? {
         let entry = entry.map_err(io_err(dir))?;
         // DirEntry::metadata does not follow symlinks.
         let meta = entry.metadata().map_err(io_err(&entry.path()))?;
-        if meta.is_file() || meta.is_dir() {
+        if meta.is_dir() {
+            if allowed_dir.is_some_and(|name| entry.file_name() == name) {
+                strip_group_other(&entry.path(), &meta)?;
+                continue;
+            }
+            return Err(io_err(&entry.path())(io::Error::other(
+                "a directory the store does not own is refused",
+            )));
+        }
+        if meta.is_file() {
             strip_group_other(&entry.path(), &meta)?;
         }
     }
@@ -283,7 +304,7 @@ fn strip_tree(dir: &Path) -> Result<(), StoreError> {
 fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
     let existed = path.exists();
     let mut o = OpenOptions::new();
-    o.append(true).mode(0o600);
+    o.append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW);
     if create_new {
         o.create_new(true);
     } else {
@@ -335,14 +356,21 @@ impl ConsentTokens {
         self.dir.join(format!("consent.{name}.granted"))
     }
 
+    /// A token is a regular file with the owner's read and write bits — never a link:
+    /// a link would stand for, and be written through to, a file outside this directory.
     pub fn granted(&self, scope: ConsentScope) -> bool {
         use std::os::unix::fs::PermissionsExt;
-        fs::metadata(self.path(scope)).is_ok_and(|m| m.permissions().mode() & 0o600 == 0o600)
+        fs::symlink_metadata(self.path(scope)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o600 == 0o600)
     }
 
     pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let path = self.path(scope);
+        // A token path that is a link is refused before the chmod below — set_permissions
+        // follows links and would change whatever file the link points at.
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(io::Error::other("a token path that is a symlink is refused"));
+        }
         // A token left at 0000 by a revocation that could not unlink it: restore its mode first
         // (a chmod needs ownership, not write permission).
         match fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
@@ -354,6 +382,7 @@ impl ConsentTokens {
             .create(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&path)?;
         f.sync_all()?;
         File::open(&self.dir)?.sync_all()
@@ -370,8 +399,13 @@ impl ConsentTokens {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(unlink) => {
                 // The mode is the file's own metadata: change it through an open handle and sync
-                // that file (a directory sync does not cover it). Opened while still readable.
-                let f = File::open(&path).map_err(|_| unlink)?;
+                // that file (a directory sync does not cover it). Opened while still readable —
+                // and never through a link, which would chmod whatever it points at.
+                let f = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&path)
+                    .map_err(|_| unlink)?;
                 f.set_permissions(fs::Permissions::from_mode(0o000))?;
                 f.sync_all()
             }
@@ -404,6 +438,7 @@ fn lock_dir(dir: &Path) -> Result<File, StoreError> {
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&path)
         .map_err(io_err(&path))?;
     match lock.try_lock() {
@@ -437,9 +472,9 @@ pub fn open(dir: &Path, max_records: u64) -> Result<Opened, StoreError> {
     let ledger_dir = dir.join("ledger");
     create_dir(&ledger_dir)?;
     // Files the store reopens keep the mode they had; strip group/other access before
-    // anything is read or appended.
-    strip_tree(dir)?;
-    strip_tree(&ledger_dir)?;
+    // anything is read or appended. `ledger/` is the only directory the store owns.
+    strip_tree(dir, Some("ledger"))?;
+    strip_tree(&ledger_dir, None)?;
     let mut recovered = Recovered::default();
 
     let consent_path = dir.join("consent.log");
@@ -989,6 +1024,73 @@ mod tests {
             "a consent log the store cannot write fails the open"
         );
         assert_eq!(mode(&stuck.join("consent.log")), 0o400, "its mode is untouched");
+    }
+
+    /// A store file must never be a symlink: writes through one land on a file outside
+    /// the data directory. Every open path refuses a link at open time (`O_NOFOLLOW`, so
+    /// there is no check-then-open race): the open fails honestly and the file the link
+    /// points at is never read, written or chmodded. A link that merely sits in the tree
+    /// under a name the store does not use is left alone.
+    #[test]
+    fn a_symlinked_store_file_is_refused_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let outside = temp_dir("nofollow-out");
+        let target = outside.join("target.log");
+        fs::write(&target, b"original contents\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        let unchanged = |path: &Path| {
+            fs::read_to_string(path).unwrap() == "original contents\n"
+                && fs::metadata(path).unwrap().permissions().mode() & 0o7777 == 0o644
+        };
+
+        // The consent log, a session log a crash left, and the lock file.
+        let dir = temp_dir("nofollow-consent");
+        std::os::unix::fs::symlink(&target, dir.join("consent.log")).unwrap();
+        assert!(open(&dir, 10).is_err(), "a symlinked consent.log is refused");
+        let dir = temp_dir("nofollow-ledger");
+        fs::create_dir(dir.join("ledger")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("ledger").join("0001.log")).unwrap();
+        assert!(open(&dir, 10).is_err(), "a symlinked session log is refused");
+        let dir = temp_dir("nofollow-lock");
+        std::os::unix::fs::symlink(&target, dir.join("lock")).unwrap();
+        assert!(open(&dir, 10).is_err(), "a symlinked lock is refused");
+        assert!(unchanged(&target), "nothing reached the file the links point at");
+
+        // A token that is a link never grants: consent fails closed, and the store
+        // removes the link — the target keeps its contents and its mode.
+        let dir = temp_dir("nofollow-token");
+        write_consent(&dir, &[consent(true)]);
+        std::os::unix::fs::symlink(&target, dir.join("consent.capture.granted")).unwrap();
+        let opened = open(&dir, 10).unwrap();
+        assert!(!opened.consent_state.capture, "a symlinked token never grants");
+        assert!(
+            !dir.join("consent.capture.granted").exists(),
+            "the link itself is removed"
+        );
+        drop(opened);
+
+        // grant() refuses to chmod the link's target; and a revocation that cannot
+        // unlink the link never chmods it either — the revocation stands in memory.
+        std::os::unix::fs::symlink(&target, dir.join("consent.capture.granted")).unwrap();
+        let tokens = ConsentTokens::new(&dir);
+        assert!(tokens.grant(ConsentScope::Capture).is_err(), "grant refuses a link");
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let revoked = tokens.revoke(ConsentScope::Capture);
+        fs::set_permissions(&*dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(revoked.is_err(), "the unlink failed, so the revocation is reported");
+        assert!(unchanged(&target), "neither grant nor revoke chmodded the target");
+
+        // The store has no subdirectories: a planted one inside `ledger/` — or any
+        // directory in the data directory other than `ledger/` itself — is refused at
+        // open rather than silently chmodded or scanned.
+        let dir = temp_dir("nofollow-planted-ledger");
+        fs::create_dir_all(dir.join("ledger").join("planted")).unwrap();
+        assert!(open(&dir, 10).is_err(), "a directory inside ledger/ is refused");
+        let dir = temp_dir("nofollow-planted-data");
+        fs::create_dir(dir.join("planted")).unwrap();
+        assert!(open(&dir, 10).is_err(), "a second data directory is refused");
+        // `ledger` is the one allowed subdirectory.
+        assert!(open(&temp_dir("nofollow-ok"), 10).is_ok());
     }
 
     #[test]

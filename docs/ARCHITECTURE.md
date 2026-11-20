@@ -77,7 +77,12 @@ covers the JSON bytes exactly and the JSON is
   directory, the consent log, a session log (closed ones too), the lock
   file, a consent token — has group/other access stripped at open. Owner
   bits are never added: a stricter mode is left alone and whatever the
-  store cannot use fails the open honestly.
+  store cannot use fails the open honestly. The store has no
+  subdirectories (a planted one in the data directory, other than
+  `ledger/` itself, is refused) and never follows a symlink into a store
+  file: every open of `consent.log`, a session log, `lock` or a consent
+  token uses `O_NOFOLLOW`, so a link fails the open rather than letting
+  a write reach a file outside the tree.
 
 ## Components
 
