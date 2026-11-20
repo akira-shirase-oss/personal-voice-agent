@@ -256,7 +256,19 @@ public enum SessionBinary {
 /// The app's private data directory: created 0700 and excluded from Time Machine (D-018).
 public enum DataDirectory {
     public static func prepare(_ url: URL) throws -> URL {
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fm = FileManager.default
+        try fm.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // The creation attributes apply only to a directory this call creates; one that
+        // already existed keeps its mode. Group/other access is stripped — never granted,
+        // so a stricter mode is left alone — and the change made durable through the
+        // directory itself.
+        if let mode = try fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int, mode & 0o077 != 0 {
+            try fm.setAttributes([.posixPermissions: mode & ~0o077], ofItemAtPath: url.path)
+            let fd = open(url.path, O_RDONLY)
+            guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            defer { close(fd) }
+            guard fsync(fd) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        }
         var u = url
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
