@@ -106,6 +106,13 @@ fn decode<T: DeserializeOwned>(line: &[u8]) -> Result<Envelope<T>, &'static str>
     Ok(env)
 }
 
+/// The one-line record decoder, exposed for the fuzz target: the same checks
+/// `scan_and_repair` folds into its damage classes. Returns the decoded record.
+#[doc(hidden)]
+pub fn decode_line<T: DeserializeOwned>(line: &[u8]) -> Result<T, &'static str> {
+    decode::<T>(line).map(|env| env.rec)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Scan {
     pub records: u64,

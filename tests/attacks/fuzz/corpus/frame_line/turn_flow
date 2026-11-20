@@ -1,0 +1,19 @@
+{"type":"ptt_down"}
+{"type":"ptt_up","turn":3}
+{"type":"interrupt"}
+{"type":"stt_final","call":7,"text":"Send $42 to Priya tomorrow.","min_confidence":0.912}
+{"type":"stt_final","call":7,"text":"hello","min_confidence":null}
+{"type":"lm_kind","call":8,"kind":"reply"}
+{"type":"lm_sentence","call":8,"index":0,"text":"Here is a draft."}
+{"type":"lm_done","call":8,"proposal":{"kind":"reply","reply":"Here is a draft."},"model":"apple.foundationmodels.system","instructions":"pva-lm-1"}
+{"type":"lm_done","call":8,"proposal":{"kind":"action","reply":"I can do that.","tool":"fixture.transfer","slots":[{"name":"amount","kind":"amount","value":"42"},{"name":"to","kind":"recipient","value":"Priya"}]},"model":"apple.foundationmodels.system","instructions":"pva-lm-1"}
+{"type":"tts_started","call":9}
+{"type":"tts_finished","call":9}
+{"type":"stt_failed","call":7,"reason":"assets_missing"}
+{"type":"lm_failed","call":8,"reason":"model_not_ready"}
+{"type":"tts_failed","call":9,"reason":"error"}
+{"type":"confirm","turn":3,"digest":"9f0c1e22aa31b7d4","approve":true}
+{"type":"consent","scope":"capture","grant":true,"rights_review":null}
+{"type":"consent","scope":"personal_voice","grant":false,"rights_review":null}
+{"type":"flush"}
+{"type":"shutdown"}

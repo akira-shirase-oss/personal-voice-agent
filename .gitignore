@@ -5,6 +5,8 @@
 
 # Rust
 /target/
+tests/attacks/fuzz/target/
+tests/attacks/fuzz/artifacts/
 
 # Swift
 apps/macos/.build/

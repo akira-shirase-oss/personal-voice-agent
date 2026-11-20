@@ -1,0 +1,32 @@
+[package]
+name = "voice-attacks-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+voice-session = { path = "../../../crates/voice-session" }
+voice-domain = { path = "../../../crates/voice-domain" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "io-util", "sync"] }
+
+# Detach from the parent workspace — fuzz targets build under nightly.
+[workspace]
+
+[[bin]]
+name = "frame_line"
+path = "fuzz_targets/frame_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record_decode"
+path = "fuzz_targets/record_decode.rs"
+test = false
+doc = false
+bench = false
