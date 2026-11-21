@@ -32,12 +32,18 @@ public final class SessionProcess: @unchecked Sendable {
     private let alive = Flag()
     /// Set only by the termination handler: the child is really gone.
     private let ended = Flag()
+    /// `.exited` is emitted once, by whichever path gets there first: the reader at the end
+    /// of the child's output (every line it wrote already delivered), or a watchdog for a
+    /// stdout pipe that somehow outlives its writer.
+    private let exitReported = Flag()
 
     /// A shareable atomic flag (Atomic itself is non-copyable and cannot be captured).
     final class Flag: Sendable {
         private let value = Atomic<Bool>(false)
         func set(_ v: Bool) { value.store(v, ordering: .sequentiallyConsistent) }
         var isSet: Bool { value.load(ordering: .sequentiallyConsistent) }
+        /// True exactly once, for the first caller that flips it.
+        func take() -> Bool { !value.exchange(true, ordering: .sequentiallyConsistent) }
     }
 
     /// Starts `binary --data-dir dataDir [--limit k=v]...`.
@@ -54,11 +60,21 @@ public final class SessionProcess: @unchecked Sendable {
         let continuation = self.continuation
         let alive = self.alive
         let ended = self.ended
+        let exitReported = self.exitReported
         process.terminationHandler = { p in
             alive.set(false)
             ended.set(true)
-            continuation.yield(.exited(p.terminationStatus))
-            continuation.finish()
+            // `.exited` is emitted by the reader when stdout ends: an exit reported while
+            // the reader is still draining would drop the child's last lines, so a refused
+            // launch would be misread as a crash and restarted. This watchdog is only the
+            // bound for a pipe that somehow outlives its writer.
+            let status = p.terminationStatus
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(60)) {
+                if exitReported.take() {
+                    continuation.yield(.exited(status))
+                    continuation.finish()
+                }
+            }
         }
         // A write to a child that just died must fail with EPIPE, not kill the app with
         // SIGPIPE: the exit is only noticed later, by the termination handler.
@@ -82,6 +98,8 @@ public final class SessionProcess: @unchecked Sendable {
         let handle = stdout.fileHandleForReading
         let continuation = self.continuation
         let overflow = self.overflow
+        let exitReported = self.exitReported
+        let process = self.process
         Thread.detachNewThread {
             var pending = Data()
             var discarding = false
@@ -112,6 +130,14 @@ public final class SessionProcess: @unchecked Sendable {
                     discarding = true
                     continuation.yield(.undecodable)
                 }
+            }
+            // End of stdout: everything the child wrote has been delivered, so the exit is
+            // reported here — last bytes first, always. End of the pipe without a dead
+            // child is not an exit, so the real status is waited on.
+            process.waitUntilExit()
+            if exitReported.take() {
+                continuation.yield(.exited(process.terminationStatus))
+                continuation.finish()
             }
         }
     }

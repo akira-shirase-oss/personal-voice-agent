@@ -31,6 +31,106 @@ struct SessionProcessTests {
         #expect(!p.isRunning, "the session that lost messages was ended")
     }
 
+    /// The service's last bytes reach the app before its exit does: a refused second launch
+    /// still says why (`already_running`), and an `.exited` handled before that line is a
+    /// crash that gets restarted. The event stream delivers the message first on every run.
+    @Test("a refused service's error reaches the app before its exit")
+    func refusalLinePrecedesExit() async throws {
+        let dir = try tempDataDir("refusal-order")
+        let first = try SessionProcess(binary: sessionBinary, dataDir: dir)
+        // The lock is provably held only once `ready` is sent (it follows SessionOpened);
+        // a `hello` write landing in the pipe says nothing about store::open having run —
+        // launching the second on write order alone let it win the lock on a slow runner.
+        let becameReady = Task { () -> Bool in
+            for await event in first.events {
+                switch event {
+                case .message(.ready): return true
+                case .exited: return false
+                default: continue
+                }
+            }
+            return false
+        }
+        let readyWatchdog = Task {
+            try? await Task.sleep(for: .seconds(10))
+            becameReady.cancel()
+        }
+        try first.send(.hello(protocol: protocolVersion, client: "order-test"))
+        try #require(await becameReady.value, "the first service never became ready")
+        readyWatchdog.cancel()
+        defer { first.kill() }
+        for run in 1...40 {
+            let refused = try SessionProcess(binary: sessionBinary, dataDir: dir)
+            var refusal = false
+            var earlyExit = false
+            var kinds: [String] = []
+            for await event in refused.events {
+                switch event {
+                case .message(.error(let code, _)):
+                    if code == "already_running" { refusal = true }
+                    kinds.append("error(\(code))")
+                case .message(let m):
+                    kinds.append("message(\(m.type))")
+                case .undecodable:
+                    kinds.append("undecodable")
+                case .exited(let code):
+                    earlyExit = !refusal
+                    kinds.append("exited(\(code))")
+                }
+            }
+            #expect(refusal, "run \(run): the refusal's error line is delivered — saw \(kinds)")
+            #expect(!earlyExit, "run \(run): .exited never precedes the last line — saw \(kinds)")
+        }
+        first.kill()
+        #expect(await first.waitForExit(.seconds(2)), "the holder is released")
+    }
+
+    /// An exit delivered while the child's last lines are still in the pipe drops them and
+    /// misreads the refusal as a crash. A stub child says why it refused, keeps writing long
+    /// enough that the drain is still running when it dies, and every line must land before
+    /// `.exited` — on every launch.
+    @Test("a service's last lines are delivered before its exit")
+    func lastLinesPrecedeExit() async throws {
+        let stub = TestScratch.url("last-lines")
+        try """
+        #!/bin/sh
+        echo '{"type":"error","code":"already_running","detail":"stub"}'
+        n=0
+        while [ $n -lt 2000 ]; do
+          echo '{"type":"pong","seq":1}'
+          n=$((n + 1))
+        done
+        exit 6
+        """.write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        for run in 1...10 {
+            var refusal = false
+            var pongs = 0
+            var status: Int32?
+            var afterExit = 0
+            var exited = false
+            let child = try SessionProcess(binary: stub, dataDir: try tempDataDir("last-lines"))
+            for await event in child.events {
+                if exited { afterExit += 1 }
+                switch event {
+                case .message(.error(let code, _)) where code == "already_running":
+                    refusal = true
+                case .message(.pong):
+                    pongs += 1
+                case .exited(let code):
+                    status = code
+                    exited = true
+                default:
+                    break
+                }
+            }
+            #expect(refusal, "run \(run): the refusal line is delivered")
+            #expect(pongs == 2000, "run \(run): nothing the child wrote is lost")
+            #expect(status == 6, "run \(run): the exit status arrives")
+            #expect(afterExit == 0, "run \(run): no event follows .exited")
+        }
+    }
+
     /// Writing to a service that just died must not kill the app with SIGPIPE: the write
     /// fails, the service is reported down, and the app lives on. 50 crashes, each while a
     /// writer is sending every half millisecond.
