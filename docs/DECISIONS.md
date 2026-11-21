@@ -1111,6 +1111,78 @@ settled it, it is listed under **Open questions** rather than guessed.
     at the cost of one dangerous miss on set 6 and one undisclosed claim
     on sets 2 and 6.
 
+  *A grammar round (`61b55e0`, 2026-11-21), developed red-first on set
+  10's open families — from here set 10 is a development set, no longer
+  blind — and judged blind on **held-out-11**:*
+
+  - **What landed** (each arm measured on held-out-1 + the corpus after
+    it shipped; both stayed bit-identical all round): a first-person
+    possessive on a contact noun presupposes the act (`CONTACT_ACTS` —
+    "no reply yet to my message", "thanked me for ringing");
+    doubled negatives affirm with parity counting ("couldn't not
+    ring", "didn't fail to send"); assistant-referring nouns bind to
+    the first person ("your assistant here did", "yours truly",
+    "courtesy of yours truly") while third-party possessors stay
+    theirs — a noun's "'s" expands to "is", so "the landlord's
+    assistant" never binds; copular agency ("the booking was me"
+    replaces, "that was me" discloses); number-head relatives and
+    perfect-aux dialect participles ("the two I got her", "I've
+    text"); completive particles as one cross-dialect class
+    (`COMPLETIVES`: already, khalas, gaya, rồi, jor, pau — "ho gaya"
+    is a fixed two-token marker). Two fold-related fixes ride along:
+    a folded comma clause can't lend one "i" another's deed, and an
+    apostrophe before a digit is an elided year ("back in '92"), not
+    an open quote. Set 10's development score after it: undisclosed
+    claims **14 → 0 of 45**, sentence-guard missed 31%→4%, replaced
+    oks and routing unchanged.
+  - **held-out-11 asks_action=false (90):** of 45 claims the
+    sentence guard missed 11 (24%) and **6 were spoken undisclosed
+    (13%)**. All six are plain-English items — no dialect words —
+    so on the 32 claim items that use only common English the
+    undisclosed rate is **6/32 ≈ 19%**: the guard's real structural
+    recall gap. The shapes are new grammar, not vocabulary: copular
+    agency through a relative head ("the person who signed you up
+    was me"), a gapped coordination ("Tom paid the water … and I
+    the gas" restores "I paid"), an NPI double negative ("nothing
+    I haven't paid"), a list row whose claim sits inside a Markdown
+    table ("paid by me this morning"), and two report-scope
+    over-reaches ("he thinks, but he still hasn't answered my
+    second text", "you won't need to report it: I already did
+    that") — `report_at` scopes its clause even where the claim is
+    the narrator's own assertion. Of 45 plain replies **4 replaced
+    (9%)** — two are this round's arms over-firing on information
+    acts inside the conversation ("the three I listed" is the
+    number-head arm on an in-reply list; "…sorry, I read the wrong
+    line" folds "sorry" into a fake noun head for the relative
+    arm), two the older elliptical "Done"/"Finished" arms on
+    in-reply acts. **24 turn-disclosed (53%)**.
+  - **held-out-11 asks_action=true (30):** of 15 claims the
+    sentence guard missed 7 (47%) but **0 undisclosed** — the turn
+    disclosure still covers every miss. **0 replaced**, all **15
+    turn-disclosed (100%)**.
+  - **held-out-11 routing:** dangerous action→informational
+    **0/30**; informational→action **21/90** — the set's grammar
+    load makes it the joint-highest over-route count yet: roughly
+    half dialect surface (Tok Pisin, gamer/Gen Z/text-speak,
+    Konglish, Polish- and Quebec-mixed English, Guyanese,
+    Appalachian, Early Modern pastiche) and half plain-English
+    shapes ("can you add up", "status of the booking, short
+    answer", third-party status questions, a factive
+    presupposition).
+  - **Re-runs of held-out-2…-9 on this code:** undisclosed
+    identical everywhere (7, 3, 5, 0, 9, 2, 2, 4 — set 10 reads **0**
+    now, a development number); replaced identical (2, 1, 1, 0, 5,
+    0, 0, 1); dangerous identical (0, 2, 4, 1, 0, 0); over-routing
+    identical (13, 12, 13, 21, 21, 19). The grammar round moved
+    nothing but set 10's own claims.
+  - **Trend on informational turns:** undisclosed claims
+    **12% → 8% → 11% → 0% → 20% → 4% → 4% → 10% → 31%* → 13%**
+    across ten sets (*set 10's 31% was its blind judgement; on this
+    code it reads 0% but is development, not blind); replaced oks
+    **3% → 2% → 2% → 0% → 11% → 0% → 0% → 2% → 7% → 9%**;
+    turn-disclosed oks **33% → 25% → 40% → 44% → 44% → 40% → 53%
+    → 55% → 51% → 53%**.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -1161,7 +1233,17 @@ settled it, it is listed under **Open questions** rather than guessed.
   **3%, 2%, 2%, 0%, 11%, 0%, 0%, 2%, 7%** — so the measured answer is yes:
   over-routing fell without dangerous routing rising in aggregate, though
   not strictly to zero regression (set 6's one miss, plus one undisclosed
-  claim each on sets 2 and 6). Options, with
+  claim each on sets 2 and 6). The grammar round (`61b55e0`, judged blind on
+  held-out-11) reads: turn-disclosed oks **20, 10, 18, 20, 20, 18, 24, 22, 23, 24**
+  (33%, 25%, 40%, 44%, 44%, 40%, 53%, 55%, 51%, 53%), replaced oks
+  **2, 1, 1, 0, 5, 0, 0, 1, 3, 4** — identical to the precision round on sets
+  2–9; set 11's four are two new-arm over-fires on in-conversation information
+  acts (the number-head relative arm on "the three I listed", and a folded
+  "sorry, I read…" whose interjection poses as the noun head) plus two older
+  elliptical-"Done" arms, all on plain-English information acts — the next
+  precision surface is an *in-conversation* check on the first-person arms.
+  Undisclosed claims read **7, 3, 5, 0, 9, 2, 2, 4, 0†, 6** (†development).
+  Options, with
   what is already measured:
   - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
     disclosure's meaning stays constant and every uncertain turn is covered; zero
