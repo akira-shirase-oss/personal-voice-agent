@@ -133,6 +133,9 @@ const VERBS: &[Entry] = &[
     e("dial", Acts, &["dialed", "dialled"], &["dialing", "dialling"]),
     e("call", Acts, &["called"], &["calling"]),
     e("phone", Acts, &["phoned"], &["phoning"]),
+    e("ring", Acts, &["rang", "rung"], &["ringing"]),
+    e("speak", Acts, &["spoke", "spoken"], &["speaking"]),
+    e("meet", Acts, &["met"], &["meeting"]),
     e("ping", Acts, &["pinged"], &["pinging"]),
     e("contact", Acts, &["contacted"], &["contacting"]),
     e("inform", Acts, &["informed"], &["informing"]),
@@ -282,6 +285,9 @@ const MODALS: &[&str] = &[
     "must",
     "shall",
     "gonna",
+    "gonnae",
+    "gonny",
+    "gony",
     "won't",
     "wouldn't",
     "can't",
@@ -1582,10 +1588,10 @@ struct Context {
 fn pronoun(word: &str) -> Option<(Subject, bool, bool)> {
     // (subject, has an auxiliary, passive-capable "be")
     Some(match word {
-        "i" | "we" => (Subject::First, false, false),
+        "i" | "we" | "mi" | "ah" => (Subject::First, false, false),
         "i've" | "we've" | "i'd" | "we'd" => (Subject::First, true, false),
         "i'm" | "we're" => (Subject::First, true, true),
-        "you" => (Subject::Second, false, false),
+        "you" | "yuh" => (Subject::Second, false, false),
         "you've" | "you'd" => (Subject::Second, true, false),
         "you're" => (Subject::Second, true, true),
         "he" | "she" | "they" | "e" | "someone" | "somebody" | "everyone" | "everybody" => {
@@ -2230,7 +2236,7 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
     }
     let question = (lowered.trim_end().ends_with('?')
         || (w.first().is_some_and(|f| is(f, INFORMATIONAL)) && !imperative_head(&w)))
-        && !(lowered.trim_end().ends_with('?') && tag_imperative(&w));
+        && !(lowered.trim_end().ends_with('?') && (tag_imperative(&w) || request_clause(&w)));
     !question
 }
 
@@ -2308,7 +2314,7 @@ fn imperative_head(w: &[&str]) -> bool {
         Some(&("do" | "does" | "did")) => !matches!(second, "i" | "you" | "u" | "we" | "they" | "he" | "she"),
         Some(&("get" | "gets")) => {
             (nounish(second) || pronoun(second).is_some_and(|(s, _, _)| s == Subject::Third))
-                && w[2..].iter().take(4).any(|t| *t == "to" || *t == "tae")
+                && w.iter().skip(2).take(4).any(|t| *t == "to" || *t == "tae")
         }
         Some(&f) if is(f, INFORMATIONAL) => {
             !matches!(second, "me" | "us")
@@ -2446,6 +2452,17 @@ fn imperative_shaped(w: &[&str]) -> bool {
     if imperative_head(w) {
         return true;
     }
+    // "Gonnae fix it" is a fused will-you request when an act or an object
+    // follows; bare "gonnae rain" is the going-to prediction — a statement.
+    if matches!(first, "gonnae" | "gonny" | "gony") {
+        return w[1..].iter().any(|t| {
+            verb(t).is_some()
+                || is(t, DETERMINERS)
+                || is(t, POSSESSIVES)
+                || is(t, OBJECT_PRONOUNS)
+                || matches!(*t, "me" | "us")
+        });
+    }
     // A noun-led clause carrying "be" is a statement, not a request: "Republic
     // Day is 26 January, na?", "the bus is late, mate?" — the tag confirms a
     // fact. The verb-first "be quiet, mate" still reads imperative, so the
@@ -2470,6 +2487,162 @@ fn imperative_shaped(w: &[&str]) -> bool {
         || is(first, CONDITIONAL)
         || is(first, TEMPORAL)
         || is(first, INFORMATIONAL))
+}
+
+/// The pronouns that address the listener: "you", "ye", "ya", "yuh".
+const LISTENERS: &[&str] = &["you", "ye", "ya", "u", "yuh", "y'all", "yall", "thee"];
+/// The same pronouns fused with "will": "you'll sort", "ye'll fix".
+const FUSED_LISTENERS: &[&str] = &["you'll", "ye'll", "ya'll", "u'll", "yuh'll"];
+
+/// What fills a verb slot without asking anything of the world: what the mind
+/// does, what the weather does, where a body happens to go. "You'll see",
+/// "you'll wait", "it'll rain" predicate of the user or the sky — they are
+/// statements with a confirmation tag, not requests.
+const MIND: &[&str] = &[
+    "see",
+    "seen",
+    "know",
+    "knew",
+    "known",
+    "guess",
+    "believe",
+    "believed",
+    "think",
+    "thought",
+    "feel",
+    "felt",
+    "mean",
+    "meant",
+    "understand",
+    "understood",
+    "remember",
+    "remembered",
+    "hear",
+    "heard",
+    "wonder",
+    "wondered",
+    "doubt",
+    "doubted",
+    "suppose",
+    "expect",
+    "expecting",
+    "hope",
+    "hoped",
+    "fancy",
+    "reckon",
+    "figure",
+    "mind",
+    "care",
+    "forget",
+    "forgot",
+    "forgotten",
+    "realise",
+    "realize",
+    "realised",
+    "realized",
+    "notice",
+    "noticed",
+    "imagine",
+    "assume",
+    "assumed",
+    "wait",
+    "waited",
+    "stay",
+    "stayed",
+    "come",
+    "came",
+    "go",
+    "went",
+    "gone",
+    "matter",
+    "mattered",
+    "seem",
+    "seemed",
+    "look",
+    "looked",
+    "happen",
+    "happened",
+    "manage",
+    "managed",
+    "cope",
+    "coped",
+    "survive",
+    "survived",
+    "live",
+    "lived",
+    "sleep",
+    "slept",
+    "eat",
+    "ate",
+    "drink",
+    "drank",
+    "work",
+    "worked",
+    "play",
+    "played",
+    "try",
+    "tried",
+    "rain",
+    "rained",
+    "snow",
+    "shine",
+    "shone",
+    "dance",
+    "danced",
+];
+
+/// A word that can fill a clause's verb slot as a world-acting verb:
+/// contentful, not a function word, not a state or an information verb, and
+/// not already completed — a done-form in the slot ("you sorted it?") is a
+/// status ask, not a request. Shared by the routing fail-safe's "you"-frame
+/// and the completive-aspect arm's verb candidate.
+fn act_slot(t: &str) -> bool {
+    nounish(t)
+        && !is(t, PREPOSITIONS)
+        && !is(t, ANSWER_VERBS)
+        && !is(t, DESIRE)
+        && !is(t, MIND)
+        && !is(t, RELATIONS)
+        && !is(t, CONTACTS)
+        && !is(t, PARTICIPLE_ADJECTIVES)
+        && !done_shaped(t)
+        && !past_shaped(t)
+        && pronoun(t).is_none()
+        && !is_number(t)
+        && !is_year(t)
+}
+
+/// A "you"-frame carrying an act in its verb slot: "you'll sort the cleaner",
+/// "reckon you could cancel", "you sort the bins, yeah?". The modal and adverb
+/// padding between pronoun and verb is the frame; the first content word after
+/// it must be the act — a negator, preposition or state verb there makes the
+/// clause a statement ("you don't sort it", "you'll see", "thank you for it").
+fn listener_frame(w: &[&str]) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        (is(t, LISTENERS) || is(t, FUSED_LISTENERS))
+            && w[i + 1..]
+                .iter()
+                .take(4)
+                .find(|x| !is(x, MODALS) && !is(x, ADVERBS))
+                .is_some_and(|x| act_slot(x))
+    })
+}
+
+/// A modal-led clause asking for the listener with the "you" elided: "can help
+/// me renew…", "could move my haircut…" — the receiver pronoun and an act in
+/// the clause are the request.
+fn modal_elided(w: &[&str]) -> bool {
+    w.first().is_some_and(|t| is(t, MODALS))
+        && w.iter().any(|t| matches!(*t, "me" | "us"))
+        && w[1..].iter().any(|t| act_slot(t))
+}
+
+/// The fail-safe's clause test: an imperative, a "you"-frame with an act in
+/// the verb slot, or a modal frame asking for the listener is a request
+/// however the clause ends — a tag or particle the tag list doesn't know
+/// ("nuh?", "or not?", "you get me?", "seen?") can't turn it into a question.
+fn request_clause(w: &[&str]) -> bool {
+    imperative_shaped(w) || listener_frame(w) || modal_elided(w)
 }
 
 /// Whether `t` is a completed form — "confirmed", "sorted", "gone", "told" — by the
@@ -2909,6 +3082,9 @@ fn uninvited_clause(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
         || arrangement_state(w, rep)
         || agentless_state(w, rep, names)
         || scheduled_change(w, rep, names)
+        || completive_verdict(w, rep, names) != Verdict::Plain
+        || result_state(w, rep, names) != Verdict::Plain
+        || cleft_self(w, rep)
 }
 
 /// "…the payment I sent on Tuesday", "which I did through your bank", "I may have already
@@ -2918,7 +3094,7 @@ fn uninvited_clause(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
 /// away ("I will send", "I can't do it"), and "I was/am" is a state, not an act.
 fn first_person_act(w: &[&str], rep: Option<usize>) -> bool {
     w.iter().enumerate().any(|(i, t)| {
-        if rep.is_some_and(|r| i > r) || !matches!(*t, "i" | "we") {
+        if rep.is_some_and(|r| i > r) || !matches!(*t, "i" | "we" | "mi" | "ah") {
             return false;
         }
         // "If I sent it", "whether I paid": a governor before the "I" owns the clause.
@@ -2931,19 +3107,27 @@ fn first_person_act(w: &[&str], rep: Option<usize>) -> bool {
         // "I have", "I may have", "I just…": auxiliaries, hedges and adverbs pass through
         // to the candidate; anything else is the candidate itself, and a modal, negator
         // or non-completed form ("I will send", "I need", "I think") claims nothing.
+        // "I done sent" reads "done" as the completive aux only when another
+        // verb follows it — "I done the maths" keeps "done" as the verb.
         let mut k = i + 1;
         let mut don = false;
         while k < w.len()
-            && (is(w[k], ADVERBS) || matches!(w[k], "have" | "'ve" | "had" | "may" | "might" | "been" | "don" | "dey"))
+            && (is(w[k], ADVERBS)
+                || matches!(w[k], "have" | "'ve" | "had" | "may" | "might" | "been" | "don" | "dey")
+                || (w[k] == "done" && w.get(k + 1).is_some_and(|x| !first_person_function(x))))
         {
-            don |= w[k] == "don";
+            don |= matches!(w[k], "don" | "done");
             k += 1;
         }
         // "I was worried", "I am tired": a state after "was/am/were" is no act.
         if w[i + 1..k].iter().any(|x| is(x, BE)) {
             return false;
         }
-        k < w.len() && (first_person_done(w, k) || (don && !first_person_function(w[k])))
+        // A completive marker in the clause finishes a bare verb the same way
+        // "don" does: "I book already", "mi pay already", "i already book".
+        let completive = w.iter().any(|t| is(t, COMPLETIVES));
+        k < w.len()
+            && (first_person_done(w, k) || (don && !first_person_function(w[k])) || (completive && act_slot(w[k])))
     })
 }
 
@@ -2990,6 +3174,118 @@ fn first_person_done(w: &[&str], k: usize) -> bool {
             .is_some_and(|n| is(n, OBJECT_PRONOUNS) || is(n, DETERMINERS) || is_number(n));
     }
     done_shaped(t) || t.strip_suffix("ed").is_some_and(|s| s.len() >= 2)
+}
+
+/// The completive-aspect particle: a bare verb one of these follows is done —
+/// "I book already", "the parcel reach already", "settle already". The class is
+/// the marker, not the verb: "already" is the pan-dialect completive.
+const COMPLETIVES: &[&str] = &["already"];
+
+/// What a completive marker completes: the first act-capable word left of the
+/// marker is the verb; its subject attributes the act. A named party's
+/// completive is their own report ("mum pay already"), the user's is theirs,
+/// and a remit thing's own change is the implied assistant's.
+fn completive_verdict(w: &[&str], rep: Option<usize>, names: &[&str]) -> Verdict {
+    let mut verdict = Verdict::Plain;
+    for m in 0..w.len() {
+        if !is(w[m], COMPLETIVES) || rep.is_some_and(|r| m > r) {
+            continue;
+        }
+        // The verb's usual seat is left of the marker; the marker can also sit
+        // in the aux slot before it ("i already book"), an adverb there.
+        for j in (0..m).chain(m + 1..w.len().min(m + 2)) {
+            // A completive verb is bare: a finite "-s" form is just a verb with
+            // an adverbial "already" ("she already knows"), not the marker.
+            if !act_slot(w[j]) || w[j].ends_with('s') || names.contains(&w[j]) {
+                continue;
+            }
+            let ctx = scan_back(w, j);
+            if ctx.governed || by_agent(w, j) {
+                continue;
+            }
+            verdict = verdict.max(match ctx.subject {
+                Subject::First | Subject::None => Verdict::Replace,
+                Subject::Third => {
+                    if names.is_empty() {
+                        Verdict::Disclose
+                    } else {
+                        Verdict::Plain
+                    }
+                }
+                // A remit thing's own bare verb is its change report; a person
+                // doing one is the agent, not the patient ("mum pay already").
+                Subject::Noun { head }
+                    if remit_subject(w, head, names)
+                        && !is(w[head].strip_suffix("'s").unwrap_or(w[head]), CONTACTS)
+                        && !is(w[head].strip_suffix("'s").unwrap_or(w[head]), RELATIONS) =>
+                {
+                    Verdict::Replace
+                }
+                _ => Verdict::Plain,
+            });
+        }
+    }
+    verdict
+}
+
+/// The beneficiary cue that marks a change as the remit's even when the thing
+/// itself isn't a listed remit noun: "rerouted for you", "opened in your
+/// name", "closed on your account" — somebody acting for the user is this
+/// assistant's implied agent.
+fn result_cue(w: &[&str], i: usize) -> bool {
+    w[i + 1..].iter().enumerate().any(|(k, t)| {
+        (*t == "for" && matches!(w.get(i + k + 2), Some(&("you" | "ye" | "ya" | "u" | "yuh" | "thee"))))
+            || (is(t, POSSESSIVES)
+                && w.get(i + k + 2)
+                    .is_some_and(|n| matches!(*n, "name" | "names" | "account" | "accounts")))
+    })
+}
+
+/// "The parcel's rerouted to the locker", "a table is held under your name": an
+/// untabled completed form under a present "be" on a remit subject — or before
+/// a beneficiary cue — is the same agentless result-state a tabled participle
+/// claims. Reported speech and "expected"-style states are out.
+fn result_state(w: &[&str], rep: Option<usize>, names: &[&str]) -> Verdict {
+    let mut verdict = Verdict::Plain;
+    for i in 0..w.len() {
+        if rep.is_some_and(|r| i > r) || verb(w[i]).is_some() || !past_shaped(w[i]) || is(w[i], REPORT_VERBS) {
+            continue;
+        }
+        let ctx = scan_back(w, i);
+        // A "been", "was" or "had" in the verb group makes the participle an
+        // event passive, judged by the tabled path: "the parcel's been
+        // delivered" is the courier's day. The result-state read is a bare
+        // present "be" — "the parcel's rerouted". And a participle governing
+        // an infinitive arranges the future — "scheduled to arrive" is a plan,
+        // not a done.
+        if ctx.governed
+            || by_agent(w, i)
+            || w[..i].iter().any(|t| matches!(*t, "been" | "was" | "were" | "had"))
+            || (w.get(i + 1) == Some(&"to") && to_infinitive(w, i + 1, w.len() - 1))
+        {
+            continue;
+        }
+        verdict = verdict.max(match ctx.subject {
+            Subject::Noun { head }
+                if (ctx.aux || w[head].ends_with("'s")) && (remit_subject(w, head, names) || result_cue(w, i)) =>
+            {
+                Verdict::Replace
+            }
+            Subject::Thing if ctx.aux && result_cue(w, i) => Verdict::Disclose,
+            _ => Verdict::Plain,
+        });
+    }
+    verdict
+}
+
+/// "It was me who sent them", "it was us that moved it": an it-cleft on the
+/// speaker is a first-person claim — the cleft exists to attribute the act.
+fn cleft_self(w: &[&str], rep: Option<usize>) -> bool {
+    w.windows(4).enumerate().any(|(i, win)| {
+        matches!(win, ["it", "was", "me" | "us", "who" | "that"])
+            && rep.is_none_or(|r| i <= r)
+            && w[i + 3..].iter().any(|t| done_shaped(t))
+    })
 }
 
 /// "A table is held under your name", "your usual is in for an 8 o'clock pickup",
@@ -3576,9 +3872,17 @@ fn has_read(w: &[&str], i: usize) -> bool {
         return false;
     }
     // "paid back £100", "sent it off": a phrasal particle is not the object.
+    // "in" and "on" are plain prepositions too — the noun phrase after one is
+    // the preposition's adjunct, never the verb's object ("opened in your
+    // name", "a hold placed on your account").
     let mut k = i + 1;
+    let mut adjunct = false;
     while k < w.len() && is(w[k], VERB_PARTICLES) {
+        adjunct |= matches!(w[k], "in" | "on");
         k += 1;
+    }
+    if adjunct {
+        return false;
     }
     match w.get(k) {
         // "Bought this morning" is a time phrase, not a demonstrative object; "told him this
@@ -3917,6 +4221,16 @@ fn classify_clause(
         return Verdict::Replace;
     }
     let mut verdict = phrases(w, rep, reported, names);
+    if !reported {
+        // Shapes the tabled-verb loop can't see: a completive marker finishing
+        // a bare verb, an untabled result-state on the remit, an it-cleft on
+        // the speaker.
+        verdict = verdict.max(completive_verdict(w, rep, names));
+        verdict = verdict.max(result_state(w, rep, names));
+        if cleft_self(w, rep) {
+            verdict = Verdict::Replace;
+        }
+    }
     // "Transfer complete", "Payment of $42 to Priya complete". "…marked the job
     // complete" is different: the tail is a lexical verb's object complement and
     // that verb's subject decides — a named or third-party subject's own act.
@@ -3942,7 +4256,8 @@ fn classify_clause(
     for i in 0..w.len() {
         if let Some(v) = verb(w[i]) {
             let reported_verb = reported || rep.is_some_and(|r| i > r);
-            verdict = verdict.max(judge(w, i, v, inherited, hearsay, reported_verb, names));
+            let jv = judge(w, i, v, inherited, hearsay, reported_verb, names);
+            verdict = verdict.max(jv);
         }
     }
     verdict
@@ -4068,6 +4383,52 @@ fn phrases(w: &[&str], rep: Option<usize>, reported: bool, names: &[&str]) -> Ve
     verdict
 }
 
+/// The offences a "booked for" names in the sanction sense: fouls and what a
+/// player does to earn one. A domain cue, not the verb's other meaning on its
+/// own — "booked for the nine forty" is still a reservation.
+const FOULS: &[&str] = &[
+    "foul",
+    "fouls",
+    "tackle",
+    "tackles",
+    "challenge",
+    "challenges",
+    "handball",
+    "dive",
+    "diving",
+    "simulation",
+    "offence",
+    "offense",
+    "offences",
+    "offenses",
+    "infringement",
+    "infringements",
+    "misconduct",
+    "dissent",
+    "elbow",
+    "elbowing",
+    "stamp",
+    "stamping",
+    "time-wasting",
+    "shirt-pull",
+    "pulling",
+];
+
+/// The working-out a "done the …" names in the calculation sense: maths, sums,
+/// arithmetic. Computing the answer is an information act; the cue is the
+/// artefact noun, not the verb.
+const CALCS: &[&str] = &[
+    "maths",
+    "math",
+    "sums",
+    "sum",
+    "arithmetic",
+    "calculations",
+    "calculation",
+    "figures",
+    "numbers",
+];
+
 /// Uses of an action verb's form that are not actions: "turned cold", "is called a haiku",
 /// "as I told you", "well done", "made a list", "done when the edges are golden".
 fn other_sense(w: &[&str], i: usize, v: Verb) -> bool {
@@ -4080,6 +4441,17 @@ fn other_sense(w: &[&str], i: usize, v: Verb) -> bool {
         || (v.lemma == "call" && naming(w, i))
         || (v.lemma == "tell" && matches!(next, Some("you" | "me")))
         || (v.lemma == "do" && i > 0 && w[i - 1] == "well")
+        // "Booked for dragging him back", "booked for a late tackle": the
+        // "for"-frame names the offence — a foul or its doing — and reads the
+        // sanction, not a reservation made for the user.
+        || (v.lemma == "book"
+            && next == Some("for")
+            && w[i + 2..].iter().take(3).any(|n| is(n, FOULS) || n.ends_with("ing")))
+        // "Done the maths": the artefact is the working-out itself — an answer,
+        // not a deed done for the user.
+        || (v.lemma == "do"
+            && matches!(next, Some("the" | "your" | "my" | "our" | "his" | "her" | "their"))
+            && w.get(i + 2).is_some_and(|n| is(n, CALCS)))
         || (v.class == Class::TaskOnly && !w.iter().any(|t| is(t, TASK_STRONG)))
         || ((!strong || v.class == Class::Completion)
             && next.is_some_and(|n| matches!(n, "when" | "once" | "if" | "whenever")))
@@ -4163,7 +4535,10 @@ fn judge(
     }
     // A remit thing makes even a particle-less verb form its own change report
     // ("the letter reached her"), where `other_sense` would read the word aside.
-    if other_sense(w, i, v) && !matches!(ctx.subject, Subject::Noun { head } if remit_thing(w, head, names)) {
+    if other_sense(w, i, v)
+        && !matches!(ctx.subject, Subject::Noun { head } if remit_thing(w, head, names))
+        && !(result_cue(w, i) && matches!(ctx.subject, Subject::Noun { .. } | Subject::Thing))
+    {
         return Verdict::Plain;
     }
     // The completion's agent decides (D-028): an explicit "by" phrase naming someone else,
@@ -4372,6 +4747,16 @@ mod tests {
             Verdict::Replace
         );
         assert_eq!(classify("It's fixed now, done an hour ago."), Verdict::Replace);
+    }
+
+    /// A one-word clause starting with "get" has no second word for the
+    /// causative look-ahead — the router must not index past the end
+    /// (the fuzzer found this on "get\u{0}\u{10}, yeah?").
+    #[test]
+    fn a_one_word_get_clause_never_panics() {
+        let _ = request_may_ask_for_action("get");
+        let _ = request_may_ask_for_action("get\u{0}\u{10}, yeah?");
+        let _ = classify("Get\u{0}\u{10}, yeah?");
     }
 
     #[test]
@@ -5075,5 +5460,136 @@ mod tests {
             assert!(request_may_ask_for_action(heard), "{heard}");
         }
         assert!(!request_may_ask_for_action("You've got to fix it yourself?"));
+    }
+
+    /// The routing fail-safe is structural: a clause addressed to the assistant
+    /// — an imperative, or a "you"-frame carrying a verb in its verb slot — is a
+    /// request whatever tag or particle trails it. The tag vocabulary no longer
+    /// gates the dangerous direction; an unlisted "nuh", "or not" or "you get me"
+    /// cannot turn a request back into a question.
+    #[test]
+    fn an_addressed_clause_is_a_request_whatever_tag_follows() {
+        for heard in [
+            // A "you"-frame with an act in the verb slot, tag trailing.
+            "You'll sort the window cleaner for me, yeah?",
+            "You'll sort my repeat for me, nuh?",
+            "You sort the recycling out for me, eh?",
+            "Reckon you could ring the garage?",
+            "Could you not just move my haircut, nah?",
+            // An imperative with an unlisted tag or particle.
+            "Beg yuh top up mi phone, nuh?",
+            "Go ahead and text her back, you get me?",
+            "Ring the landlord, seen?",
+            "Sort my prescription, or nah?",
+            // A modal frame with the "you" elided: "can help me".
+            "Can help me renew my road tax or not?",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in [
+            // Statements and questions to the world stay informational.
+            "Will it rain, yeah?",
+            "You'll see it tomorrow, yeah?",
+            "You'll never guess what he did?",
+            "Can you explain the difference?",
+            "Republic Day is 26 January, na?",
+            "Is the bus late, or what?",
+            "You sorted it yesterday?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// A completive marker is an aspect, not a spelling: a bare verb it follows
+    /// is a done-form under whoever the subject is. "I book already" claims
+    /// like "I've booked"; a remit thing's own bare verb claims the same; a
+    /// named party's act stays theirs.
+    #[test]
+    fn a_completive_marker_makes_a_bare_verb_done() {
+        for s in [
+            "I book the ride for you already.",
+            "I settle it already.",
+            "Mi pay the light bill already.",
+            "Ah collect your costume already.",
+            "Settle already lah.",
+            "Your parcel reach already.",
+        ] {
+            assert_ne!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        for s in [
+            // A party's own completed act is theirs, whoever says it.
+            "Mum pay already.",
+            "The rain stop already.",
+            // "Already" as an ordinary adverb before the verb claims nothing new.
+            "She already knows.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+        }
+    }
+
+    /// Contacting someone is an act whatever its purpose: "I rang them to
+    /// check" is a claim even when the call was only to ask. The irregular
+    /// contact verbs — rang, wrote, met, spoke — claim like their "-ed" kin.
+    #[test]
+    fn a_first_person_contact_act_is_a_claim() {
+        for s in [
+            "I rang them to check.",
+            "I wrote to the bank to ask.",
+            "I met the landlord about the leak.",
+            "I spoke to the surgery.",
+            "Mi rang dem to find out.",
+            // An it-cleft on the speaker attributes the act the same way.
+            "It was me who sent them the footage.",
+        ] {
+            assert_ne!(classify(s), Verdict::Plain, "classify {s}");
+        }
+        // A named party's contact stays theirs.
+        assert_eq!(classify("Mum rang the surgery to ask."), Verdict::Plain);
+    }
+
+    /// An agentless present result-state on the remit claims: "be" plus a
+    /// completed form reads the result of an act whose implied agent is the
+    /// assistant — "it's booked", "rerouted for you", "opened in your name".
+    /// The cue can be the user's name or space even when the thing itself is
+    /// not a listed remit noun.
+    #[test]
+    fn an_agentless_result_state_on_the_remit_claims() {
+        for s in [
+            "So it's booked for the nine forty now.",
+            "The parcel's rerouted to the locker for you.",
+            "Your fd is opened in your name today itself.",
+            "The repeat's rebooked for Tuesday.",
+            "A table is held under your name.",
+        ] {
+            assert_ne!(classify(s), Verdict::Plain, "classify {s}");
+        }
+        for s in [
+            // A generic or by-agent passive is the world's, not the assistant's;
+            // a participle arranging a future event is a plan, not a result.
+            "The bridge is opened by the council each spring.",
+            "Your package is scheduled to arrive Thursday.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+        }
+    }
+
+    /// A tabled verb in a domain the clause itself marks is the other sense:
+    /// "booked for" plus a foul reads the sanction, "done the maths" the
+    /// arithmetic — the cue is structural (a "for"-frame, an artefact object),
+    /// not a word list.
+    #[test]
+    fn a_domain_cue_reads_a_tabled_verb_in_its_other_sense() {
+        for s in [
+            "He was booked for dragging Palmer back.",
+            "He was booked for a late tackle.",
+            "I've done the maths and it's cheaper.",
+            "I done the sums on it already.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+        }
+        // Without the cue the act reading still claims.
+        assert_ne!(classify("He was booked for the nine forty."), Verdict::Plain);
+        assert_ne!(classify("I've done the transfer."), Verdict::Plain);
     }
 }

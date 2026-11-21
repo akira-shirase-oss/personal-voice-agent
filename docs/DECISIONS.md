@@ -870,6 +870,103 @@ settled it, it is listed under **Open questions** rather than guessed.
     'head"/"you got me", South African "now-now"/"just now", "you'll …
     yeah?", "reckon", "kindly revert").
 
+  *Structural round on that open surface (2026-11-21, judged later on a
+  fresh blind set 9; sets 2–8 untouched during development — held-out-1
+  and the corpus are the only regression pins). Each blind set's new
+  dialects found new word-level gaps, so this round changed structure, not
+  word lists:*
+
+  - **Routing is structural, addressed-clause-first.** `request_may_ask_for_action`
+    now answers "is this clause addressed to the assistant with an act in
+    the verb slot" — `request_clause` = `imperative_shaped` (verb-first or
+    a "gonnae/gonny/gony" fused opener followed by an act or object) OR
+    `listener_frame` (second person or a future/modal frame with "you",
+    with an act in the slot) OR `modal_elided` (a modal opener with the
+    "you" elided — "can help me renew" — asking for "me"/"us" plus an
+    act in the clause). It is consulted at the `?`-ending carve-out,
+    where a tag or particle the tag list doesn't know ("nuh?", "or
+    not?", "you get me?", "seen?") used to turn a request into a
+    question. The tag or
+    particle after the clause is irrelevant — "you'll sort the window
+    cleaner for me, yeah?", "can help me renew my road tax or not?",
+    "beg yuh top up mi Digicel, nuh?", "go 'head and send my cousin the
+    $50, you got me?", "reckon you could ring the garage?" all route to
+    action. What keeps a statement out is structure, not the tag list:
+    a second-person predicate is a report ("you'll see it tomorrow,
+    yeah?"), an informational frame asks for speech ("can you explain
+    the difference?"), and `asks_for_speech` still owns the answer
+    verbs. "gonnae" needed the same split as "you'll": "gonnae rain
+    later?" is a statement about the sky, "gonnae text ma sister" is a
+    request — the deciding question is whether an act or object follows
+    the fused opener.
+  - **A completive marker makes a bare verb done.** `completive_verdict`
+    scans for "already" (the first member of a `COMPLETIVES` aspect
+    class) and reads the bare act-slot word at its side as a completed
+    form: "I book the ride for you already", "mi pay the light bill
+    already", "ah collect your costume already". Attribution follows the
+    subject: the speaker's completive is their own report, a named
+    person's is theirs, a remit thing's own change is the implied
+    assistant's ("your parcel reach already"). A person-relation head
+    ("mum pay already") is the agent, not a remit patient; a finite -s
+    form ("she already knows") is never a bare completive.
+  - **A first-person contact act claims, whatever the purpose.** "rang",
+    "met", "spoke", "spelt", "dreamt", "burnt", "leant", "sped", "shone",
+    "clung", "swung", "dug", "stuck", "spun", "wove" joined the irregular
+    done-table; "I rang them to check", "I met the landlord about the
+    leak", "I spoke to the surgery" all classify as claims through the
+    existing first-person arms — the infinitive purpose ("to check", "to
+    ask") does not demote the contact. "mi"/"ah" joined first person and
+    "yuh" second in `pronoun`. "It was me who sent them the footage"
+    claims through `cleft_self` — the cleft exists to attribute the act.
+  - **An agentless present result-state on the remit claims.**
+    `result_state` covers the untabled participle after a bare present
+    "be": "the parcel's rerouted to the locker for you", "₹2 lakh FD is
+    opened in your name today itself", "a table is held under your name".
+    The claim needs a remit subject or a beneficiary cue
+    (`result_cue`: "for you", "in/under your name/account"); a "been",
+    "was" or "had" in the verb group is an event passive the tabled path
+    already judges ("the parcel's been delivered" stays the courier's
+    day); a `to`-infinitive after the participle is an arranged future
+    ("your package is scheduled to arrive Thursday" stays a plan). The
+    "in"/"on" adjunct fix sits in `has_read`: those are prepositions,
+    not particles — "opened in your name" no longer reads "your name" as
+    the verb's object (which had mis-attributed the passive as an active
+    report and Plains'd it).
+  - **A domain cue reads a tabled verb in its other sense.** `other_sense`
+    gained two structural windows: "booked for" plus a foul or an -ing
+    offence reads the yellow-card sanction, not a reservation ("he was
+    booked for a late tackle", "booked for dragging Palmer back"); "done
+    the/my/his … maths|sums|figures|working|calculation" reads the
+    arithmetic artefact, not a completed deed. The cue is the clause's
+    own frame, not a spelling list.
+  - **Two self-regressions the pins caught.** The beneficiary rescue in
+    `judge` first applied to every subject — "I've written a draft for
+    you to review" flipped Replace; the rescue now needs a
+    `Noun`/`Thing` subject (a first person with a "for you" is a report,
+    not a remit change). And `result_state`'s `Thing` arm first claimed
+    any bare "it's/that's \<ed\>" — "that's settled then" is a discourse
+    state, not a result — so the `Thing` arm needs `result_cue` too.
+  - **The fuzzer found a real panic.** `imperative_head`'s get-causative
+    arm indexed `w[2..]` on a one-word clause ("get\0\0…") — now
+    `skip(2)`, with a regression pin. Caught by `guard_classify` at
+    ~157k executions; the run then completed **228,779 executions in
+    241 s, zero crashes**.
+  - **Measured (held-out-1 + corpus only, both bit-identical):** routing
+    on held-out-1's 92 requests is unchanged — 63 action / 29
+    informational before and after (zero info→action flips, zero
+    dangerous regressions on canonical requests); claims **0 of 70
+    undisclosed**, plain replies **1 of 22 replaced, 6 of 22
+    turn-disclosed**; corpus verdict pins all hold (no diffs). The set-8
+    dangerous misses — "you'll … yeah?", "reckon", "can … or not?",
+    "beg yuh … nuh?", "go 'head … you got me?" — are all caught by the
+    structural router's own red-first shapes; their measured closure is
+    blind set 9's job. fmt, clippy, the 23-attack suite, architecture and
+    the workspace gate are green except the five known `hdiutil`
+    `disk_full` environment failures; `swift build` is green and
+    `swift test` still crashes inside the sandbox on
+    `TurnFencedPlayer`'s `AVAudioFormat` init (environment-only, same
+    class as the `hdiutil` failures). Awaiting judgement on blind set 9.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
