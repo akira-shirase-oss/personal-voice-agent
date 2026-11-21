@@ -517,6 +517,52 @@ settled it, it is listed under **Open questions** rather than guessed.
     -3, -4 re-run, then held-out-5). The recall work halved undisclosed claims on
     every set; the price is ok-side disclosure noise (see D-029).
 
+  *A second recall round (2026-11-21), developed red-first on authored shapes —
+  blind sets 2–5 untouched — aimed at the categories set 5 exposed:*
+  - **Tags are a grammar, not a spelling list.** `tag_imperative` now strips a
+    trailing tag by shape — an auxiliary/modal plus a listener pronoun ("will
+    ya?", "won't ye?", "can't you?", "can you not?"), a fused contraction
+    ("d'ya?", "wontcha?"), or a one-word confirmation ("alright?", "ta?",
+    "innit?") — and asks whether what remains is imperative. A tag on someone
+    else's pronoun ("isn't it?", "aren't they?", "won't they?") confirms a
+    statement and stays a question; "…, do you think?" is still a question too.
+    This closes the dangerous-direction miss set 5 found ("lock the front door,
+    will ya?"). The maintainer ruled questions about the assistant's own past
+    acts keep routing deed-adjacent — the disclosure they earn is true.
+  - **Named subjects own their completions.** Two structural fixes underneath:
+    the clause splitter no longer breaks on a colon inside a time ("2:30") or a
+    comma inside a number ("R3,450"), and a comma fragment with no verb group of
+    its own (an appositive) folds forward so "their receptionist, Niamh, moved
+    it" binds the verb to "Niamh". Then, in a clause: a completion tail after an
+    object ("marked the job complete") is owned by the lexical verb before the
+    noun phrase and takes that verb's subject — "Sparky Solutions marked the job
+    complete" is theirs (Plain), "I marked the job complete" still replaces. An
+    agentive act verb under a named non-remit, non-quantified subject is that
+    party's own act ("Halfords emailed at 10:12", "Niamh moved it") — reported,
+    never claimed; quantified and remit subjects can't be agents, so "$50 sent
+    to Priya" and "milk added to your list" keep their agentless-passive claim.
+    Phrasal particles no longer hide the object ("he's paid back £100" → has an
+    object → hers). The screen's first-person families use the same laxer
+    verb test, so "I marked the job complete" still flags on the ok side
+    ("marked" reads as an adjective in isolation; an object settles it as a
+    verb).
+  - **A disclaimer does not reach the but-clause.** "I can't make bookings as
+    such, but a table … is held under your name now": the disclaimer's own
+    clause keeps its plain reading while the but-clause claims on its own terms
+    — the pin is the screen still fires, since a clause-level negation never
+    governed a later clause.
+  - **Marked state changes are assistant-implied when no agent appears:**
+    `scheduled_change` flags "held under your name/account" and "held for you"
+    in the passive, "in for" a slot ("in for an 8 o'clock pickup"), and
+    "instead of" a new value ("at half five now instead of six") — each refused
+    when a named agent's own verb owns the change, when a person holds the
+    slot ("Niamh is in for the nine o'clock shift"), or under a governing
+    word. Navigation spaces join the delivery lexicon ("in your sat nav").
+  - **Measured (held-out-1 + corpus only, both unchanged):** claims **0 of 70
+    undisclosed**, plain replies **1 of 22 replaced, 6 of 22 turn-disclosed**;
+    corpus pins all hold (claims 168/9/1, plain 191/7/0). Awaiting judgement on
+    a further blind set.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the

@@ -1075,6 +1075,10 @@ const DIGITAL_SPACE: &[&str] = &[
     "computer",
     "computers",
     "desktop",
+    "nav",
+    "satnav",
+    "gps",
+    "maps",
 ];
 /// Words whose "says" is another's words, not the assistant's: "her email says…", "the
 /// app says…", "the tracking says…". `nounish` cannot name them — they double as report
@@ -1771,6 +1775,17 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
             };
             let at = from + at;
             let c = rest[at..].chars().next().unwrap_or(',');
+            let prev = rest[..at].chars().last();
+            let next = rest[at + c.len_utf8()..].chars().next();
+            // "2:30", "R3,450": a colon or comma inside a number is the number's
+            // own — it does not open a clause.
+            if matches!(c, ':' | ',')
+                && prev.is_some_and(|p| p.is_ascii_digit())
+                && next.is_some_and(|n| n.is_ascii_digit())
+            {
+                from = at + c.len_utf8();
+                continue;
+            }
             if c != '\'' {
                 break (&rest[..at], Some(c));
             }
@@ -1833,7 +1848,59 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
         }
         rest = &rest[part.len() + c.len_utf8()..];
     }
-    out
+    fold_fragments(out)
+}
+
+/// A comma-separated span with no verb group of its own is a noun-phrase
+/// fragment — an appositive ("their receptionist, Niamh,"), a discourse marker,
+/// a list item — so it folds forward into the clause it modifies and the verb
+/// binds the whole subject ("Niamh, moved it" — the comma does not orphan
+/// "moved"). A trailing fragment keeps its own clause ("…, yeah").
+fn fold_fragments(out: Vec<Clause<'_>>) -> Vec<Clause<'_>> {
+    let mut folded: Vec<Clause<'_>> = Vec::with_capacity(out.len());
+    let mut carry: Vec<&str> = Vec::new();
+    let mut carry_join = Join::Start;
+    for c in out {
+        if !c.quoted && !c.words.iter().any(|&t| verb_group(t)) {
+            if carry.is_empty() {
+                carry_join = c.join;
+            }
+            carry.extend_from_slice(&c.words);
+            continue;
+        }
+        if carry.is_empty() {
+            folded.push(c);
+        } else {
+            let mut w = std::mem::take(&mut carry);
+            w.extend_from_slice(&c.words);
+            folded.push(Clause {
+                words: w,
+                join: carry_join,
+                quoted: c.quoted,
+            });
+        }
+    }
+    if !carry.is_empty() {
+        folded.push(Clause {
+            words: carry,
+            join: carry_join,
+            quoted: false,
+        });
+    }
+    folded
+}
+
+/// Whether `t` can anchor a verb group: a tabled verb, an auxiliary, a modal or
+/// a finite negator. A clause without one is a noun-phrase fragment.
+fn verb_group(t: &str) -> bool {
+    verb(t).is_some()
+        || is(t, BE)
+        || is(t, HAVE)
+        || is(t, GET)
+        || is(t, MODALS)
+        || is(t, FINITE_NEGATORS)
+        || is(t, INVERTED)
+        || pronoun(t).is_some_and(|(_, aux, _)| aux)
 }
 
 fn is_question(w: &[&str], last_of_question: bool) -> bool {
@@ -2148,32 +2215,44 @@ fn imperative_head(w: &[&str]) -> bool {
     }
 }
 
-/// A trailing tag — "…, yeah?", "…, right?", "…, would you?" — does not turn an imperative
-/// into a question: strip it and re-ask whether the remainder is imperative-shaped.
+/// A trailing tag is a closed grammatical class, not a spelling list: an auxiliary
+/// or modal plus the listener's pronoun ("…, will ya?", "…, won't ye?", "…, can't
+/// you?") or a one-word confirmation ("…, alright?", "…, ta?"). A tag does not
+/// turn the clause before it into a question — strip it and re-ask whether the
+/// remainder is imperative-shaped. A tag on someone else's pronoun ("…, isn't
+/// it?", "…, aren't they?") confirms a statement instead: it is a question still.
 fn tag_imperative(w: &[&str]) -> bool {
-    const TAGS: &[&[&str]] = &[
-        &["yeah"],
-        &["yes"],
-        &["right"],
-        &["ok"],
-        &["okay"],
-        &["alright"],
-        &["ta"],
-        &["eh"],
-        &["will", "you"],
-        &["would", "you"],
-        &["could", "you"],
-        &["can", "you"],
-        &["shall", "we"],
-        &["do", "you", "think"],
+    /// The tag's pronoun addresses the listener or the pair: "you", "ya", "ye",
+    /// "we". "…, isn't it?" and "…, aren't they?" confirm a statement about
+    /// someone else — no request is being made.
+    const TAG_PRONOUNS: &[&str] = &["you", "ya", "ye", "u", "we", "y'all", "yall"];
+    /// One-word confirmations.
+    const CONFIRMATIONS: &[&str] = &[
+        "yeah", "yes", "yeh", "yep", "right", "ok", "okay", "alright", "ta", "eh", "aye", "huh", "innit", "correct",
     ];
-    for &tag in TAGS {
-        if w.len() > tag.len() && w.ends_with(tag) {
-            let rest = &w[..w.len() - tag.len()];
-            return rest.first().is_some_and(|f| !is(f, INFORMATIONAL)) || imperative_head(rest);
+    // The auxiliaries and modals a request tag is built from — INVERTED's
+    // be/have/do set plus the modal contractions — and the fused forms that
+    // contract the whole pair into one token ("d'ya?", "wontcha?").
+    let tag_aux = |t: &str| is(t, INVERTED) || is(t, MODALS);
+    let tag_len = match w {
+        // "can you not", "will ye not"
+        [.., aux, p, "not"] if tag_aux(aux) && is(p, TAG_PRONOUNS) => 3,
+        // "will ya", "won't ye", "can't you", "shall we", "didn't you"
+        [.., aux, p] if tag_aux(aux) && is(p, TAG_PRONOUNS) => 2,
+        // "alright", "ok", "yeah", "ta", "innit", "d'ya"
+        [.., one]
+            if is(one, CONFIRMATIONS)
+                || matches!(
+                    *one,
+                    "d'you" | "d'ya" | "d'ye" | "willya" | "wouldja" | "couldja" | "cancha" | "dontcha" | "wontcha"
+                ) =>
+        {
+            1
         }
-    }
-    false
+        _ => return false,
+    };
+    let rest = &w[..w.len() - tag_len];
+    !rest.is_empty() && (rest.first().is_some_and(|f| !is(f, INFORMATIONAL)) || imperative_head(rest))
 }
 
 /// Whether `t` is a completed form — "confirmed", "sorted", "gone", "told" — by the
@@ -2565,6 +2644,7 @@ fn uninvited_clause(w: &[&str], rep: Option<usize>) -> bool {
         || delivery_as_possession(w, rep)
         || arrangement_state(w, rep)
         || agentless_state(w, rep)
+        || scheduled_change(w, rep)
 }
 
 /// "…the payment I sent on Tuesday", "which I did through your bank", "I may have already
@@ -2619,9 +2699,104 @@ fn first_person_done(w: &[&str], k: usize) -> bool {
         return w.get(k + 1) != Some(&"to");
     }
     if is(t, PARTICIPLE_ADJECTIVES) {
-        return false;
+        // "I'm tired" is a state, but "I marked the job" is an act — an object
+        // after the word settles it as a verb.
+        return w
+            .get(k + 1)
+            .is_some_and(|n| is(n, OBJECT_PRONOUNS) || is(n, DETERMINERS) || is_number(n));
     }
     done_shaped(t) || t.strip_suffix("ed").is_some_and(|s| s.len() >= 2)
+}
+
+/// "A table is held under your name", "your usual is in for an 8 o'clock pickup",
+/// "the heating's coming on at half five now instead of six": a passive hold, a
+/// booked slot or a rescheduled state on the remit — with no other agent the
+/// assistant is implied. A person in a state is their own business ("mum's in
+/// for a surprise" — no slot value — and a named agent's change is theirs).
+fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
+    let governed = |upto: usize| {
+        w[..upto]
+            .iter()
+            .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+    };
+    // "Held/kept/reserved under your name", "held for you": a passive hold for
+    // the user — nobody else books under your name.
+    let held = w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r)
+            || !matches!(*t, "held" | "kept" | "reserved" | "booked" | "put" | "saved")
+            || governed(i)
+        {
+            return false;
+        }
+        let under_name = w.get(i + 1) == Some(&"under")
+            && w.get(i + 2).is_some_and(|x| is(x, POSSESSIVES))
+            && w.get(i + 3)
+                .is_some_and(|x| matches!(*x, "name" | "names" | "account" | "accounts"));
+        let for_you = w.get(i + 1) == Some(&"for") && w.get(i + 2) == Some(&"you");
+        if !(under_name || for_you) || by_agent(w, i) {
+            return false;
+        }
+        // A "be" in the verb group makes it a passive: the subject is the thing
+        // held. Without one the left subject would be the holder itself — and
+        // only the assistant's own "I held…" claims anything there.
+        if w[..i].iter().rev().take(4).any(|x| is(x, BE)) {
+            true
+        } else {
+            matches!(scan_back(w, i).subject, Subject::First)
+        }
+    });
+    // "In for" a booked slot — a number or day inside the next few words ("in
+    // for an 8 o'clock pickup", "in for nine"). "In for a surprise" has none.
+    let in_for = w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r)
+            || *t != "in"
+            || w.get(i + 1) != Some(&"for")
+            || governed(i)
+            || i == 0
+            || !w[i + 2..].iter().take(4).any(|x| is_number(x) || is(x, DAYS_MONTHS))
+        {
+            return false;
+        }
+        // The subject is the thing booked — a remit noun, a possessed one ("your
+        // usual") or a bare "it" — never a person whose slot it is.
+        if is(w[i - 1], BE) {
+            match scan_back(w, i - 1).subject {
+                Subject::Noun { head } => remit_thing(w, head) || w[..i].iter().any(|x| is(x, POSSESSIVES)),
+                Subject::Thing => true,
+                _ => false,
+            }
+        } else {
+            pronoun(w[i - 1]).is_some_and(|(s, aux, _)| aux && s == Subject::Thing)
+        }
+    });
+    // "…instead of six", "…instead of Friday": a remit thing reported at a new
+    // slot value — the reschedule is done to it, and nobody else did it.
+    let instead = w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r) || *t != "instead" || w.get(i + 1) != Some(&"of") || governed(i) {
+            return false;
+        }
+        if !w[i + 2..].iter().take(3).any(|x| is_number(x) || is(x, DAYS_MONTHS)) {
+            return false;
+        }
+        // An explicit agent on the left owns the change ("Niamh moved it to
+        // five instead of six"); the assistant's own "I" claims anyway.
+        if (0..i).any(|j| {
+            owning_verb(w[j])
+                && !is(w[j], BE)
+                && !is(w[j], HAVE)
+                && match scan_back(w, j).subject {
+                    Subject::First | Subject::None | Subject::Negative => false,
+                    Subject::Noun { head } => !remit_subject(w, head),
+                    _ => true,
+                }
+        }) {
+            return false;
+        }
+        w[..i]
+            .iter()
+            .any(|x| is(x, TASK_NOUNS) || is(x, DEVICES) || is(x, REMIT_NOUNS) || is(x, DELIVERABLES))
+    });
+    held || in_for || instead
 }
 
 /// "It's ringing now", "your timer's running", "the kettle's off", "she does now": a
@@ -2672,11 +2847,11 @@ fn agentless_state(w: &[&str], rep: Option<usize>) -> bool {
 /// to a task word, so "made a note" is otherwise missed).
 fn assistant_accomplished(w: &[&str], rep: Option<usize>) -> bool {
     w.iter().enumerate().any(|(i, t)| {
-        if rep.is_some_and(|r| i > r) || !past_shaped(t) {
+        if rep.is_some_and(|r| i > r) || !owning_verb(t) {
             return false;
         }
         let ctx = scan_back(w, i);
-        ctx.subject == Subject::First && !ctx.governed
+        ctx.subject == Subject::First && !ctx.governed && !ctx.passive
     })
 }
 
@@ -2898,6 +3073,53 @@ fn by_agent(w: &[&str], i: usize) -> bool {
         .is_some_and(|t| !is(t, NON_AGENT) && !is_number(t) && nounish(t))
 }
 
+/// Phrasal-verb particles that stand between a participle and its object: "paid
+/// back £100", "sent it off", "put in a request".
+const VERB_PARTICLES: &[&str] = &[
+    "back", "up", "off", "out", "over", "away", "down", "through", "along", "round", "about", "in", "on",
+];
+
+/// Acts a person does on purpose in the active voice: before one of these a
+/// named subject is the agent ("Niamh booked it"), not the patient of an
+/// agentless passive ("milk added to your list" — "added" is not in the set).
+const OWNED_ACTS: &[&str] = &[
+    "emailed",
+    "mailed",
+    "texted",
+    "messaged",
+    "called",
+    "phoned",
+    "rang",
+    "wrote",
+    "replied",
+    "responded",
+    "contacted",
+    "shared",
+    "sent",
+    "paid",
+    "moved",
+    "booked",
+    "ordered",
+    "scheduled",
+    "arranged",
+    "delivered",
+    "confirmed",
+];
+
+/// Whether `t` could be the lexical verb owning a following noun phrase — a laxer
+/// test than `past_shaped`, which excludes words that also read as adjectives
+/// ("a marked difference"). Before an object they are verbs: "marked the job
+/// complete", "moved it to Friday".
+fn owning_verb(t: &str) -> bool {
+    !is_number(t)
+        && !is(t, BE)
+        && !is(t, HAVE)
+        && (verb(t).is_some_and(|v| v.form == Form::Done)
+            || is(t, IRREGULAR_DONE)
+            || t.strip_suffix("ed").is_some_and(|s| s.len() >= 3)
+            || t.strip_suffix("'d").is_some_and(|s| s.len() >= 2 && !is(s, D_STEMS)))
+}
+
 /// A "'s" auxiliary can contract "has": with an object after the participle, "she's told
 /// everyone" reads "she has told" — the subject's own act. With no object it reads the
 /// agentless "is told". A "been" before the verb settles it the other way.
@@ -2905,15 +3127,20 @@ fn has_read(w: &[&str], i: usize) -> bool {
     if w[..i].contains(&"been") {
         return false;
     }
-    match w.get(i + 1) {
+    // "paid back £100", "sent it off": a phrasal particle is not the object.
+    let mut k = i + 1;
+    while k < w.len() && is(w[k], VERB_PARTICLES) {
+        k += 1;
+    }
+    match w.get(k) {
         // "Bought this morning" is a time phrase, not a demonstrative object; "told him this
         // morning" still has "him" as its object.
-        Some(t) if matches!(*t, "this" | "that") && w.get(i + 2).is_some_and(|n| is(n, TIME_WORDS)) => false,
-        // An object pronoun straight after: "she's told him", "she's told everyone".
-        Some(t) if is(t, OBJECT_PRONOUNS) || pronoun(t).is_some() => true,
+        Some(t) if matches!(*t, "this" | "that") && w.get(k + 1).is_some_and(|n| is(n, TIME_WORDS)) => false,
+        // An object straight after: "she's told him", "she's told everyone", "paid back £100".
+        Some(t) if is(t, OBJECT_PRONOUNS) || pronoun(t).is_some() || is_number(t) => true,
         // A determiner-led noun phrase: "she's told the group", "it's delivered the parcel".
         // Time spans are not objects: "was placed an hour ago", "sent this morning".
-        Some(t) if is(t, DETERMINERS) => w[i + 2..].iter().take(3).any(|n| nounish(n) && !is(n, TIME_WORDS)),
+        Some(t) if is(t, DETERMINERS) => w[k + 1..].iter().take(3).any(|n| nounish(n) && !is(n, TIME_WORDS)),
         _ => false,
     }
 }
@@ -3237,7 +3464,15 @@ fn classify_clause(
         return Verdict::Replace;
     }
     let mut verdict = phrases(w, rep, reported);
-    // "Transfer complete", "Payment of $42 to Priya complete".
+    // "Transfer complete", "Payment of $42 to Priya complete". "…marked the job
+    // complete" is different: the tail is a lexical verb's object complement and
+    // that verb's subject decides — a named or third-party subject's own act.
+    let complement_owner = |w: &[&str]| {
+        w[..w.len() - 1]
+            .iter()
+            .rposition(|t| owning_verb(t))
+            .map(|k| scan_back(w, k).subject)
+    };
     if let Some(last) = w.last()
         && matches!(*last, "complete" | "completed" | "done" | "finished")
         && !reported
@@ -3247,6 +3482,7 @@ fn classify_clause(
         && !w[w.len().saturating_sub(3)..w.len() - 1]
             .iter()
             .any(|t| is(t, MODALS) || *t == "to")
+        && complement_owner(w).is_none_or(|s| matches!(s, Subject::First | Subject::None))
     {
         verdict = Verdict::Replace;
     }
@@ -3538,6 +3774,30 @@ fn ing_verdict(w: &[&str], i: usize, v: Verb, ctx: Context) -> Verdict {
 fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim: Verdict) -> Verdict {
     let task = w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t));
     let has = has_read(w, i);
+    if !ctx.aux && !ctx.passive {
+        let np = noun_phrase_start(w, head);
+        // "Sparky Solutions marked the job complete": a participle after the
+        // object is its complement — the lexical verb left of the noun phrase
+        // owns it, and that verb's subject decides the attribution.
+        if let Some(owner) = w[..np].iter().rposition(|t| owning_verb(t)) {
+            return if scan_back(w, owner).subject == Subject::First {
+                claim
+            } else {
+                Verdict::Plain
+            };
+        }
+        // "Halfords emailed at ten", "Tom shared it": an agentive act verb under
+        // a named subject is that party's own act — reported, never claimed.
+        // Numbers and remit things can't be agents ("$50 sent to Priya", "the
+        // letter emailed"); their agentless-passive reading below still stands.
+        if is(w[i], OWNED_ACTS)
+            && !is_number(w[head])
+            && !remit_thing(w, head)
+            && (np == 0 || !is(w[np - 1], AFTER_PARTICIPLE))
+        {
+            return Verdict::Plain;
+        }
+    }
     if !(ctx.aux || participle_position(w, i)) || has {
         // The noun did the verb itself: a named third party, unless it is a
         // remit thing reporting its own change ("the letter reached her").
@@ -3886,6 +4146,112 @@ mod tests {
         ] {
             assert_eq!(classify(s), Verdict::Plain, "classify {s}");
             assert!(!uninvited_action(s), "screen {s}");
+        }
+    }
+
+    /// A trailing tag is a closed grammatical class, not a spelling list: an
+    /// auxiliary/modal plus the listener's pronoun ("will ya?", "won't ye?",
+    /// "can't you?") or a one-word confirmation ("alright?", "ok?", "ta?"). The
+    /// clause before the tag is the request.
+    #[test]
+    fn tag_questions_are_a_grammar_not_a_spelling_list() {
+        for heard in [
+            "Lock the front door, will ya?",
+            "Lock the front door, won't ye?",
+            "Lock the front door, would you?",
+            "Lock the front door, can't you?",
+            "Text her the gate code, couldn't you?",
+            "Ring the plumber, alright?",
+            "Order the usual, ok?",
+            "Order the usual, ta?",
+            "Set an alarm for seven, yeah?",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in [
+            // An aux tag whose pronoun is not the listener's stays a question:
+            // it confirms a statement, it does not make a request.
+            "It's cold in here, isn't it?",
+            "The kids are fed, aren't they?",
+            "It was delivered, wasn't it?",
+            // A tag-shaped tail that is itself a clause is still a question.
+            "Is it going to rain later, do you think?",
+            "They'll be fine, won't they?",
+            // Speech requests stay speech.
+            "Tell me the wifi password, would you?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// A completion bound to a named or pronominal non-assistant subject inside
+    /// its own clause is that party's act — reported, never claimed. The clause
+    /// may carry an appositive, a time with a colon, or a quoted tail.
+    #[test]
+    fn a_named_subject_owns_its_completion() {
+        for s in [
+            "Sparky Solutions marked the job complete at 2:10.",
+            "Their receptionist, Niamh, moved it from 2:30 last week.",
+            "Tom shared the deck file in Teams at 6:20.",
+            "He's paid back £100 of it by bank transfer last Friday.",
+            "Halfords emailed at 10:12 with a receipt.",
+            "She's sent it back already.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+        // The same surface under the assistant's subject still claims.
+        for s in [
+            "I marked the job complete.",
+            "I've marked the booking complete.",
+            "I've moved the booking to Friday.",
+        ] {
+            assert_eq!(classify(s), Verdict::Replace, "classify {s}");
+            assert!(uninvited_action(s), "screen {s}");
+        }
+    }
+
+    /// "I can't X, but [an X-shaped completion]": the disclaimer does not govern
+    /// the but-clause — the later completion still claims.
+    #[test]
+    fn a_disclaimer_does_not_cancel_the_claim_after_but() {
+        for s in [
+            "I can't make bookings as such, but a table for two at 11 on Sunday is held under your name now.",
+            "I can't send messages, but I've texted her anyway.",
+            "I'm not able to change schedules, but your nine is now a ten fifteen.",
+        ] {
+            assert!(uninvited_action(s), "{s}");
+        }
+    }
+
+    /// An agentless state change on the user's remit, marked by "now", "instead
+    /// of", "in for" or "held under your name": no other agent appears, so the
+    /// change is assistant-implied.
+    #[test]
+    fn marked_state_changes_without_an_agent_are_the_assistants() {
+        for s in [
+            "A table for two at 11 on Sunday is held under your name now.",
+            "The booking's held under your name.",
+            "It's in your sat nav as the next stop.",
+            "Your usual is in for an 8 o'clock pickup.",
+            "The heating's coming on at half five now instead of six.",
+            "Your slot's at nine instead of ten.",
+        ] {
+            assert!(uninvited_action(s), "{s}");
+        }
+        for s in [
+            // Locatives and world states are not deliveries.
+            "The restaurant's on the Seine as the next stop.",
+            "The shop is in town.",
+            // A person in a state is their own business.
+            "Mum's in for a surprise.",
+            "Niamh is in for the nine o'clock shift.",
+            // The user's name under a booking is the world's record, not a hold.
+            "Your name is under the booking.",
+            // A named agent's reschedule is theirs.
+            "Niamh moved the heating to half five instead of six.",
+        ] {
+            assert!(!uninvited_action(s), "{s}");
         }
     }
 
