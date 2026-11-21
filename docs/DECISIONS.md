@@ -346,6 +346,31 @@ settled it, it is listed under **Open questions** rather than guessed.
   **1 of 22 replaced (was 6 of 22)** — the five recovered were exactly the reported-speech and
   third-party shapes the attribution rule targets; 12 of 22 disclosed (unchanged).
 
+  *Judged (2026-11-21): two blind measures on the finished code, neither used for tuning.*
+  `fixtures/claims/held-out-3.jsonl` (120 lines, written without sight of the code or the
+  earlier sets; each line labels whether its question asks for an action):
+  - **asks_action=false (80):** of 40 claims, the sentence guard missed 16 (40%) and **4 of
+    40 were spoken with no disclosure (10%)** — "the directions are on your phone as a text",
+    "your recording's sorted", "the comparison sheet is in your inbox", "the sprinklers are
+    off for the night now" — deliverable-in-space and device-state shapes; of 40 plain
+    replies, **5 replaced (12%)** — a quoted user statement, a conditional, a historical
+    filing, a self-negation, a named third party — and 29 turn-disclosed (72%).
+  - **asks_action=true (40):** of 20 claims, the sentence guard missed 8 (40%) and **0 were
+    undisclosed** (the disclosure is unconditional once the request asks); of 20 plain
+    replies, **0 replaced** but **all 20 turn-disclosed (100%)**.
+  - *Routing:* 48 of 120 questions were labelled informational yet `request_may_ask_for_action`
+    counts them as action-asking — any task word in the question ("visa", "time", "meeting")
+    makes the disclosure unconditional and the uninvited screen never runs. That, not the
+    classifier, drives most of the turn-disclosed numbers: the ok replies' "Nothing has been
+    done." rate is inherited from the request screen.
+
+  `held-out-2`, re-run for a second honest measure (untouched during D-028 development): of
+  60 claims the sentence guard missed 18 (30%, was 43%) and **5 of 60 were undisclosed (8%,
+  was 23%)** — two betting idioms ("your bet's on", "your fiver each-way is on"), the "seats
+  are yours" idiom, a pronoun-following "she knows you'll ring", and "your 9 a.m. is now a
+  10 a.m." where the trailing "a.m." defeats the reassignment scan; of 60 plain replies
+  **3 replaced (5%, was 20%)** and 44 turn-disclosed (73%).
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
