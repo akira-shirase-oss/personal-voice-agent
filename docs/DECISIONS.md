@@ -304,6 +304,70 @@ settled it, it is listed under **Open questions** rather than guessed.
   and 45 of 60 got the turn disclosure (75%)**. Any rework of the classifier or screen from
   these patterns is judged on a further blind set, not measured here.*
 
+- **D-028 — A completion counts only when its agent is the assistant (2026-11-21).** The
+  blind set showed the guard firing on completions it never did: third-party acts quoted as
+  facts, reported speech, and world statuses — and missing ones it could only have done. The
+  classifier now attributes every completion-shaped clause before verdicting: only an
+  **assistant-attributed** completion on a turn with no executed evidence is a claim. The
+  attribution is structural, not a phrase list:
+  - **assistant, explicit** — first-person forms and dropped subjects ("I've texted Priya",
+    "sorted you two tickets"), which keep the *Replace* verdict;
+  - **assistant, implied** — a change on the user's remit where only the assistant could be
+    the mover: agentless passives and resultatives on remit nouns and managed people ("your
+    repeat's gone through to the chemist", "the gardener's been asked", "Priya has been
+    notified"), reassignments ("your 9 a.m. is now a 10 a.m."), deliverables now in the
+    user's space ("the seats are yours", "your e-ticket's in your wallet" — the same rule
+    covers category 2 forms, no separate lexicon), and informed contacts ("she knows you're
+    coming") — these claim;
+  - **a named third party** — an active completion by a named subject or third-person pronoun
+    ("Priya sent the money", "she'd already paid") is *Plain*; a `by`-phrase agent likewise;
+  - **quoted or reported speech** — a reporting verb with any non-assistant speaker ("he
+    wrote", "the tracking says", an imperative "tell them…"), or a clause inside quotation
+    marks or after a report-framing colon, suppresses claims inside it; a first-person clause
+    after the report retakes the floor ("…but I haven't checked" still claims);
+  - **the user** — "you've already paid" stays *Plain*;
+  - **the world** — cargo/machinery passives ("your card was declined", "the parcel was
+    delivered"), capacity states ("it's fully booked") and generic statements ("texts sent
+    after midnight are ignored") are *Plain*;
+  - **ambiguous** — an agentless completion that names no mover ("it was dispatched
+    yesterday", "it's on its way") is *Disclose*, never *Replace*: certainty about the
+    completion without certainty about who did it.
+
+  Verbs the assistant owns ("it's been sent") stay claims on a bare "it"; machinery
+  vocabulary ("dispatched", "declined", "delivered" of cargo) on the same subject does not —
+  the verb's lexicon, not the pronoun, carries that distinction. A contracted "'s" reads as
+  *has* only with a real object ("she's told the group" — hers, *Plain*); trailing time spans
+  ("declined twice", "placed an hour ago") are not objects. Development was red-first on
+  newly written shapes plus re-pinned corpus lines; held-out-2 was not run while developing
+  and will judge the change on a further blind set. Measured after the change:
+  `fixtures/claims/corpus.tsv` (now 376 lines incl. the attribution set) — of 178 claims, 168
+  replaced, 9 disclosed, **1 missed (0.6%)**; of 198 plain, 191 intact, 7 disclosed (3.5%),
+  **0 replaced (was 1)**. Held-out-1: **0 of 70 claims undisclosed (was 0)**; plain replies
+  **1 of 22 replaced (was 6 of 22)** — the five recovered were exactly the reported-speech and
+  third-party shapes the attribution rule targets; 12 of 22 disclosed (unchanged).
+
+- **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
+  unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
+  been done." Appending it that often trains the user to ignore the disclosure, which is the
+  failure mode it exists to prevent — but loosening it is a spoken-experience decision, not a
+  classifier fix. Options, with what is already measured:
+  - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
+    disclosure's meaning stays constant and every uncertain turn is covered; zero
+    implementation cost;
+  - **disclose only on assistant-attributed claims** — D-028 already narrows most of the
+    surface: on held-out-1 the turn-disclosed oks held at 12 of 22 while replaced oks fell
+    6→1, so part of the fix may already have landed; what remains are ambiguous-attribution
+    turns where the speaker still might be the assistant;
+  - **disclose once per session** ("I can't act on anything yet") — kills per-turn noise but
+    weakens the point-of-claim signal: the disclosure lands on turn one, long before the
+    reply that needs it;
+  - **disclose once per conversation stretch / on first unevidenced claim** — middle ground;
+    needs a "stretch" definition and still decouples the signal from the claim.
+
+  The trade-off is constant: each reduction in disclosure frequency raises the cost of the
+  one undisclosed claim that gets through — held-out-2 measured 14 of 60. No change is made
+  here; the maintainer picks the policy, and any change is judged on the next blind set.
+
 ## Open questions
 
 - **Channels for external actions** — V4's contract must name them (email?

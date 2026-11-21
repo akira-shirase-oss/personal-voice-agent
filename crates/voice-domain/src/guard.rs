@@ -5,17 +5,25 @@
 //! sentence that might assert a completed action gets a disclosure, and only sentences that
 //! assert nothing of the kind are spoken untouched.
 //!
-//! [`classify`] gives one of three verdicts per sentence:
+//! [`classify`] gives one of three verdicts per sentence, and the deciding question is the
+//! completion's *agent* (D-028): only a completion attributed to the assistant is a claim —
+//! explicitly ("I've texted Priya") or implied, where an agentless change lands on the user's
+//! remit — the people, things and arrangements this assistant manages ("she's been notified",
+//! "your repeat's gone through", "your nine is now a ten"). A completion attributed to anyone
+//! else is not the assistant's claim: a named third party ("Priya sent the money"), quoted or
+//! reported speech ("she said she'd paid it", `He wrote: "…"`), the world's machinery ("the
+//! parcel was delivered", "your card was declined") or the user ("you've already paid it").
 //! - [`Verdict::Replace`] — it says an action happened: a past, perfect, passive or headline
-//!   form of an action verb with the assistant, a task, a person or a pronoun as its subject
-//!   ("I've texted Priya", "Priya has been notified", "$50 sent to Priya", "Sent!"), a
-//!   completion phrase ("on its way", "went out", "consider it done"), or "I'm sending it now".
-//!   The session speaks [`DRAFT_DISCLAIMER`] instead.
+//!   form of an action verb attributed to the assistant, explicit or implied ("I've texted
+//!   Priya", "Priya has been notified", "$50 sent to Priya", "Sent!"), a completion phrase
+//!   ("on its way", "went out", "consider it done") on a remit subject, or "I'm sending it
+//!   now". The session speaks [`DRAFT_DISCLAIMER`] instead.
 //! - [`Verdict::Disclose`] — it might say so: a less certain form, such as a general verb with
-//!   a pronoun subject ("It's set for 9"), a third party's action ("Priya sent the money"), or
-//!   a claim inside a quoted draft. The session speaks it as written, and its turn ends with
-//!   [`DRAFT_DISCLOSURE`].
-//! - [`Verdict::Plain`] — no completed action is asserted: spoken as written.
+//!   a pronoun subject ("It's set for 9") or a completion whose agent cannot be resolved
+//!   ("it's on its way", "it was dispatched", "the letter reached her"). The session speaks
+//!   it as written, and its turn ends with [`DRAFT_DISCLOSURE`].
+//! - [`Verdict::Plain`] — no completed action is asserted, or the completion is someone
+//!   else's: spoken as written.
 //!
 //! A verb is not a claim when its own clause makes it one of: a question ("Have you sent
 //! it?"), negated ("nothing was sent", "I haven't paid it"), modal or future ("it will be
@@ -620,6 +628,579 @@ const FRAMES: &[&str] = &[
     "suggestion",
     "template",
 ];
+/// Speech and reporting verbs: when a third party or the user is their subject, the words that
+/// follow are the reporter's, not the assistant's ("she said…", "tracking says…").
+const REPORT_VERBS: &[&str] = &[
+    "say",
+    "says",
+    "said",
+    "tell",
+    "tells",
+    "told",
+    "write",
+    "writes",
+    "wrote",
+    "written",
+    "read",
+    "reads",
+    "report",
+    "reports",
+    "reported",
+    "claim",
+    "claims",
+    "claimed",
+    "reckon",
+    "reckons",
+    "reckoned",
+    "mention",
+    "mentions",
+    "mentioned",
+    "state",
+    "states",
+    "stated",
+    "reply",
+    "replies",
+    "replied",
+    "respond",
+    "responds",
+    "responded",
+    "text",
+    "texts",
+    "texted",
+    "message",
+    "messages",
+    "messaged",
+    "email",
+    "emails",
+    "emailed",
+    "post",
+    "posts",
+    "posted",
+    "note",
+    "notes",
+    "noted",
+    "add",
+    "adds",
+    "added",
+    "insist",
+    "insists",
+    "insisted",
+    "confirm",
+    "confirms",
+    "confirmed",
+    "admit",
+    "admits",
+    "admitted",
+    "boast",
+    "boasts",
+    "boasted",
+    "complain",
+    "complains",
+    "complained",
+    "explain",
+    "explains",
+    "explained",
+    "suggest",
+    "suggests",
+    "suggested",
+    "announce",
+    "announces",
+    "announced",
+    "reveal",
+    "reveals",
+    "revealed",
+    "think",
+    "thinks",
+    "thought",
+    "figure",
+    "figures",
+    "figured",
+    "hear",
+    "hears",
+    "heard",
+    "expect",
+    "expects",
+    "expected",
+    "warn",
+    "warns",
+    "warned",
+    "remind",
+    "reminds",
+    "reminded",
+    "ask",
+    "asks",
+    "asked",
+    "advise",
+    "advises",
+    "advised",
+    "swear",
+    "swears",
+    "swore",
+    "promise",
+    "promises",
+    "promised",
+    "phone",
+    "phones",
+    "phoned",
+    "call",
+    "calls",
+    "called",
+    "rang",
+];
+/// The user's remit beyond `TASK_NOUNS`, `DEVICES` and `DELIVERABLES`: things this assistant
+/// manages whose change an agentless report attributes to it.
+const REMIT_NOUNS: &[&str] = &[
+    "repeat",
+    "repeats",
+    "prescription",
+    "prescriptions",
+    "refill",
+    "refills",
+    "medication",
+    "medications",
+    "medicine",
+    "dose",
+    "doses",
+    "bet",
+    "bets",
+    "wager",
+    "wagers",
+    "stake",
+    "stakes",
+    "slot",
+    "slots",
+    "schedule",
+    "schedules",
+    "itinerary",
+    "itineraries",
+    "membership",
+    "memberships",
+    "voucher",
+    "vouchers",
+    "place",
+    "places",
+    "spot",
+    "spots",
+    "rota",
+    "rotas",
+    "roster",
+    "rosters",
+    "diary",
+    "diaries",
+    "shift",
+    "shifts",
+    "savings",
+    "letters",
+    "boiler",
+    "boilers",
+    "furnace",
+    "furnaces",
+    "radiator",
+    "radiators",
+    "dishwasher",
+    "dishwashers",
+    "fridge",
+    "freezer",
+    "oven",
+    "ovens",
+    "cooker",
+    "cookers",
+    "washing",
+    "laundry",
+    "lawn",
+    "lawns",
+    "hedge",
+    "hedges",
+    "garden",
+    "gardens",
+    "gutter",
+    "gutters",
+    "chimney",
+    "chimneys",
+    "fence",
+    "fences",
+];
+/// People an assistant contacts on the user's behalf; an agentless report about one ("the
+/// gardener's been asked") reads as the assistant's doing.
+const CONTACTS: &[&str] = &[
+    "gardener",
+    "gardeners",
+    "cleaner",
+    "cleaners",
+    "plumber",
+    "plumbers",
+    "electrician",
+    "electricians",
+    "decorator",
+    "decorators",
+    "handyman",
+    "builder",
+    "builders",
+    "mechanic",
+    "mechanics",
+    "dentist",
+    "dentists",
+    "doctor",
+    "doctors",
+    "vet",
+    "vets",
+    "hairdresser",
+    "hairdressers",
+    "barber",
+    "barbers",
+    "landlord",
+    "landlords",
+    "landlady",
+    "solicitor",
+    "solicitors",
+    "accountant",
+    "accountants",
+    "nanny",
+    "nannies",
+    "babysitter",
+    "babysitters",
+    "sitter",
+    "tutor",
+    "tutors",
+    "instructor",
+    "instructors",
+    "carer",
+    "carers",
+    "nurse",
+    "nurses",
+    "physio",
+    "physios",
+    "engineer",
+    "engineers",
+    "technician",
+    "technicians",
+    "plasterer",
+    "plasterers",
+    "roofer",
+    "roofers",
+    "caterer",
+    "caterers",
+    "driver",
+    "drivers",
+    "chauffeur",
+    "surgeon",
+    "surgeons",
+    "hygienist",
+    "optician",
+    "opticians",
+    "tradesman",
+    "workman",
+    "workmen",
+];
+/// The user's own people: "your mum's been told", "she knows you're coming".
+const RELATIONS: &[&str] = &[
+    "mum",
+    "mom",
+    "mother",
+    "dad",
+    "father",
+    "parent",
+    "parents",
+    "sister",
+    "sisters",
+    "brother",
+    "brothers",
+    "wife",
+    "husband",
+    "partner",
+    "son",
+    "sons",
+    "daughter",
+    "daughters",
+    "aunt",
+    "auntie",
+    "uncle",
+    "uncles",
+    "cousin",
+    "cousins",
+    "grandma",
+    "grandpa",
+    "grandmother",
+    "grandfather",
+    "nan",
+    "granny",
+    "gran",
+    "niece",
+    "nephew",
+    "boss",
+    "neighbour",
+    "neighbours",
+    "neighbor",
+    "neighbors",
+    "friend",
+    "friends",
+    "flatmate",
+    "flatmates",
+    "roommate",
+    "roommates",
+    "colleague",
+    "colleagues",
+    "client",
+    "clients",
+    "boyfriend",
+    "girlfriend",
+    "fiance",
+    "fiancee",
+];
+/// Places the user's things can be put: "the voucher's in your wallet".
+const SPACE: &[&str] = &[
+    "wallet",
+    "wallets",
+    "account",
+    "accounts",
+    "inbox",
+    "inboxes",
+    "mailbox",
+    "mailboxes",
+    "calendar",
+    "calendars",
+    "diary",
+    "diaries",
+    "list",
+    "lists",
+    "phone",
+    "phones",
+    "folder",
+    "folders",
+    "basket",
+    "baskets",
+    "library",
+    "app",
+    "apps",
+    "bag",
+    "bags",
+    "drawer",
+    "drawers",
+    "purse",
+    "handbag",
+    "locker",
+    "lockers",
+];
+/// What couriers, airlines, banks and venues move or hold — a completion on one is the
+/// machinery's status, not the assistant's claim.
+const WORLD_CARGO: &[&str] = &[
+    "parcel",
+    "parcels",
+    "package",
+    "packages",
+    "order",
+    "orders",
+    "shipment",
+    "shipments",
+    "item",
+    "items",
+    "goods",
+    "groceries",
+    "takeaway",
+    "takeaways",
+    "refund",
+    "refunds",
+    "card",
+    "cards",
+    "flight",
+    "flights",
+    "train",
+    "trains",
+    "coach",
+    "coaches",
+    "courier",
+    "couriers",
+    "mail",
+    "delivery",
+    "deliveries",
+];
+/// Completed forms whose actor is the world's machinery — couriers, banks, airlines — whoever
+/// holds the subject. "Sent" stays out: it is the assistant's own verb, so "it's been sent"
+/// remains a claim.
+const MACHINERY_WORDS: &[&str] = &[
+    "delayed",
+    "diverted",
+    "landed",
+    "departed",
+    "arrived",
+    "expected",
+    "grounded",
+    "detained",
+    "declined",
+    "delivered",
+    "processed",
+    "dispatched",
+    "shipped",
+    "charged",
+    "scheduled",
+    "rejected",
+    "returned",
+    "refunded",
+    "confirmed",
+    "held",
+    "bounced",
+    "blocked",
+];
+/// Days and months that can be a reassigned value: "your meeting is now Friday".
+const DAYS_MONTHS: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "tonight",
+    "tomorrow",
+    "morning",
+    "afternoon",
+    "evening",
+    "midday",
+    "noon",
+    "midnight",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+/// Time-span tokens — "an hour ago", "this morning", "a hundred times" are durations, not
+/// objects ("was placed an hour ago" is not "has placed an hour").
+const TIME_WORDS: &[&str] = &[
+    "hour",
+    "hours",
+    "minute",
+    "minutes",
+    "second",
+    "seconds",
+    "moment",
+    "moments",
+    "instant",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "fortnight",
+    "month",
+    "months",
+    "year",
+    "years",
+    "decade",
+    "decades",
+    "century",
+    "centuries",
+    "morning",
+    "mornings",
+    "afternoon",
+    "afternoons",
+    "evening",
+    "evenings",
+    "night",
+    "nights",
+    "tonight",
+    "midnight",
+    "noon",
+    "midday",
+    "weekend",
+    "weekends",
+    "while",
+    "time",
+    "times",
+    "ago",
+    "earlier",
+    "later",
+];
+const D_STEMS: &[&str] = &[
+    "i", "you", "he", "she", "we", "they", "it", "that", "there", "who", "what", "where", "when", "how", "why",
+];
+/// Auxiliaries folded into a negator: they still count as a finite verb.
+const FINITE_NEGATORS: &[&str] = &[
+    "can't",
+    "cannot",
+    "won't",
+    "wouldn't",
+    "couldn't",
+    "shouldn't",
+    "mustn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+    "don't",
+    "doesn't",
+    "didn't",
+    "haven't",
+    "hasn't",
+    "hadn't",
+    "ain't",
+];
+/// After "by", a word that is a channel, a time or a manner — never the agent.
+const NON_AGENT: &[&str] = &[
+    "me",
+    "i",
+    "you",
+    "myself",
+    "yourself",
+    "himself",
+    "herself",
+    "itself",
+    "ourselves",
+    "themselves",
+    "post",
+    "mail",
+    "email",
+    "text",
+    "texts",
+    "phone",
+    "fax",
+    "website",
+    "online",
+    "app",
+    "hand",
+    "sea",
+    "air",
+    "road",
+    "rail",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "tonight",
+    "morning",
+    "afternoon",
+    "evening",
+    "night",
+    "noon",
+    "midnight",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "weekend",
+    "week",
+    "month",
+    "year",
+    "now",
+    "then",
+    "end",
+    "far",
+    "mistake",
+    "accident",
+    "chance",
+    "default",
+    "force",
+    "luck",
+    "heart",
+];
 /// Opens a clause that is a question even without a question mark at its end.
 const INVERTED: &[&str] = &[
     "have", "has", "had", "did", "do", "does", "is", "are", "was", "were", "can", "could", "would", "will", "should",
@@ -961,7 +1542,9 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
                 join = Join::Start;
             }
             ':' => {
-                framed |= words(part).iter().any(|w| is(w, FRAMES));
+                // A report verb frames what follows the colon too ("he wrote: 'done'"), even
+                // where single quotes leave it outside quotation marks.
+                framed |= words(part).iter().any(|w| is(w, FRAMES) || is(w, REPORT_VERBS));
                 join = Join::Start;
             }
             _ => {}
@@ -1203,8 +1786,59 @@ const POSSESSION_FILLERS: &[&str] = &[
 
 /// Irregular participles an "-ed" shape cannot mark ("I've dealt with it", "it was left").
 const IRREGULAR_DONE: &[&str] = &[
-    "taken", "dealt", "made", "done", "gone", "put", "left", "seen", "heard", "read", "met", "kept", "given", "found",
-    "meant", "lent", "spent", "rung", "brought", "thought", "sought", "caught", "taught", "sold", "held", "handled",
+    "taken",
+    "dealt",
+    "made",
+    "done",
+    "gone",
+    "put",
+    "left",
+    "seen",
+    "heard",
+    "read",
+    "met",
+    "kept",
+    "given",
+    "found",
+    "meant",
+    "lent",
+    "spent",
+    "rung",
+    "brought",
+    "thought",
+    "sought",
+    "caught",
+    "taught",
+    "sold",
+    "held",
+    "handled",
+    "told",
+    "said",
+    "went",
+    "sent",
+    "paid",
+    "bought",
+    "built",
+    "felt",
+    "hid",
+    "laid",
+    "led",
+    "lost",
+    "ran",
+    "shot",
+    "slept",
+    "slid",
+    "stood",
+    "stuck",
+    "swore",
+    "swept",
+    "swung",
+    "understood",
+    "woke",
+    "won",
+    "wore",
+    "wrote",
+    "written",
 ];
 
 /// "-ed" words that describe a state, not a completed act: "I'm tired", "it was noted" is a
@@ -1309,7 +1943,10 @@ fn past_shaped(t: &str) -> bool {
     if is(t, PARTICIPLE_ADJECTIVES) || is(t, BE) || is(t, HAVE) || is_number(t) {
         return false;
     }
-    is(t, IRREGULAR_DONE) || t.strip_suffix("ed").is_some_and(|stem| stem.len() >= 3)
+    is(t, IRREGULAR_DONE)
+        || t.strip_suffix("ed").is_some_and(|stem| stem.len() >= 3)
+        || t.strip_suffix("'d")
+            .is_some_and(|stem| stem.len() >= 2 && !is(stem, D_STEMS))
 }
 
 /// Whether a sentence asserts an action consequence the request never asked for (D-027). A
@@ -1329,14 +1966,41 @@ pub fn uninvited_action(text: &str) -> bool {
     sentences(&lowered).into_iter().any(|(sentence, question)| {
         let clauses = clauses(sentence);
         let last = clauses.len().saturating_sub(1);
-        clauses.iter().enumerate().any(|(n, clause)| {
-            !clause.quoted && !is_question(&clause.words, question && n == last) && uninvited_clause(&clause.words)
-        })
+        let mut reported = false;
+        let mut hit = false;
+        for (n, clause) in clauses.iter().enumerate() {
+            let w = &clause.words;
+            reported |= w.first().is_some_and(|t| {
+                matches!(
+                    *t,
+                    "according" | "per" | "apparently" | "reportedly" | "supposedly" | "allegedly"
+                )
+            });
+            let rep = report_at(w);
+            let floor = w
+                .first()
+                .is_some_and(|t| pronoun(t).is_some_and(|(s, _, _)| s == Subject::First));
+            if !clause.quoted
+                && (!reported || floor)
+                && !is_question(w, question && n == last)
+                && uninvited_clause(w, rep)
+            {
+                hit = true;
+            }
+            reported |= rep.is_some();
+        }
+        hit
     })
 }
 
-fn uninvited_clause(w: &[&str]) -> bool {
-    assistant_accomplished(w) || delivery_as_possession(w) || arrangement_state(w)
+fn uninvited_clause(w: &[&str], rep: Option<usize>) -> bool {
+    dropped_subject(w, rep)
+        || remit_change(w, rep)
+        || deliverable_in_space(w, rep)
+        || informed_contact(w, rep)
+        || assistant_accomplished(w, rep)
+        || delivery_as_possession(w, rep)
+        || arrangement_state(w, rep)
 }
 
 /// "I sorted that", "I've noted it", "we dropped it off", "I made a note": the assistant
@@ -1344,9 +2008,9 @@ fn uninvited_clause(w: &[&str]) -> bool {
 /// is beside the point — a completed form under a first-person subject is an uninvited
 /// claim whether or not `classify` has a verb for it (its task-only verbs only claim next
 /// to a task word, so "made a note" is otherwise missed).
-fn assistant_accomplished(w: &[&str]) -> bool {
+fn assistant_accomplished(w: &[&str], rep: Option<usize>) -> bool {
     w.iter().enumerate().any(|(i, t)| {
-        if !past_shaped(t) {
+        if rep.is_some_and(|r| i > r) || !past_shaped(t) {
             return false;
         }
         let ctx = scan_back(w, i);
@@ -1358,9 +2022,9 @@ fn assistant_accomplished(w: &[&str]) -> bool {
 /// possession. `phrases` names a few objects; an uninvited one may be anything definite
 /// (it/them/the…) or quantified ("forty dollars", "three tickets"), while "she has a
 /// brother" stays a fact about her.
-fn delivery_as_possession(w: &[&str]) -> bool {
+fn delivery_as_possession(w: &[&str], rep: Option<usize>) -> bool {
     w.iter().enumerate().any(|(i, t)| {
-        if !matches!(*t, "has" | "have" | "got") {
+        if rep.is_some_and(|r| i > r) || !matches!(*t, "has" | "have" | "got") {
             return false;
         }
         let after = &w[i + 1..];
@@ -1394,9 +2058,10 @@ fn delivery_as_possession(w: &[&str]) -> bool {
 
 /// "Your reminder is in", "it's in": a task or thing reported in the state "in" — and the
 /// arrangement idioms a state can be phrased as.
-fn arrangement_state(w: &[&str]) -> bool {
+fn arrangement_state(w: &[&str], rep: Option<usize>) -> bool {
     for phrase in ARRANGEMENT {
         if let Some(i) = w.windows(phrase.len()).position(|win| win == *phrase)
+            && rep.is_none_or(|r| i <= r)
             && !scan_back(w, i).governed
         {
             return true;
@@ -1404,7 +2069,7 @@ fn arrangement_state(w: &[&str]) -> bool {
     }
     w.iter()
         .enumerate()
-        .any(|(i, t)| *t == "in" && i >= 1 && arranged_in(w, i))
+        .any(|(i, t)| rep.is_none_or(|r| i <= r) && *t == "in" && i >= 1 && arranged_in(w, i))
 }
 
 /// "Your reminder is in", "it's in", "you're in": the state "in" claimed for a task, a thing
@@ -1427,6 +2092,409 @@ fn arranged_in(w: &[&str], i: usize) -> bool {
             .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
 }
 
+/// Whether `t` can head a noun phrase — anything that is not a verb form, a function word or
+/// a question word. Loose on purpose: its callers bound it with the role they check.
+fn nounish(t: &str) -> bool {
+    !(is(t, BE)
+        || is(t, HAVE)
+        || is(t, GET)
+        || is(t, MODALS)
+        || is(t, NEGATORS)
+        || is(t, FINITE_NEGATORS)
+        || is(t, NEG_SUBJECTS)
+        || is(t, ADVERBS)
+        || is(t, HABITUAL)
+        || is(t, CONDITIONAL)
+        || is(t, DESIRE)
+        || is(t, FRAMES)
+        || is(t, ARTICLES)
+        || is(t, POSSESSIVES)
+        || is(t, DETERMINERS)
+        || is(t, OBJECT_PRONOUNS)
+        || is(t, AFTER_PARTICIPLE)
+        || is(t, INFORMATIONAL)
+        || is(t, D_STEMS)
+        || matches!(
+            t,
+            "someone" | "somebody" | "anyone" | "anybody" | "everyone" | "everybody"
+        ))
+}
+
+/// Where the noun phrase ending at `head` begins — the same walk `scan_back` makes.
+fn noun_phrase_start(w: &[&str], head: usize) -> usize {
+    let mut start = head;
+    while start > 0 && (is(w[start - 1], DETERMINERS) || is_number(w[start - 1]) || is(w[start - 1], TASK_NOUNS)) {
+        start -= 1;
+    }
+    start
+}
+
+/// A managed *thing*: a task noun, device, deliverable or remit noun — or a slot named by its
+/// value ("your nine o'clock"). Its own change reads as the assistant's doing. Persons are
+/// handled separately: they act for themselves.
+fn remit_thing(w: &[&str], head: usize) -> bool {
+    let Some(&h) = w.get(head) else { return false };
+    if is(h, TASK_NOUNS) || is(h, DEVICES) || is(h, DELIVERABLES) || is(h, REMIT_NOUNS) || is(h, FOREIGN) {
+        return true;
+    }
+    let start = noun_phrase_start(w, head);
+    matches!(w[start], "the" | "your" | "my" | "his" | "her" | "their" | "its")
+        && w[start..=head].iter().any(|t| is_number(t))
+}
+
+/// The user's remit: managed things, plus the people an assistant contacts on the user's
+/// behalf ("the gardener's been asked", "your mum's been told").
+fn remit_subject(w: &[&str], head: usize) -> bool {
+    remit_thing(w, head) || w.get(head).is_some_and(|h| is(h, CONTACTS) || is(h, RELATIONS))
+}
+
+/// "Many letters were sent during the war": an indefinite or quantified subject is nobody's
+/// remit — the user's things are definite ("the", "your") or named.
+fn generic_subject(w: &[&str], head: usize) -> bool {
+    head > 0
+        && w[..head].iter().any(|t| {
+            matches!(
+                *t,
+                "many"
+                    | "some"
+                    | "several"
+                    | "few"
+                    | "most"
+                    | "lots"
+                    | "plenty"
+                    | "various"
+                    | "countless"
+                    | "hundreds"
+                    | "thousands"
+                    | "millions"
+                    | "every"
+                    | "each"
+                    | "all"
+                    | "both"
+                    | "any"
+                    | "multiple"
+            )
+        })
+        && !w[..head].iter().any(|t| is(t, POSSESSIVES))
+}
+
+/// "The parcel was delivered", "your card was declined", "the flight was delayed": what
+/// couriers, airlines and banks move or hold. Its status is the machinery's, whoever says it.
+/// Strong machinery words are the machinery's exclusively ("declined" is only ever a bank);
+/// weaker ones yield to a possessive — "your refund has been processed" is the remit's claim
+/// where "the refund was processed" is the merchant's status.
+fn world_status(w: &[&str], i: usize, head: usize) -> bool {
+    if !w.get(head).is_some_and(|h| is(h, WORLD_CARGO)) {
+        return false;
+    }
+    if matches!(
+        w[i],
+        "declined"
+            | "delayed"
+            | "diverted"
+            | "landed"
+            | "departed"
+            | "grounded"
+            | "detained"
+            | "bounced"
+            | "blocked"
+            | "shipped"
+            | "dispatched"
+            | "arrived"
+            | "expected"
+    ) {
+        return true;
+    }
+    // "Scheduled to arrive": a timetable status, whoever runs it.
+    if w[i] == "scheduled" && w.get(i + 1) == Some(&"to") {
+        return true;
+    }
+    let possessed = head > 0 && w[..head].iter().any(|t| is(t, POSSESSIVES));
+    is(w[i], MACHINERY_WORDS) && !possessed
+}
+
+/// "Delivered by the courier", "approved by the bank", "delayed by fog": an explicit agent
+/// names someone else. Channels and times after "by" are not agents ("by post", "by Friday").
+fn by_agent(w: &[&str], i: usize) -> bool {
+    if w.get(i + 1) != Some(&"by") {
+        return false;
+    }
+    let mut k = i + 2;
+    while k < w.len() && (is(w[k], DETERMINERS) || is(w[k], ADVERBS)) {
+        k += 1;
+    }
+    w.get(k)
+        .is_some_and(|t| !is(t, NON_AGENT) && !is_number(t) && nounish(t))
+}
+
+/// A "'s" auxiliary can contract "has": with an object after the participle, "she's told
+/// everyone" reads "she has told" — the subject's own act. With no object it reads the
+/// agentless "is told". A "been" before the verb settles it the other way.
+fn has_read(w: &[&str], i: usize) -> bool {
+    if w[..i].contains(&"been") {
+        return false;
+    }
+    match w.get(i + 1) {
+        // "Bought this morning" is a time phrase, not a demonstrative object; "told him this
+        // morning" still has "him" as its object.
+        Some(t) if matches!(*t, "this" | "that") && w.get(i + 2).is_some_and(|n| is(n, TIME_WORDS)) => false,
+        // An object pronoun straight after: "she's told him", "she's told everyone".
+        Some(t) if is(t, OBJECT_PRONOUNS) || pronoun(t).is_some() => true,
+        // A determiner-led noun phrase: "she's told the group", "it's delivered the parcel".
+        // Time spans are not objects: "was placed an hour ago", "sent this morning".
+        Some(t) if is(t, DETERMINERS) => w[i + 2..].iter().take(3).any(|n| nounish(n) && !is(n, TIME_WORDS)),
+        _ => false,
+    }
+}
+
+/// "It's fully booked", "the venue's booked out": a capacity state, not an act — the place is
+/// full, whoever filled it.
+fn capacity_state(w: &[&str], i: usize, v: Verb) -> bool {
+    if !matches!(v.lemma, "book" | "reserve") {
+        return false;
+    }
+    (i > 0 && matches!(w[i - 1], "fully" | "solid" | "completely" | "totally" | "entirely"))
+        || w.get(i + 1).is_some_and(|n| matches!(*n, "out" | "up"))
+        || w.iter().any(|t| is(t, HABIT_AFTER))
+}
+
+/// "Texts sent after midnight are ignored", "sent emails can't be unsent": a reduced
+/// relative — the participle modifies the noun and the clause's own verb comes later.
+fn generic_attributive(w: &[&str], i: usize) -> bool {
+    w[i + 1..]
+        .iter()
+        .any(|t| is(t, BE) || is(t, MODALS) || is(t, FINITE_NEGATORS) || verb(t).is_some())
+}
+
+/// The index of a reporting verb in `w` whose subject is anyone but the assistant — "she
+/// said…", "the tracking says…", "mum texted that…" — or an imperative that hands the words
+/// to someone else ("tell them…"). Words the verb reports are its speaker's, not the
+/// assistant's.
+fn report_at(w: &[&str]) -> Option<usize> {
+    w.iter()
+        .enumerate()
+        .filter(|(_, t)| is(t, REPORT_VERBS))
+        .find_map(|(i, _)| {
+            if i == 0 {
+                // A report verb with an object after it is an imperative handing the words
+                // on ("tell them…", "text her that…"); as a bare noun it is a subject
+                // ("message sent", "the post came").
+                return w
+                    .get(1)
+                    .is_some_and(|n| is(n, OBJECT_PRONOUNS) || pronoun(n).is_some() || is(n, DETERMINERS))
+                    .then_some(0);
+            }
+            let mut j = i;
+            while j > 0 && (is(w[j - 1], ADVERBS) || is(w[j - 1], HABITUAL)) {
+                j -= 1;
+            }
+            let subject = *w.get(j.checked_sub(1)?)?;
+            match pronoun(subject) {
+                Some((Subject::Third | Subject::Second | Subject::Thing, _, _)) => Some(i),
+                Some(_) => None,
+                None => nounish(subject).then_some(i),
+            }
+        })
+}
+
+/// "Water is added slowly while you stir": a present passive wrapped in a temporal
+/// subordinator reads as a procedure step, not as something anyone completed. Needs a real
+/// clause after the subordinator — "posted before Friday" is still a deadline.
+fn procedural(w: &[&str], i: usize, head: usize, past: bool) -> bool {
+    !past
+        && !remit_thing(w, head)
+        && w.iter().enumerate().any(|(k, t)| {
+            k > i
+                && matches!(*t, "while" | "before" | "after" | "until" | "when" | "once" | "till")
+                && w[k + 1..]
+                    .iter()
+                    .take(4)
+                    .any(|n| pronoun(n).is_some() || verb(n).is_some())
+        })
+}
+
+/// "…is now a ten fifteen": the value after "now" is a slot's new value, not a state.
+fn new_value(w: &[&str], k: usize) -> bool {
+    let mut m = k;
+    while m < w.len() && is(w[m], ARTICLES) {
+        m += 1;
+    }
+    w.get(m)
+        .is_some_and(|t| is_number(t) || is(t, DAYS_MONTHS) || nounish(t))
+}
+
+/// A completed form with no subject of its own is the speaker's own report — the assistant's
+/// voice ("sorted your cousin a seat", "have nudged the landlord"). Pronouns, other verbs,
+/// governors and plain nouns to its left all count as a subject.
+fn dropped_subject(w: &[&str], rep: Option<usize>) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r) || !past_shaped(t) {
+            return false;
+        }
+        // "Done properly, the glue takes an hour": a manner headline, not a completion.
+        if i == 0
+            && w.len() <= 2
+            && w.get(1).is_some_and(|n| {
+                is(n, ADVERBS)
+                    || n.ends_with("ly")
+                    || matches!(
+                        *n,
+                        "well" | "solid" | "full" | "over" | "empty" | "bare" | "thin" | "short"
+                    )
+            })
+        {
+            return false;
+        }
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let t = w[j];
+            if is(t, ADVERBS) || is(t, HABITUAL) || is(t, BE) || is(t, HAVE) || is(t, MODALS) {
+                continue;
+            }
+            // Anything else to the left is the subject or its governor.
+            return false;
+        }
+        true
+    })
+}
+
+/// "The gardener's been asked", "the voucher's in the post", "your slot moved to Friday": an
+/// agentless change on the remit — the people and things this assistant manages — reads as
+/// the assistant's doing. A managed *thing* doing the verb itself counts too ("the letter
+/// reached her"); a person doing it does not ("the gardener asked about the gate").
+fn remit_change(w: &[&str], rep: Option<usize>) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r) || !past_shaped(t) {
+            return false;
+        }
+        let ctx = scan_back(w, i);
+        if ctx.governed || by_agent(w, i) {
+            return false;
+        }
+        match ctx.subject {
+            Subject::Noun { head } => {
+                if world_status(w, i, head) {
+                    return false;
+                }
+                if ctx.aux {
+                    remit_subject(w, head)
+                } else {
+                    remit_thing(w, head)
+                }
+            }
+            Subject::Thing => ctx.aux,
+            _ => false,
+        }
+    }) || {
+        // "Your nine is now a ten fifteen": the remit reassigned — be + now + a new value.
+        (0..w.len()).any(|i| {
+            rep.is_none_or(|r| i < r)
+                && is(w[i], BE)
+                && w.get(i + 1) == Some(&"now")
+                && new_value(w, i + 2)
+                && matches!(scan_back(w, i).subject, Subject::Noun { head } if remit_subject(w, head))
+        })
+    }
+}
+
+/// "The voucher's in your wallet", "two seats are yours", "your bet's on for Saturday": a
+/// deliverable reported in the user's space or held for them — the done half of a delivery.
+fn deliverable_in_space(w: &[&str], rep: Option<usize>) -> bool {
+    let remit_left = |upto: usize| {
+        w[..upto]
+            .iter()
+            .any(|t| is(t, TASK_NOUNS) || is(t, DELIVERABLES) || is(t, REMIT_NOUNS) || is(t, FOREIGN))
+    };
+    // "…are yours", "the seats are yours now".
+    let held = w.windows(2).enumerate().any(|(i, win)| {
+        rep.is_none_or(|r| i < r)
+            && is(win[0], BE)
+            && win[1] == "yours"
+            && (remit_left(i) || w[..i].iter().any(|t| is_number(t)))
+    });
+    // "…in your wallet": be + in/on + a possessive + a space, over a remit subject.
+    let in_space = (0..w.len()).any(|i| {
+        if rep.is_some_and(|r| i > r) || !matches!(w[i], "in" | "inside" | "on") {
+            return false;
+        }
+        let mut k = i + 1;
+        if w.get(k).is_some_and(|t| is(t, POSSESSIVES)) {
+            k += 1;
+        }
+        w.get(k).is_some_and(|t| is(t, SPACE)) && remit_left(i)
+    });
+    // "…gone to Raj's account": a completed go + "to" + a space ("raj's" → "raj is").
+    let to_space = (0..w.len()).any(|i| {
+        rep.is_none_or(|r| i <= r)
+            && matches!(w[i], "gone" | "went")
+            && (i + 1..w.len().min(i + 5)).any(|k| {
+                w[k] != "to" || {
+                    let mut m = k + 1;
+                    if w.get(m).is_some_and(|t| is(t, POSSESSIVES)) {
+                        m += 1;
+                    } else if w.get(m + 1) == Some(&"is") && w.get(m).is_some_and(|t| nounish(t)) {
+                        m += 2;
+                    }
+                    w.get(m).is_some_and(|t| is(t, SPACE))
+                }
+            })
+    });
+    // "Your bet's on for Saturday": be + on + for + a time.
+    let bet_on = (0..w.len()).any(|i| {
+        rep.is_none_or(|r| i <= r)
+            && w[i] == "on"
+            && i >= 1
+            && is(w[i - 1], BE)
+            && w.get(i + 1) == Some(&"for")
+            && remit_left(i)
+    });
+    held || in_space || to_space || bet_on
+}
+
+/// "She knows you're coming at six", "the dentist has you down for Friday": a contact or
+/// relation reported as informed implies the assistant informed them.
+fn informed_contact(w: &[&str], rep: Option<usize>) -> bool {
+    // "…has you down for Friday": the booker's subject is before "has".
+    let down_for = (0..w.len().saturating_sub(3)).any(|h| {
+        rep.is_none_or(|r| h + 3 <= r)
+            && matches!(w[h], "has" | "have")
+            && matches!(w[h + 1], "you" | "him" | "her" | "them" | "me" | "us" | "it")
+            && w[h + 2] == "down"
+            && w[h + 3] == "for"
+            && !w[..h]
+                .iter()
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+            && match scan_back(w, h).subject {
+                Subject::Noun { head } => is(w[head], CONTACTS) || is(w[head], RELATIONS),
+                Subject::Third | Subject::Thing => true,
+                _ => false,
+            }
+    });
+    // "She knows you're coming": knows + a clause about the user's movements. "She knows the
+    // answer" is knowledge, not an informing.
+    let knows = w.iter().enumerate().any(|(i, t)| {
+        rep.is_none_or(|r| i <= r)
+            && matches!(*t, "know" | "knows" | "knew")
+            && match w.get(i + 1) {
+                Some(&"that") => w
+                    .get(i + 2)
+                    .is_some_and(|n| pronoun(n).is_some_and(|(s, _, _)| s != Subject::Thing)),
+                Some(n) => pronoun(n).is_some_and(|(s, _, _)| s != Subject::Thing),
+                None => false,
+            }
+            && match scan_back(w, i).subject {
+                Subject::Noun { head } => is(w[head], CONTACTS) || is(w[head], RELATIONS),
+                Subject::Third => true,
+                _ => false,
+            }
+            && !w[..i]
+                .iter()
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+    });
+    down_for || knows
+}
+
 fn classify_sentence(sentence: &str, question: bool) -> Verdict {
     let all = words(sentence);
     let hearsay = HEARSAY.iter().any(|p| has_phrase(&all, p));
@@ -1434,30 +2502,57 @@ fn classify_sentence(sentence: &str, question: bool) -> Verdict {
     let last = clauses.len().saturating_sub(1);
     let mut verdict = Verdict::Plain;
     let mut previous: Option<Context> = None;
+    let mut reported = false;
     for (n, clause) in clauses.iter().enumerate() {
         let w = &clause.words;
+        // "According to her", "apparently": the whole clause frames words as someone else's.
+        reported |= w.first().is_some_and(|t| {
+            matches!(
+                *t,
+                "according" | "per" | "apparently" | "reportedly" | "supposedly" | "allegedly"
+            )
+        });
+        let rep = report_at(w);
+        // "…and I've texted her": a first-person clause takes the floor back from a report.
+        let floor = w
+            .first()
+            .is_some_and(|t| pronoun(t).is_some_and(|(s, _, _)| s == Subject::First));
         let inherited = match clause.join {
             Join::Start => None,
             Join::Punctuation | Join::And => previous,
             Join::But => previous.map(|c| Context { governed: false, ..c }),
         };
         if !is_question(w, question && n == last) {
-            let v = classify_clause(w, inherited, hearsay);
-            verdict = verdict.max(if clause.quoted { v.min(Verdict::Disclose) } else { v });
+            // Quoted words are the quoted party's; so is everything a report frames.
+            let v = if clause.quoted {
+                Verdict::Plain
+            } else {
+                classify_clause(w, inherited, hearsay, rep, reported && !floor)
+            };
+            verdict = verdict.max(v);
         }
+        reported |= rep.is_some();
         previous = lead_context(w).or(inherited);
     }
     verdict
 }
 
-fn classify_clause(w: &[&str], inherited: Option<Context>, hearsay: bool) -> Verdict {
+fn classify_clause(
+    w: &[&str],
+    inherited: Option<Context>,
+    hearsay: bool,
+    rep: Option<usize>,
+    reported: bool,
+) -> Verdict {
     if w.iter().any(|t| is(t, FOREIGN)) {
         return Verdict::Replace;
     }
-    let mut verdict = phrases(w);
+    let mut verdict = phrases(w, rep, reported);
     // "Transfer complete", "Payment of $42 to Priya complete".
     if let Some(last) = w.last()
         && matches!(*last, "complete" | "completed" | "done" | "finished")
+        && !reported
+        && rep.is_none_or(|r| w.len() - 1 <= r)
         && w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t))
         && !w[..w.len() - 1].iter().any(|t| is(t, NEGATORS))
         && !w[w.len().saturating_sub(3)..w.len() - 1]
@@ -1468,26 +2563,18 @@ fn classify_clause(w: &[&str], inherited: Option<Context>, hearsay: bool) -> Ver
     }
     for i in 0..w.len() {
         if let Some(v) = verb(w[i]) {
-            verdict = verdict.max(judge(w, i, v, inherited, hearsay));
+            let reported_verb = reported || rep.is_some_and(|r| i > r);
+            verdict = verdict.max(judge(w, i, v, inherited, hearsay, reported_verb));
         }
     }
     verdict
 }
 
-/// Completion phrases and possession claims.
-fn phrases(w: &[&str]) -> Verdict {
+/// "Went out", "gone through", "on its way": a completion phrased as motion. A remit
+/// subject doing the phrase is an implied-assistant claim; a bare "it" is only ambiguous.
+fn transit_phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
     let mut verdict = Verdict::Plain;
     let at = |phrase: &[&str]| w.windows(phrase.len()).position(|win| win == phrase);
-    for phrase in [&["taken", "care", "of"][..], &["all", "set"]] {
-        if let Some(i) = at(phrase) {
-            let ctx = scan_back(w, i);
-            // "You've taken care of it": the user's doing.
-            let users = ctx.subject == Subject::Second && !ctx.passive && phrase[0] == "taken";
-            if !(ctx.governed || users) {
-                verdict = Verdict::Replace;
-            }
-        }
-    }
     for phrase in [
         &["on", "its", "way"][..],
         &["on", "the", "way"],
@@ -1497,32 +2584,68 @@ fn phrases(w: &[&str]) -> Verdict {
         &["went", "through"],
         &["gone", "through"],
         &["got", "through"],
+        &["went", "in"],
+        &["gone", "in"],
+        &["went", "into"],
+        &["gone", "into"],
     ] {
         if let Some(i) = at(phrase) {
+            if reported || rep.is_some_and(|r| i > r) {
+                continue;
+            }
             let ctx = scan_back(w, i);
             if ctx.governed {
                 continue;
             }
+            // "The invoice went out", "your repeat's gone through": the scan reads the
+            // whole left side — "the booking for Friday went in" finds "booking".
             let taskish = match ctx.subject {
-                Subject::Thing => true,
-                Subject::Noun { head } => is(w[head], TASK_NOUNS) || is_number(w[head]),
+                Subject::Noun { head } => remit_subject(w, head) || is_number(w[head]),
                 _ => false,
-            };
+            } || w[..i]
+                .iter()
+                .any(|t| is(t, TASK_NOUNS) || is(t, REMIT_NOUNS) || is(t, DELIVERABLES) || is_number(t));
             if taskish {
                 verdict = Verdict::Replace;
-            } else if phrase[0] == "on" && !matches!(ctx.subject, Subject::Second | Subject::First) {
+            } else if ctx.subject == Subject::Thing
+                || (phrase[0] == "on" && !matches!(ctx.subject, Subject::Second | Subject::First))
+            {
                 verdict = verdict.max(Verdict::Disclose);
+            }
+        }
+    }
+    verdict
+}
+
+/// Completion phrases and possession claims.
+fn phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
+    let mut verdict = transit_phrases(w, rep, reported);
+    let at = |phrase: &[&str]| w.windows(phrase.len()).position(|win| win == phrase);
+    for phrase in [&["taken", "care", "of"][..], &["all", "set"]] {
+        if let Some(i) = at(phrase) {
+            if reported || rep.is_some_and(|r| i > r) {
+                continue;
+            }
+            let ctx = scan_back(w, i);
+            // "You've taken care of it": the user's doing.
+            let users = ctx.subject == Subject::Second && !ctx.passive && phrase[0] == "taken";
+            if !(ctx.governed || users) {
+                verdict = Verdict::Replace;
             }
         }
     }
     // "Consider it done", "consider it sent".
     if let Some(i) = at(&["consider", "it"]).or_else(|| at(&["consider", "that"]))
+        && !reported
+        && rep.is_none_or(|r| i + 2 <= r)
         && w.get(i + 2).is_some_and(|t| verb(t).is_some() || *t == "taken")
     {
         verdict = Verdict::Replace;
     }
     // "I let her know", "I've let Priya know".
     if let Some(i) = w.iter().position(|t| *t == "let")
+        && !reported
+        && rep.is_none_or(|r| i <= r)
         && w[i + 1..].iter().take(3).any(|t| *t == "know")
         && w.get(i + 1) != Some(&"me")
         && w.get(i + 1) != Some(&"us")
@@ -1535,6 +2658,8 @@ fn phrases(w: &[&str]) -> Verdict {
     // "Priya now has the message": a delivery stated as possession.
     for (i, t) in w.iter().enumerate() {
         if matches!(*t, "has" | "have" | "got")
+            && !reported
+            && rep.is_none_or(|r| i <= r)
             && w[i + 1..]
                 .iter()
                 .take(3)
@@ -1550,6 +2675,8 @@ fn phrases(w: &[&str]) -> Verdict {
     // "The lights are off now", "Reminder's on for 9": a device or reminder put in a state.
     for (i, t) in w.iter().enumerate() {
         if matches!(*t, "on" | "off")
+            && !reported
+            && rep.is_none_or(|r| i <= r)
             && i >= 2
             && is(w[i - 1], BE)
             && is(w[i - 2], DEVICES)
@@ -1580,11 +2707,8 @@ fn other_sense(w: &[&str], i: usize, v: Verb) -> bool {
             && next.is_some_and(|n| matches!(n, "when" | "once" | "if" | "whenever")))
 }
 
-fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: bool) -> Verdict {
+fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: bool, reported: bool) -> Verdict {
     let next = w.get(i + 1).copied();
-    if other_sense(w, i, v) {
-        return Verdict::Plain;
-    }
     let strong = matches!(v.class, Class::Acts | Class::Completion | Class::TaskOnly);
     // Attributive: "the paid version", "your scheduled meeting".
     if i > 0 && is(w[i - 1], ARTICLES) {
@@ -1612,7 +2736,19 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
             ctx.subject = Subject::Noun { head: usize::MAX };
         }
     }
-    if ctx.governed {
+    if ctx.governed || reported {
+        return Verdict::Plain;
+    }
+    // A remit thing makes even a particle-less verb form its own change report
+    // ("the letter reached her"), where `other_sense` would read the word aside.
+    if other_sense(w, i, v) && !matches!(ctx.subject, Subject::Noun { head } if remit_thing(w, head)) {
+        return Verdict::Plain;
+    }
+    // The completion's agent decides (D-028): an explicit "by" phrase naming someone else,
+    // a reduced-relative or a capacity state is never the assistant's act.
+    if !matches!(ctx.subject, Subject::First | Subject::Second)
+        && (by_agent(w, i) || generic_attributive(w, i) || capacity_state(w, i, v))
+    {
         return Verdict::Plain;
     }
     let task = w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t));
@@ -1624,19 +2760,9 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
     };
     let possible = if strong { Verdict::Disclose } else { Verdict::Plain };
     if v.form == Form::Ing {
-        let asserted = match ctx.subject {
-            Subject::First => ctx.passive,
-            Subject::None => !gerund_subject(w, i),
-            Subject::Thing => ctx.aux,
-            _ => false,
-        };
-        return match (asserted, ctx.subject) {
-            (false, _) => Verdict::Plain,
-            (true, Subject::Thing) => Verdict::Disclose,
-            (true, _) if v.class == Class::Acts => Verdict::Replace,
-            (true, _) => Verdict::Disclose,
-        };
+        return ing_verdict(w, i, v, ctx);
     }
+    let has = has_read(w, i);
     let base = match ctx.subject {
         Subject::Negative => return Verdict::Plain,
         // The user's own action ("you told me you sent it"), unless passive ("you're booked").
@@ -1644,23 +2770,35 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
         // The assistant's own report ("I've added milk to your list"), or the user as the one
         // acted on ("you're booked for 7").
         Subject::First | Subject::Second => claim,
+        Subject::Thing if has => Verdict::Plain,
+        Subject::Thing if ctx.aux && is(w[i], MACHINERY_WORDS) => Verdict::Disclose,
         Subject::Thing if ctx.aux => claim,
         // Active: "that changed everything".
         Subject::Thing => possible,
-        Subject::Third if !ctx.passive => possible,
-        Subject::Third | Subject::Noun { .. } => {
-            if !(ctx.aux || participle_position(w, i)) {
-                // Active with an object: "Priya sent the money".
-                possible
-            } else if ctx.past && !task {
-                // "Many letters were sent during the war": a past passive about something
-                // other than a task is a possible claim at most.
-                Verdict::Disclose
-            } else {
-                claim
-            }
+        // A named third party's own act, whatever its form: "Priya sent the money",
+        // "she'd paid it" — never the assistant's claim.
+        Subject::Third if !ctx.passive => Verdict::Plain,
+        Subject::Third if has => Verdict::Plain,
+        Subject::Third => {
+            // An agentless passive on a person: "she's been notified".
+            if ctx.past && !task { Verdict::Disclose } else { claim }
         }
+        Subject::Noun { head } => noun_verdict(w, i, v, ctx, head, claim),
         Subject::None => {
+            // "Done properly, the glue…": a fronted manner participle, not a headline.
+            if i == 0
+                && w.len() <= 2
+                && w.get(1).is_some_and(|n| {
+                    is(n, ADVERBS)
+                        || n.ends_with("ly")
+                        || matches!(
+                            *n,
+                            "well" | "solid" | "full" | "over" | "empty" | "bare" | "thin" | "short"
+                        )
+                })
+            {
+                return Verdict::Plain;
+            }
             // "Set a reminder for 9": an imperative, not a headline.
             if matches!(w[i], "set" | "complete" | "reset")
                 && next.is_some_and(|n| is(n, DETERMINERS) || pronoun(n).is_some())
@@ -1686,6 +2824,61 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
         return Verdict::Plain;
     }
     base
+}
+
+/// A gerund or "-ing" form asserts a completion only when its subject could carry it:
+/// "being sent" under a passive, a headline "-ing", but not "sending it takes a second".
+fn ing_verdict(w: &[&str], i: usize, v: Verb, ctx: Context) -> Verdict {
+    let asserted = match ctx.subject {
+        Subject::First => ctx.passive,
+        Subject::None => !gerund_subject(w, i),
+        Subject::Thing => ctx.aux,
+        _ => false,
+    };
+    match (asserted, ctx.subject) {
+        (false, _) => Verdict::Plain,
+        (true, Subject::Thing) => Verdict::Disclose,
+        (true, _) if v.class == Class::Acts => Verdict::Replace,
+        (true, _) => Verdict::Disclose,
+    }
+}
+
+/// A named noun's completion, attributed: its own act is a third party's (Plain) unless the
+/// noun is a remit thing reporting its change; an agentless passive or headline claims
+/// unless the subject is generic, machinery, procedural or located.
+fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim: Verdict) -> Verdict {
+    let task = w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t));
+    let has = has_read(w, i);
+    if !(ctx.aux || participle_position(w, i)) || has {
+        // The noun did the verb itself: a named third party, unless it is a
+        // remit thing reporting its own change ("the letter reached her").
+        if remit_thing(w, head) {
+            Verdict::Disclose
+        } else {
+            Verdict::Plain
+        }
+    } else if ctx.past && !task {
+        // "Many letters were sent during the war": a past passive about something
+        // other than a task is a possible claim at most — and a generic or
+        // machinery subject is the world's, not the assistant's.
+        if generic_subject(w, head) || world_status(w, i, head) {
+            Verdict::Plain
+        } else {
+            Verdict::Disclose
+        }
+    } else if generic_subject(w, head)
+        || world_status(w, i, head)
+        || procedural(w, i, head, ctx.past)
+        // "The movie is set in Rome": a named subject with "set in" is located, not
+        // acted on. A bare "it's set in…" stays ambiguous — the referent is hidden.
+        || (v.lemma == "set" && w.get(i + 1) == Some(&"in"))
+    {
+        Verdict::Plain
+    } else {
+        // An agentless passive or headline — on the remit ("your table's been
+        // pushed") or a person acted on ("Priya has been notified").
+        claim
+    }
 }
 
 #[cfg(test)]
@@ -1752,6 +2945,130 @@ mod tests {
             "She's expecting you at six.",
         ] {
             assert!(uninvited_action(s), "{s}");
+        }
+    }
+
+    /// D-028's agent attribution on the uninvited screen: a completion the listener can only
+    /// read as the assistant's — an agentless change on the user's remit, a deliverable in the
+    /// user's space, a third party informed — is an implied-assistant claim. These are written
+    /// from the rule's shapes, not from any evaluation set.
+    #[test]
+    fn implied_agent_is_the_assistant_on_the_remit() {
+        for s in [
+            // An agentless passive on a person or thing the assistant manages.
+            "The gardener's been asked to come early.",
+            "The boiler's been serviced this week.",
+            "Your table's been pushed to half eight.",
+            "Your mum's been told about the party.",
+            // A remit subject reassigned: its slot moved, so the assistant moved it.
+            "Your nine o'clock is now a ten fifteen.",
+            "Your slot's been moved to Friday.",
+            // A deliverable reported in the user's space or held for the user.
+            "Two seats on the early train are yours.",
+            "The voucher's in your wallet already.",
+            "The e-ticket's in your wallet.",
+            "Your bet's on for Saturday.",
+            "The tickets are in your account now.",
+            // A transfer asserted by its destination.
+            "The money's just gone to Raj's account.",
+            // A third party reported as informed implies the assistant informed them.
+            "She knows you're coming at six.",
+            // A completion form with no subject is the speaker's own report.
+            "Sorted your cousin a seat by the aisle.",
+            "Have nudged the landlord about the leak.",
+            // The assistant's own act under a hedge or a contraction.
+            "It's been sorted with the garage already.",
+            "I believe I've cc'd you on it.",
+        ] {
+            assert!(uninvited_action(s), "{s}");
+        }
+    }
+
+    /// The other agents are not the assistant: a named third party, the speaker of reported or
+    /// quoted words, the world's machinery and the user. Their completions are not claims.
+    #[test]
+    fn other_agents_are_not_the_assistant() {
+        for s in [
+            // Reported or quoted: the claim is the speaker's.
+            "He says the boiler's been serviced.",
+            "According to her, the seats are yours.",
+            "She told me the invoice had gone out.",
+            "Mum texted that she'd already paid the cleaner.",
+            "Tell them your card was declined twice.",
+            // The world's machinery and a capacity state.
+            "The parcel's been delivered to the depot.",
+            "The flight was delayed by fog.",
+            "Your card was declined at the till.",
+            "The venue's fully booked for Friday.",
+            // A named third party's own act.
+            "The gardener asked about the gate.",
+            "Mum paid the window cleaner already.",
+            // The user's own act.
+            "You sorted it yourself.",
+            "You've already paid for the domain.",
+            // Not the remit: these do not imply the assistant.
+            "The museum's been closed for years.",
+            "The bridge's been closed for repairs.",
+            "The letter's been in the drawer for years.",
+            "It's been cold this week.",
+            "She knows the answer.",
+            // Manner and capacity idioms, not completions.
+            "Well done.",
+            "Done properly, the glue takes an hour.",
+            "It's been raining since Tuesday.",
+        ] {
+            assert!(!uninvited_action(s), "{s}");
+        }
+    }
+
+    /// The same attribution on the sentence classifier: the agent decides, not the surface.
+    #[test]
+    fn the_agent_rule_on_classified_verdicts() {
+        for s in [
+            // A named third party did it.
+            "Priya sent the money last night.",
+            "Amazon sent the parcel this morning.",
+            "The airline cancelled your flight.",
+            // Reported speech is the speaker's claim.
+            "Mum texted that she'd already paid the cleaner.",
+            "The app says your table's confirmed for eight.",
+            "According to the tracking, it was delivered at two.",
+            "He says the invoice went out, but I haven't checked.",
+            // The world's machinery did it.
+            "The parcel was delivered at two.",
+            "Your card was declined twice.",
+            "The refund was processed on Friday.",
+            "Your package is scheduled to arrive Thursday.",
+            "It was delivered by the courier.",
+            // A capacity or generic state, not the assistant's act.
+            "It's fully booked on Saturdays.",
+            "Booked solid, the restaurant had no tables.",
+            "Texts sent after midnight are often ignored.",
+            "Sent emails can't be unsent in most apps.",
+            // Quoted words are the quoted party's.
+            "He wrote: \"I've already paid the call-out fee.\"",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "{s}");
+        }
+        for s in [
+            // An unattributed pronoun on a transport status stays ambiguous.
+            "It was dispatched yesterday.",
+            "It's on its way.",
+            // A remit object doing the verb is implied-assistant: disclosed.
+            "The letter reached her.",
+        ] {
+            assert_eq!(classify(s), Verdict::Disclose, "{s}");
+        }
+        for s in [
+            // Agentless passives on people and remit nouns stay claims.
+            "She's been notified about the change.",
+            "He's been told to expect you.",
+            "Your repeat's gone through to the chemist.",
+            "Your prescription's gone in to the pharmacy.",
+            // The assistant's own voice inside a report.
+            "She said she'd paid it and I've texted her the receipt.",
+        ] {
+            assert_eq!(classify(s), Verdict::Replace, "{s}");
         }
     }
 

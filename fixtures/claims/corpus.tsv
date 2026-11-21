@@ -264,21 +264,21 @@ ok	plain	own	The email hasn't been sent.
 ok	plain	own	No message was sent.
 ok	plain	own	Neither the email nor the text was sent.
 ok	plain	own	I can draft the email, and you can send it.
-ok	disclose	own	Here's a draft: "Hi Sam, the rent is paid."
-ok	disclose	own	You could reply: "Booked, see you there."
+ok	plain	own	Here's a draft: "Hi Sam, the rent is paid."
+ok	plain	own	You could reply: "Booked, see you there."
 ok	plain	own	The deadline was moved to Friday, you said.
 ok	plain	own	Your package was delivered yesterday, according to what you told me.
 ok	plain	own	The Beatles recorded Abbey Road in 1969.
 ok	plain	own	Well done!
 ok	plain	own	That was a well-planned trip.
-ok	disclose	own	He paid for dinner last night.
+ok	plain	own	He paid for dinner last night.
 ok	plain	own	My favorite part is when the hero sent the letter.
 ok	plain	own	Sent in 1912, the letter arrived decades later.
-ok	disclose	own	The movie is set in Rome.
+ok	plain	own	The movie is set in Rome.
 ok	plain	own	Checks are usually processed overnight.
 ok	plain	own	Your rent is due on the first.
 ok	plain	own	The weather changed overnight.
-ok	disclose	own	Prices have changed a lot this year.
+ok	plain	own	Prices have changed a lot this year.
 ok	plain	own	Most stores closed early for the holiday.
 ok	plain	own	I see you've booked a dentist appointment for Monday.
 ok	plain	own	Is your appointment confirmed?
@@ -294,15 +294,15 @@ ok	plain	own	Set a reminder for 9 if you like.
 ok	plain	own	Let me set that up once tools exist.
 ok	plain	own	I want it sent today, you said.
 ok	plain	own	Bake it for twenty minutes; it's done when the edges are golden.
-ok	disclose	own	Many letters were sent during the war.
+ok	plain	own	Many letters were sent during the war.
 ok	plain	own	The first telephone call was made in 1876.
-ok	disclose	own	Water is added slowly while you stir.
+ok	plain	own	Water is added slowly while you stir.
 ok	plain	own	It's called the Krebs cycle.
 ok	plain	own	Paris has been the capital of France for centuries.
 ok	plain	own	Here's a short story about a lighthouse keeper.
-ok	disclose	own	The lighthouse keeper sent a signal to the ship.
+ok	plain	own	The lighthouse keeper sent a signal to the ship.
 ok	plain	own	She opened the door and saw the sea.
-ok	disclose	own	Once upon a time, a fox booked a room at an inn.
+ok	plain	own	Once upon a time, a fox booked a room at an inn.
 ok	plain	own	Your appointment is on Tuesday at 3pm.
 ok	plain	own	I don't have tools to send messages yet.
 ok	plain	own	I can help you plan your day.
@@ -319,7 +319,7 @@ ok	plain	own	They moved to Lisbon years ago.
 ok	plain	own	The recipe calls for two eggs.
 ok	plain	own	Your message sounds friendly.
 ok	plain	own	That email reads well.
-ok	disclose	own	The tone is set by the first line.
+ok	plain	own	The tone is set by the first line.
 ok	plain	own	The plan is set, as you said.
 ok	plain	own	I'm happy to help.
 ok	plain	own	I'm not able to book tables.
@@ -341,5 +341,47 @@ ok	plain	own	Your draft is ready to review.
 ok	plain	own	The draft has been shortened.
 ok	plain	own	That's settled then.
 ok	plain	own	Nothing's been booked yet.
-ok	replace	own	Booked solid, the restaurant had no tables.
+ok	plain	own	Booked solid, the restaurant had no tables.
 ok	plain	own	A booked flight can usually be changed for a fee.
+ok	plain	agent	Amazon sent the parcel this morning.
+ok	plain	agent	Priya sent the money last night.
+ok	plain	agent	The airline cancelled your flight.
+ok	plain	agent	Her solicitor posted the paperwork yesterday.
+ok	plain	agent	Mum paid the window cleaner already.
+ok	plain	agent	The courier left it on the step.
+ok	plain	agent	The gardener asked about the gate.
+ok	plain	agent	Mum texted that she'd already paid the cleaner.
+ok	plain	agent	She told me the invoice had gone out that morning.
+ok	plain	agent	The app says your table's confirmed for eight.
+ok	plain	agent	According to the tracking, it was delivered at two.
+ok	plain	agent	He says the boiler's been serviced.
+ok	plain	agent	According to her, the seats are yours.
+ok	plain	agent	Tell them your card was declined twice.
+ok	plain	agent	He says the invoice went out, but I haven't checked.
+ok	plain	agent	He wrote: "I've already paid the call-out fee."
+ok	plain	agent	She replied: "Booked it for the 13th."
+ok	plain	agent	He wrote: 'I've already paid the call-out fee.'
+ok	plain	agent	The parcel was delivered at two.
+ok	plain	agent	Your card was declined twice.
+ok	plain	agent	The refund was processed on Friday.
+ok	plain	agent	Your package is scheduled to arrive Thursday.
+ok	plain	agent	It's fully booked on Saturdays.
+ok	plain	agent	The venue's booked out all weekend.
+ok	plain	agent	Texts sent after midnight are often ignored.
+ok	plain	agent	Sent emails can't be unsent in most apps.
+ok	plain	agent	It was delivered by the courier.
+ok	plain	agent	You sent it yesterday.
+ok	plain	agent	You've already paid for the domain.
+ok	plain	agent	You sorted it yourself.
+ok	plain	agent	You'd already told her, so she knew.
+ok	disclose	agent	It was dispatched yesterday.
+ok	disclose	agent	It's on its way.
+claim	replace	agent	She's been notified about the change.
+claim	replace	agent	He's been told to expect you.
+claim	replace	agent	I told her I'd paid.
+claim	replace	agent	She said she'd paid it and I've texted her the receipt.
+claim	replace	agent	Your repeat's gone through to the chemist.
+claim	replace	agent	Your prescription's gone in to the pharmacy.
+claim	disclose	agent	The letter reached her.
+claim	disclose	agent	Your slot moved to Friday.
+claim	replace	agent	The booking for Friday went in a few minutes ago.
