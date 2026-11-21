@@ -371,6 +371,33 @@ settled it, it is listed under **Open questions** rather than guessed.
   10 a.m." where the trailing "a.m." defeats the reassignment scan; of 60 plain replies
   **3 replaced (5%, was 20%)** and 44 turn-disclosed (73%).
 
+  *Two bug fixes the blind sets exposed, landed 2026-11-21 — red-first on newly authored
+  shapes; held-out-2 and held-out-3 were not run while developing and a further blind set
+  judges the change:*
+  - **Request routing reads intent, not vocabulary.** `request_may_ask_for_action` counted
+    any task noun or action form as action-asking — the 48/120 misroutes measured above.
+    A request is now action-asking when it is *addressed* to the assistant — an imperative
+    or a request form ("remind me…", "book two seats", "can you move…", "please send…"),
+    where receiver-taking openers distinguish their object ("tell me the password" asks
+    for speech; "tell Sam I'm late", "show her" act on a third party) and "do it" is an
+    imperative where "do I…" is the auxiliary — or asks whether something was done ("did
+    you…", "has it been…", "is my appointment confirmed"). A question that merely mentions
+    a task ("what time is my meeting?") asks for a fact and is informational; a polite
+    frame asking for speech ("can you explain…") is an answer request. Anything that is
+    neither a request nor question-shaped — a bare statement, a fragment — is ambiguous,
+    and ambiguous fails safe to action: where intent is unclear the disclosure stays
+    unconditional. Measured on the authored shapes plus held-out-1: plain-reply turn
+    disclosure **12 of 22 → 6 of 22**, replaced 1 of 22 and undisclosed claims 0 of 70
+    unchanged, corpus rates unchanged.
+  - **A period that belongs to an abbreviation, an initial or a number no longer ends a
+    sentence** — "a.m.", "p.m.", "Dr.", "St.", "No. 5", "J. R. R.", "3.5". Both splitters
+    now look at the token before the period: a named abbreviation or single letter is
+    never terminal, "No." ends a sentence only when no digit follows ("No. I rang her"
+    still breaks), and a dotted token ("a.m.", "U.S.") is terminal only before a capital
+    ("Set for 6 a.m. Anything else?" still breaks). The "your 9 a.m. is now a 10 a.m."
+    miss recorded above was this split, not the classifier; regression is pinned on the
+    splitter itself.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -380,9 +407,10 @@ settled it, it is listed under **Open questions** rather than guessed.
     disclosure's meaning stays constant and every uncertain turn is covered; zero
     implementation cost;
   - **disclose only on assistant-attributed claims** — D-028 already narrows most of the
-    surface: on held-out-1 the turn-disclosed oks held at 12 of 22 while replaced oks fell
-    6→1, so part of the fix may already have landed; what remains are ambiguous-attribution
-    turns where the speaker still might be the assistant;
+    surface: on held-out-1 replaced oks fell 6→1, and the intent-based routing fix then
+    halved the remaining per-turn noise (turn-disclosed oks 12 of 22 → 6 of 22, at no cost
+    to claim cover: 0 of 70 undisclosed throughout); what remains are turns where the
+    request itself asks for an action, where the disclosure is doing its job;
   - **disclose once per session** ("I can't act on anything yet") — kills per-turn noise but
     weakens the point-of-claim signal: the disclosure lands on turn one, long before the
     reply that needs it;

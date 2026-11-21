@@ -1210,10 +1210,13 @@ fn bound_outcome(outcome: ToolOutcome, max: usize) -> ToolOutcome {
 pub fn split_sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         current.push(c);
-        if matches!(c, '.' | '!' | '?') && chars.peek().is_none_or(|n| n.is_whitespace()) {
+        if matches!(c, '.' | '!' | '?')
+            && (c != '.' || guard::terminal_period(text, i))
+            && chars.peek().is_none_or(|(_, n)| n.is_whitespace())
+        {
             let s = current.trim();
             if !s.is_empty() {
                 out.push(s.to_owned());
@@ -1261,5 +1264,34 @@ mod tests {
             ["Hi.", "It is 3.5 km!", "Ok?", "end"]
         );
         assert_eq!(split_sentences("   "), Vec::<String>::new());
+    }
+
+    /// A period that belongs to an abbreviation, an initial or a number does not end the
+    /// sentence: "a.m.", "Dr.", "No. 5", "J. R. R.", "3.5". A split mid-phrase hides the
+    /// completion the guard is screening for.
+    #[test]
+    fn sentences_do_not_split_inside_abbreviations() {
+        assert_eq!(
+            split_sentences("See Dr. Ash on Tuesday. Bring your card."),
+            ["See Dr. Ash on Tuesday.", "Bring your card."]
+        );
+        assert_eq!(
+            split_sentences("Your slot moved from 3 p.m. to 4 p.m., they said."),
+            ["Your slot moved from 3 p.m. to 4 p.m., they said."]
+        );
+        assert_eq!(
+            split_sentences("It's 3.5 km to St. Albans, past No. 5 on the left. Done?"),
+            ["It's 3.5 km to St. Albans, past No. 5 on the left.", "Done?"]
+        );
+        assert_eq!(
+            split_sentences("See J. R. Hartley. Fly fishing."),
+            ["See J. R. Hartley.", "Fly fishing."]
+        );
+        // A period that does end a sentence still does: "No." as an answer, "a.m." at the end.
+        assert_eq!(split_sentences("No. I rang her."), ["No.", "I rang her."]);
+        assert_eq!(
+            split_sentences("Set for 6 a.m. Anything else?"),
+            ["Set for 6 a.m.", "Anything else?"]
+        );
     }
 }

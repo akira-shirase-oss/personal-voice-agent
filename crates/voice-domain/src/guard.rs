@@ -1559,8 +1559,61 @@ fn is_question(w: &[&str], last_of_question: bool) -> bool {
     last_of_question || (is(first, INVERTED) && w.len() > 1 && (pronoun(w[1]).is_some() || is(w[1], DETERMINERS)))
 }
 
+/// A period that closes one of these words is part of the word, not the end of the
+/// sentence: "Dr. Okafor", "St. Albans", "etc.".
+const NAMED_ABBREVIATIONS: &[&str] = &[
+    "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "rd", "ln", "mt", "ft", "etc", "approx", "dept",
+    "est", "gen", "gov", "hon", "col", "capt", "lt", "sgt", "rev", "fr", "jan", "feb", "mar", "apr", "jun", "jul",
+    "aug", "sep", "sept", "oct", "nov", "dec", "inc", "ltd", "co", "vs",
+];
+
+/// These abbreviate only before a number ("No. 5", "vol. 2", "fig. 4"); before a word they
+/// are ordinary words — "No. I did" ends a sentence.
+const NUMERIC_ABBREVIATIONS: &[&str] = &[
+    "no", "nos", "vol", "fig", "ch", "sec", "pt", "ver", "pg", "pp", "art", "cl", "par",
+];
+
+/// Whether the '.' at byte `i` ends the sentence. It does not when it belongs to an
+/// abbreviation ("Dr.", "St.", "No. 5"), an initial ("J. R. Hartley"), or a dotted token
+/// ("a.m.", "p.m.", "e.g.", "U.S."). A dotted token is non-terminal only before a small
+/// letter or digit — "Set for 6 a.m. Anything else?" still breaks, since a capital after
+/// it starts a new sentence. A period inside a number ("3.5") never reaches here: its
+/// next char is not whitespace.
+pub(crate) fn terminal_period(text: &str, i: usize) -> bool {
+    let token = text[..i]
+        .rsplit(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim_start_matches(|c: char| !c.is_alphanumeric());
+    let lower = token.to_lowercase();
+    let next = text[i + 1..].chars().find(|c| !c.is_whitespace());
+    // "J. R." — a single letter is an initial.
+    if lower.chars().count() == 1 && lower.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    // "Dr.", "St." — the word itself is the abbreviation.
+    if NAMED_ABBREVIATIONS.contains(&lower.as_str()) {
+        return false;
+    }
+    // "No. 5" — an abbreviation only where a digit follows.
+    if NUMERIC_ABBREVIATIONS.contains(&lower.as_str()) {
+        return !matches!(next, Some(c) if c.is_ascii_digit());
+    }
+    // "a.m.", "e.g.", "U.S." — a token with a dot inside is abbreviated; the closing
+    // period is terminal only before a capital or at the end.
+    if token.contains('.') {
+        return !matches!(next, Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit());
+    }
+    // "in 3. 4 cases" — a digit-final token before a digit is a stray decimal point.
+    if token.chars().last().is_some_and(|c| c.is_ascii_digit()) && matches!(next, Some(c) if c.is_ascii_digit()) {
+        return false;
+    }
+    true
+}
+
 /// Splits after `.`, `!`, `?` or `…` followed by whitespace or the end; each part keeps whether
-/// it was a question.
+/// it was a question. A `.` that belongs to an abbreviation, an initial or a number does not
+/// end a sentence (`terminal_period`).
 fn sentences(text: &str) -> Vec<(&str, bool)> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -1568,7 +1621,8 @@ fn sentences(text: &str) -> Vec<(&str, bool)> {
     while let Some((i, c)) = iter.next() {
         if matches!(c, '.' | '!' | '?' | '…') {
             let end = i + c.len_utf8();
-            let at_break = iter.peek().is_none_or(|(_, n)| n.is_whitespace() || *n == '"');
+            let at_break = iter.peek().is_none_or(|(_, n)| n.is_whitespace() || *n == '"')
+                && (c != '.' || terminal_period(text, i));
             if at_break {
                 let part = &text[start..end];
                 if !part.trim().is_empty() {
@@ -1630,28 +1684,52 @@ const INFORMATIONAL: &[&str] = &[
     "recommend",
 ];
 
+/// A polite frame that asks for one of these asks for speech, not an act on the user's
+/// world: "can you explain…", "please describe…" is an answer request.
+const ANSWER_VERBS: &[&str] = &[
+    "tell",
+    "say",
+    "explain",
+    "describe",
+    "list",
+    "show",
+    "summarize",
+    "summarise",
+    "recap",
+    "spell",
+    "pronounce",
+    "translate",
+    "repeat",
+    "define",
+    "clarify",
+    "read",
+    "name",
+];
+
 /// Whether a heard request may ask for something to be done on the user's behalf, so that a
-/// reply to it may claim it was done. Fails closed: only a question or an informational request
-/// that names no action verb (in any form) and no task, and is not phrased as a request ("could
-/// you…", "will you…", "please…"), counts as informational; any other request, statements
-/// included, may ask for an action. A turn that answers such a request ends
-/// with the turn-level disclosure (D-027).
+/// reply to it may claim it was done. The question is intent, not vocabulary: a request is
+/// action-asking when it is *addressed* to the assistant — an imperative or a request form
+/// ("remind me…", "book two seats", "can you move…", "please send…") — or asks whether the
+/// assistant or the world already did something ("did you…", "has it been…"). A question
+/// that merely mentions a task ("what time is my meeting?", "how do I pause my
+/// membership?") asks for a fact and is informational, as is a request for speech ("can you
+/// explain…", "tell me…") — answering is itself the assistant's act. Anything that is
+/// neither a request nor question-shaped is ambiguous — a bare statement, a fragment — and
+/// ambiguous fails safe to action: where intent is unclear the disclosure is unconditional.
+/// A turn that answers such a request ends with the turn-level disclosure (D-027).
 pub fn request_may_ask_for_action(heard: &str) -> bool {
     let lowered = heard.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
     let w = words(&lowered);
-    let names_action = w.iter().enumerate().any(|(i, t)| {
-        // "tell me", "remind me" differ: telling the user is what the assistant does.
-        if matches!(*t, "tell" | "telling") && matches!(w.get(i + 1), Some(&("me" | "us"))) {
-            return false;
-        }
-        is(t, TASK_NOUNS) || is(t, FOREIGN) || action_form(t)
-    });
-    // "Did you…", "Have you…", "Has it been…": asking whether something was done.
+    // "Did you…", "has it been…", "is my appointment confirmed…": asking whether
+    // something was done.
     let asks_if_done = w.windows(2).any(|p| {
         matches!(p[0], "did" | "have" | "has" | "had") && matches!(p[1], "you" | "it" | "that" | "they" | "she" | "he")
-    });
-    // A request phrased as a question, whatever its verb: "could you sort out the plumber?",
-    // "will you…", "any chance you…", "do you mind…", "please…".
+    }) || (w.first().is_some_and(|f| is(f, BE))
+        && matches!(w.get(1), Some(&("my" | "your" | "our")))
+        && w.iter().any(|t| done_shaped(t)));
+    // Addressed to the assistant as a request: "could you…", "please…", "any chance…",
+    // "you mind…" — unless it asks for speech ("can you explain…"), which is an answer
+    // request: telling the user is what the assistant does.
     let polite = w.windows(2).any(|p| {
         matches!(
             p[0],
@@ -1661,24 +1739,59 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
         || has_phrase(&w, &["any", "chance"])
         || w.first() == Some(&"mind")
         || has_phrase(&w, &["you", "mind"]);
-    if names_action || asks_if_done || polite {
+    let asks_for_speech = polite && w.iter().any(|t| is(t, ANSWER_VERBS));
+    if asks_if_done || (polite && !asks_for_speech) {
         return true;
     }
-    let question = lowered.trim_end().ends_with('?');
-    let informational = question || w.first().is_some_and(|f| is(f, INFORMATIONAL));
-    !informational
+    let question =
+        lowered.trim_end().ends_with('?') || (w.first().is_some_and(|f| is(f, INFORMATIONAL)) && !imperative_head(&w));
+    !question
 }
 
-/// Any form of an action verb: its base, third person, past, participle or progressive.
-fn action_form(word: &str) -> bool {
-    let stem = |suffix: &str| word.strip_suffix(suffix);
-    verb(word).is_some()
-        || VERBS.iter().any(|e| {
-            word == e.lemma
-                || stem("s") == Some(e.lemma)
-                || stem("es") == Some(e.lemma)
-                || (e.lemma.ends_with('y') && stem("ies").is_some_and(|s| e.lemma.strip_suffix('y') == Some(s)))
-        })
+/// Informational-openers that can take a bare receiver — "tell Sam", "show her", "give
+/// them the file", "help your mum": with a receiver other than the user the request is an
+/// act on a third party, not speech to the user.
+const RECEIVER_VERBS: &[&str] = &["tell", "show", "give", "write", "help", "suggest", "recommend"];
+
+/// After a receiver verb these read as content ("tell it", "say something"), not a person
+/// being addressed.
+const CONTENT_WORDS: &[&str] = &[
+    "it",
+    "something",
+    "anything",
+    "nothing",
+    "everything",
+    "what",
+    "so",
+    "please",
+    "thanks",
+    "sorry",
+    "yes",
+    "hello",
+    "goodbye",
+];
+
+/// Whether the request opens with an imperative use of a word the informational set also
+/// lists as a question opener: "do it", "do what I asked" commands rather than asks ("do
+/// I…" is the auxiliary), and "tell him", "tell Sam", "show her" act on a third party
+/// where "tell me" asks for speech.
+fn imperative_head(w: &[&str]) -> bool {
+    let second = w.get(1).copied().unwrap_or("");
+    match w.first() {
+        Some(&("do" | "does" | "did")) => !matches!(second, "i" | "you" | "u" | "we" | "they" | "he" | "she"),
+        Some(&f) if is(f, INFORMATIONAL) => {
+            !matches!(second, "me" | "us")
+                && (matches!(second, "him" | "her" | "them")
+                    || (is(f, RECEIVER_VERBS) && !is(second, DETERMINERS) && !is(second, CONTENT_WORDS)))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `t` is a completed form — "confirmed", "sorted", "gone", "told" — by the
+/// lexicon's table or by its past shape.
+fn done_shaped(t: &str) -> bool {
+    past_shaped(t) || verb(t).is_some_and(|v| matches!(v.form, Form::Done))
 }
 
 /// Classifies one reply sentence (or several: each is judged and the strongest verdict wins).
@@ -3069,6 +3182,50 @@ mod tests {
             "She said she'd paid it and I've texted her the receipt.",
         ] {
             assert_eq!(classify(s), Verdict::Replace, "{s}");
+        }
+    }
+
+    /// The recall screen's gate is the request's intent, not its vocabulary: a request is
+    /// action-asking when it is addressed to the assistant as an imperative or request form,
+    /// or asks whether something was done — not merely because a task word appears in a
+    /// question. Anything that is neither a request nor question-shaped is ambiguous, and
+    /// ambiguous is fail-safe to action.
+    #[test]
+    fn a_request_is_action_by_intent_not_vocabulary() {
+        for heard in [
+            // Fact questions that happen to mention tasks ask nothing of the assistant.
+            "What time is the site visit on Thursday?",
+            "How do I pause my membership?",
+            "Do I need a permit for the loft conversion?",
+            "When does the pharmacy shut tonight?",
+            "Is my season ticket still valid?",
+            "What's the difference between a direct debit and a standing order?",
+            "Has the train left already?",
+            // Asking the assistant for speech is an answer, not an act.
+            "Tell me the wifi password.",
+            "Can you explain the charges on the bill?",
+            "Could you translate this for me?",
+            "Would you list what's on tomorrow?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in [
+            // Imperatives and request forms addressed to the assistant.
+            "Remind me to ring the dentist at nine.",
+            "Book two seats for the matinee.",
+            "Send Anil the boarding pass.",
+            "Can you move my haircut to Saturday?",
+            "Please cancel the milk order.",
+            "Set a timer for twenty minutes.",
+            "Text her that I'm on my way.",
+            "Tell him I'll be late.",
+            // Asking whether the assistant or the world did it.
+            "Did you post the letter?",
+            "Has it been sorted?",
+            // A bare statement is neither request nor question: ambiguous, so action.
+            "The parcel.",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
         }
     }
 
