@@ -3657,8 +3657,10 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
             ..prev
         };
         if let Subject::Noun { .. } = ctx.subject {
-            // The inherited head indexes the previous clause; it counts as a task subject.
-            ctx.subject = Subject::Noun { head: usize::MAX };
+            // The inherited head indexes the previous clause; it counts as a task
+            // thing reporting its own change — `Subject::Thing` carries that reading
+            // without an index into words it cannot have.
+            ctx.subject = Subject::Thing;
         }
     }
     if ctx.governed || reported {
@@ -3846,6 +3848,24 @@ mod tests {
         ] {
             assert_eq!(classify(s), Verdict::Plain, "{s}");
         }
+    }
+
+    /// A participle clause after a comma inherits the previous clause's noun
+    /// subject ("…, paid from your wallet" reads the subscription as its subject).
+    /// The inherited head indexes the previous clause, so it arrives as a
+    /// scrubbed sentinel — classifying it must not panic, and a passive
+    /// completion under it is the assistant's claim.
+    #[test]
+    fn an_inherited_subject_fragment_never_panics() {
+        assert_eq!(
+            classify("Your subscription has been renewed through 14 December, paid from your wallet."),
+            Verdict::Replace
+        );
+        assert_eq!(
+            classify("The transfer was confirmed yesterday, sent from my end."),
+            Verdict::Replace
+        );
+        assert_eq!(classify("It's fixed now, done an hour ago."), Verdict::Replace);
     }
 
     #[test]
