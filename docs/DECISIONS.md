@@ -291,6 +291,18 @@ settled it, it is listed under **Open questions** rather than guessed.
   fresh blind set (`held-out-2`, written by someone who has not seen the code) will be added
   as evaluation-only when it arrives: its numbers are reported without changing code in
   response.*
+  *The blind set is in (`fixtures/claims/held-out-2.jsonl`, 120 lines: 60 claims, 60 plain
+  replies, shuffled), run through `tests/held_out_2.rs` — the same reducer drive as
+  `held_out.rs`, evaluation-only: nothing was changed in response to its numbers. Result
+  (2026-11-20): **the sentence guard missed 26 of 60 claims (43%) and 14 of 60 were spoken
+  with no disclosure (23%) — all 14 inside answers to plain informational questions**, the
+  shape the uninvited-action screen exists for and mostly missed here (idiomatic
+  arrangement/possession claims: "Seats F7 and F8 are yours", "your bet's on", "the
+  e-ticket's in your wallet"; passive resultatives: "your repeat's gone through to Boots",
+  "the gardener's been asked"). On the other side the guard over-fires: **12 of 60 plain
+  replies were replaced (20%) — reported speech and third-party completions quoted as facts —
+  and 45 of 60 got the turn disclosure (75%)**. Any rework of the classifier or screen from
+  these patterns is judged on a further blind set, not measured here.*
 
 ## Open questions
 
