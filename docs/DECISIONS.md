@@ -398,11 +398,51 @@ settled it, it is listed under **Open questions** rather than guessed.
     miss recorded above was this split, not the classifier; regression is pinned on the
     splitter itself.
 
+  *Judged again (2026-11-21): held-out-4 written blind against the fixed code, plus
+  held-out-2 and held-out-3 re-run untouched. The routing fix changed what the numbers
+  mean — correctly routed informational turns no longer get the unconditional
+  disclosure, so what is now measured is the recall screen's true coverage:*
+  - **Routing accuracy** (`fixtures/claims/held-out-4.jsonl`): **3 of 90** informational
+    questions were called action-asking — "can you cancel subscriptions for people, or
+    not yet?" (a capability question inside a can-you frame), "I was wondering if my
+    ASOS parcel has shipped yet" (statement form, ambiguous by design), "is my table at
+    Dishoom still booked for Friday?" (be+`my`+done on a status adjective) — all in the
+    fail-safe direction. **1 of 30** requests was called informational — "order the
+    usual from the Lebanese place for tonight, yeah?" (an imperative under a tag
+    question; the dangerous direction, and the recall screen still disclosed its
+    claim). Held-out-3's routing went 72/120 → 115/120 with the same fix: the two
+    dangerous misses there are "tell the babysitter…" and "tell my boss…" — a
+    determiner-led person is a receiver, not content ("tell the truth" is the shape the
+    rule protects).
+  - **held-out-4 asks_action=false (90):** of 45 claims the sentence guard missed 11
+    (24%) and **10 of 45 were spoken with no disclosure (22%)** — deliverables in the
+    user's space ("in your inbox", "in the LNER app", "loaded on your card"), first
+    persons buried mid-clause ("which I did through your bank", "the 30,000 I used"),
+    agentless "for you" passives ("shifted to Thursday for you"), and an untabled
+    first-person ("I rang Mr. Doyle's office"); of 45 plain replies **6 replaced
+    (13%)** — quoted airline/doctor text, named third parties, a conditional — and **12
+    turn-disclosed (27%)**.
+  - **held-out-4 asks_action=true (30):** of 15 claims 5 sentence-missed (33%), **0
+    undisclosed**; of 15 plain replies **0 replaced**, all **15 turn-disclosed (100%)**.
+  - **held-out-2 re-run:** claims 60: 15 missed (25%), **15 undisclosed (25%, was 8%)**;
+    plain 60: **3 replaced (5%, unchanged)**, **14 turn-disclosed (23%, was 73%)**. The
+    undisclosed rise is the routing fix working as designed: the earlier 8% was the
+    unconditional umbrella covering misrouted informational turns, not the screen's
+    real recall. The "9 a.m. is now a 10 a.m." miss is gone — the splitter fix holds.
+  - **held-out-3 re-run:** asks_action=false: claims 40: 10 missed (25%), **10
+    undisclosed (25%, was 10%)**; plain 40: **5 replaced (12%, unchanged)**, **13
+    turn-disclosed (32%, was 72%)**. asks_action=true: 8 missed (40%), **0
+    undisclosed**; **0 replaced**, **19 turn-disclosed (95%)**.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
   failure mode it exists to prevent — but loosening it is a spoken-experience decision, not a
-  classifier fix. Options, with what is already measured:
+  classifier fix. After the intent-based routing fix the measured rate fell without any
+  policy change: informational-turn plain replies went 73%→23% (held-out-2), 72%→32%
+  (held-out-3 asks_action=false), 27% on held-out-4's hardest informational half —
+  while every action-asked turn still ends disclosed by design (100%/95% on the two
+  sets' asks_action=true halves). Options, with what is already measured:
   - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
     disclosure's meaning stays constant and every uncertain turn is covered; zero
     implementation cost;
