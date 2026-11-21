@@ -1183,6 +1183,65 @@ settled it, it is listed under **Open questions** rather than guessed.
     turn-disclosed oks **33% → 25% → 40% → 44% → 44% → 40% → 53%
     → 55% → 51% → 53%**.
 
+  *A grammar round on set 11's open families (2026-11-21),
+  developed red-first on the blind judgement's six structural
+  misses — from here sets 2–11 are all development sets:*
+
+  - **What landed** (each arm measured on held-out-1 + the corpus
+    after it shipped; both stayed bit-identical all round — the
+    held-out-1 request routing reads 63 action / 29 informational
+    before and after): copular agency through a relative head —
+    "the person who signed you up was me" binds when the subject
+    span carries a completed or past-shaped act no second or third
+    party owns; gapped coordination — "Tom paid the water and I
+    the gas" restores the elided verb when a prior conjunct holds
+    a completed act and the next conjunct is first person plus an
+    object with no verb group (`gapped_conjunct`); a negative
+    pronoun plus a first-person negated act affirms — "nothing I
+    haven't paid" (`npi_double_negative`), with the same
+    conversation-object exclusion as the other first-person arms;
+    a `by me`/`by us` agent marks a completed or passive act the
+    speaker's own wherever it sits, list rows and appositive
+    fragments included (`by_me_agent`); layout — a bare label
+    before a colon is no longer a reporting verb, so "phone: £18"
+    does not frame the row but "he wrote:" still does (colon
+    framing goes through `report_at`, not raw `REPORT_VERBS`
+    membership); report scope is clause-local — a "but" clause
+    takes the narrative floor and a negated or hypothetical report
+    verb before a colon ("you won't need to report it:") does not
+    frame the narrator's own assertion, so "he thinks" never
+    scopes past its own clause; and the precision half —
+    `INTERJECTIONS` keeps "sorry, I read…" from posing as a noun
+    head, `CONVERSATION_ACTS` + `INTERNAL_OBJECTS` mark acts done
+    to the reply's own contents ("the three I listed", "I read
+    the wrong line", "nothing I haven't covered above") as
+    information rather than deeds on `first_person_act_at`,
+    `first_person_in_question`, `assistant_accomplished` and
+    `npi_double_negative` alike, and a `calc_next` check reads
+    "Done: that's 100 exactly" as a calculation result while
+    "Done: the payment went through" still claims.
+  - **held-out-11 asks_action=false (90):** of 45 claims the
+    sentence guard missed 5 (11%) and **0 were spoken
+    undisclosed** — all six blind-judgement shapes are fixed and
+    the five remaining misses are covered by the turn disclosure.
+    Of 45 plain replies **1 replaced (2%)**: "Finished, and the
+    gate too, going by the photo they sent you", where the work
+    is the builders', so the fail-safe replacement is the correct
+    reading, not noise. **23 turn-disclosed (51%)**.
+  - **held-out-11 asks_action=true (30):** of 15 claims the
+    sentence guard missed 7 (47%), **0 undisclosed**, **0
+    replaced**, all **15 turn-disclosed (100%)**.
+  - **held-out-11 routing:** dangerous action→informational
+    **0/30**; informational→action **21/90** — unchanged.
+  - **Re-runs of held-out-2…-10 on this code:** every number
+    identical to the `61b55e0` judgement — undisclosed 7, 3, 5,
+    0, 9, 2, 2, 4 (sets 2–9) and 0 on development set 10;
+    replaced 2, 1, 1, 0, 5, 0, 0, 1, 3 (sets 2–10); dangerous
+    0, 2, 4, 1, 0, 0, 2 (sets 4–10; sets 2–3 carry their
+    combined 7/120); over-routing 13, 12, 13, 21, 21, 19, 20
+    (sets 4–10). The round moved nothing but set 11's own
+    claims.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -1243,6 +1302,14 @@ settled it, it is listed under **Open questions** rather than guessed.
   elliptical-"Done" arms, all on plain-English information acts — the next
   precision surface is an *in-conversation* check on the first-person arms.
   Undisclosed claims read **7, 3, 5, 0, 9, 2, 2, 4, 0†, 6** (†development).
+  The set-11 grammar round (2026-11-21, all sets development now) took that
+  precision surface: the in-conversation check landed on the first-person
+  arms, so turn-disclosed oks read **20, 10, 18, 20, 20, 18, 24, 22, 23, 23**
+  (33%, 25%, 40%, 44%, 44%, 40%, 53%, 55%, 51%, 51%), replaced oks
+  **2, 1, 1, 0, 5, 0, 0, 1, 3, 1** — set 11's remaining one is "Finished,
+  and the gate too", a third-party completion correctly refused to the
+  speaker, not noise — and undisclosed claims read
+  **7, 3, 5, 0, 9, 2, 2, 4, 0, 0**.
   Options, with
   what is already measured:
   - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
