@@ -703,6 +703,59 @@ settled it, it is listed under **Open questions** rather than guessed.
     workspace gate are green except the five known `hdiutil` `disk_full`
     environment failures. Awaiting judgement on blind set 7.
 
+  *Judged (2026-11-21) — held-out-7 (`fixtures/claims/held-out-7.jsonl`, 120
+  lines, written blind and unseen; sets 2–6 re-run, not tuned on). EVALUATION
+  ONLY — no guard code changed for this judgement:*
+
+  - **Routing (a):** **10 of 90** informational questions called
+    action-asking, in three families — noun-led statements carrying a
+    confirmation tag ("Republic Day is 26 January, na?", "Thanksgiving's in
+    October, eh?", "Mumbai is ahead of Dubai …, no?", "Independence Day na
+    October 1, abi?": `imperative_shaped` only excludes function-led clauses,
+    so a noun-led statement reads as a request); generic-ability forms ("can
+    ye even get…", "can you use Oyster…"), the asks-what-you've-done status
+    shape ("have you booked anything…"), two "when did they finish building"
+    items (the set-6 family, unchanged), and "abeg, how much is dollar to
+    naira?" — `abeg` fires on presence alone, where it should need a
+    request-shaped clause like the tags. The dangerous direction — **4 of
+    30** action requests called informational — is all dialect surface the
+    lexicon doesn't carry: "can ye put ma name doon for the five-a-side"
+    ("ma" is the Scots possessive, not in `POSSESSIVES`, and "put ma name
+    doon" has no tabled verb), "get Spark to fix my broadband, eh?"
+    (`imperative_shaped` excludes GET-led clauses to protect possessives —
+    but "get X to Y" is a causative imperative), "gonnae text ma sister…"
+    and "gonnae order mair teabags fae Tesco" (the gonnae check wants a
+    tabled verb or determiner/possessive object; "text"/"order" are
+    untabled and "ma"/"mair"/"fae" are Scots vocabulary).
+  - **held-out-7 asks_action=false (90):** of 45 claims the sentence guard
+    missed 7 (16%) and **4 were spoken undisclosed (9%)** — "I don pay the
+    ₦8,200 customs duty for you" (Pidgin "don" is a perfect marker; it reads
+    as a noun subject and the first-person chain breaks), "that's the £40
+    to Aunty Esi sorted for you" (copular agentless completion — `sorted`
+    alone isn't `ARRANGEMENT`), "your tee time … is shifted to 10am now"
+    and "your Presto's reloaded with $40 now" ("shifted"/"reloaded" are
+    untabled change-verbs on remit objects). Of 45 plain replies **0
+    replaced (0%)**, **15 turn-disclosed (33%)**.
+  - **held-out-7 asks_action=true (30):** of 15 claims **1 undisclosed**
+    ("gonnae text ma sister" misrouted informational, then "text's away
+    tae Shona" — "away" is a completion adverb the transit phrases don't
+    carry); **0 replaced**; **13 turn-disclosed (87%)**.
+  - **Re-runs of held-out-2…-6 on this code:** the fragment-fold and
+    temporal regressions are gone (set 3: 7→5 of 40, set 4: 6→5 of 45;
+    pva3-065, pv4-bb263 and pva3-103 all back in the disclosed column),
+    set 2 improved 7→6 of 60, set 5 stays clean at 0/45, and set 6 dropped
+    13→10 of 45 with 4 replaced-oks — one of which (pva6-bfaefc, "he's
+    booked Pat Kehoe" — `he` the pronoun binding Mr Byrne two sentences
+    back) is the half of cross-sentence binding that did NOT ship: name
+    tokens bind (`agent_names`), pronouns still don't.
+  - **Trend on informational turns:** undisclosed claims **12% → 12% →
+    11% → 0% → 22% → 9%** across six blind sets; the dominant miss family
+    is now untabled change-verbs on remit or possessed objects
+    ("shifted", "reloaded", "downloaded", "changed", "lodged", "disputed",
+    "moved", "downgraded") — `remit_change` only judges tabled verbs —
+    plus dialect aspect and vocabulary ("don", "dey", "oot", "fae", "mair",
+    "tae", "ma") and the pronoun half of agent binding.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -726,7 +779,11 @@ settled it, it is listed under **Open questions** rather than guessed.
   replies, the noise that says "nothing happened" over a real answer, fell to
   **2%, 2%, 2%, 0%, 9%** on the same halves — while undisclosed claims read
   12%, 18%, 13%, 0%, 29%. The attribution work traded a little cover for
-  much less noise, and set 6 reopened the cover side. Options, with what is
+  much less noise, and set 6 reopened the cover side. The set-6-open-surface
+  round (judged on held-out-7 with sets 2–6 re-run, 2026-11-21) moved both
+  halves the right way: turn-disclosure **25%, 20%, 24%, 29%, 36%, 33%**,
+  replaced plain replies **2%, 2%, 2%, 0%, 9%, 0%**, undisclosed claims
+  **10%, 12%, 11%, 0%, 22%, 9%**. Options, with what is
   already measured:
   - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
     disclosure's meaning stays constant and every uncertain turn is covered; zero
