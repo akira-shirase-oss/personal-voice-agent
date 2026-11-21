@@ -2,7 +2,7 @@
 {"type":"turn_opened","turn":3}
 {"type":"capture","turn":3,"on":true}
 {"type":"stt_request","call":7,"turn":3,"deadline_ms":3000}
-{"type":"lm_request","call":8,"turn":3,"deadline_ms":20000,"heard":"Send $42 to Priya tomorrow."}
+{"type":"lm_request","call":8,"turn":3,"deadline_ms":20000,"heard":"Send $42 to Priya tomorrow.","action_possible":true}
 {"type":"tts_request","call":9,"turn":3,"seq":0,"text":"Here is a draft.","voice":"standard","deadline_ms":3000}
 {"type":"cancel","call":8}
 {"type":"stop_playback","fence":4}

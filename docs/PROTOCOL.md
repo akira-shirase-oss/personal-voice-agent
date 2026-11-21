@@ -101,7 +101,7 @@ Provider failure reasons: `unavailable`, `model_not_ready`,
 | `turn_opened` | `turn` | A new turn exists |
 | `capture` | `turn`, `on` (bool) | Start/stop feeding the recognizer for that turn |
 | `stt_request` | `call`, `turn`, `deadline_ms` | Finalize recognition and send `stt_final` |
-| `lm_request` | `call`, `turn`, `deadline_ms`, `heard` | Run the language model on the heard text (data, not instructions) |
+| `lm_request` | `call`, `turn`, `deadline_ms`, `heard`, `action_possible` | Run the language model on the heard text (data, not instructions); `action_possible` is whether the request may ask for an action — only then is the proposal channel worth opening |
 | `tts_request` | `call`, `turn`, `seq`, `text`, `voice` (`standard`), `deadline_ms` | Synthesize and play this chunk, tagged with turn + seq |
 | `cancel` | `call` | Stop that provider call; any later reply is dropped |
 | `stop_playback` | `fence` | Stop playing; never play any chunk whose turn is below `fence` |

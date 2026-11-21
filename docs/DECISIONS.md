@@ -515,6 +515,34 @@ settled it, it is listed under **Open questions** rather than guessed.
   one undisclosed claim that gets through — held-out-2 measured 14 of 60. No change is made
   here; the maintainer picks the policy, and any change is judged on the next blind set.
 
+- **D-031 — First-sentence latency is cut by warming earlier, generating less, and
+  pre-rendering a clause (2026-11-21).** The p95 miss at `d8b78cc` was entirely the model
+  stage (1,954 ms of a 2,036 ms end-to-first-audio). Three changes, none touching what is
+  said:
+  - **Prewarm starts at the push-to-talk press.** `pushToTalkDown` calls `prewarm()`, which
+    now re-warms an existing `LanguageModelSession` or prepares one; the warm hides inside
+    the capture window instead of the release → first-sentence span. It runs after the
+    barge-in stop so a stop never waits on the model, and only when capture is consented.
+  - **`lm_request` carries `action_possible`** (the service's D-027 routing, defaulting to
+    `true` when absent so older services lose nothing): `false` streams plain reply text —
+    no `GuidedProposal` schema prefill, no `kind` field before reply tokens; `true` keeps
+    the guided proposal channel. The prompt itself (instructions + bounded recap + heard)
+    is unchanged; what an informational turn stops paying for is the schema. The model's
+    own tokenizer reports the pieces via `VoiceBench tokens` (macOS 26.4+), and streamed
+    turns record the SDK's usage counts (`lm_input_tokens`, `lm_cached_input_tokens`,
+    `lm_output_tokens`, macOS 27+) into the bench rows.
+  - **`LMEvent.clause` is a synthesis hint, never speech.** `ClauseStream` emits the leading
+    clause once — before the first `,` `;` `—` `–` while the first sentence is still open —
+    and the app renders it to PCM buffers speculatively. Only a `tts_request` (which exists
+    solely for a whole sentence the D-028 guard classified) may schedule those buffers, and
+    only when the cleared text starts with the speculated clause; anything else cancels
+    them. What was replaced under the guard's verdict can therefore never be heard. The
+    `lm_first_sentence` timing mark stays honest — stamped on the real sentence event, not
+    the hint.
+  Live measurement is owed to a quiet-Mac `scripts/bench-e2e.sh` run (the 2026-11-16 numbers
+  came from a shared busy machine); the decomposition and the measurement seams are in
+  docs/LATENCY.md.
+
 ## Open questions
 
 - **Channels for external actions** — V4's contract must name them (email?

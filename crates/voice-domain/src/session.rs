@@ -624,6 +624,7 @@ impl Session {
             turn: t.id,
             deadline_ms: total_ms,
             heard: text.clone(),
+            action_possible: t.asks_action,
         }));
         out.push(arm(lm, TimerKind::First, first_ms));
         out.push(arm(lm, TimerKind::Total, total_ms));

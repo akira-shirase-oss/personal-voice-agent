@@ -25,7 +25,10 @@ stop-playback p95 and zero stale chunks.
 **Known residual (D-027):** a claim made inside an answer to a plain informational question is
 caught only by the sentence classifier (5 of 8 such held-out claims got through).
 
-**Owed in code:** the model's first-sentence latency (`docs/LATENCY.md`).
+**Owed in code:** the model's first-sentence latency (`docs/LATENCY.md`) — **implemented
+(D-031):** press-time prewarm, plain reply streaming when `lm_request.action_possible` is
+false, and clause pre-rendering that stays behind the sentence-level guard; the quiet-Mac
+`scripts/bench-e2e.sh` re-measure is still owed (the 2,036 ms p95 was a busy machine).
 
 **Delivered on CI** (`.github/workflows/load.yml`, ubuntu; its Linux fsync numbers are
 that platform's, not the Mac's): `scripts/perf.sh ledger --records 1000000` — durable

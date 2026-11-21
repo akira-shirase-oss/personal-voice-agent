@@ -38,10 +38,34 @@ run says otherwise.
 | Before: fresh synthesizer per chunk, one model session for the whole conversation (`perf/results/2026-11-16-173254-e2e-latency-rounds3.md`) | 3,873 / 5,042 ms | 4 of 18 (model first-output deadline) |
 | Warm reused synthesizer (D-024) and a fresh prewarmed model session per turn with a bounded recap (D-025) | 1,877 / 2,203 ms | 0 of 18 |
 
-## Where the remaining miss is
+## Where the remaining miss is — and what D-031 changed
 
-The model. Its first sentence needs the guided-generation preamble plus a whole sentence.
-Next levers, each to be measured with `scripts/bench-e2e.sh` before it is kept: stream a
-reply as plain text when the request is conversational (guided generation only where an
-action is possible), shorter instructions, and a shorter first sentence. Recognizer and
-synthesis are well inside their budgets.
+The model. `lm_first_sentence` (heard → the service's first `lm_sentence`) decomposes, in
+order, into: prompt assembly (µs-scale string building: instructions + a ≤2-exchange recap
++ «heard»), session acquisition (a fresh `LanguageModelSession` per turn — free when
+`prewarm()` has already prepared one, paid in the turn when the model was unloaded during
+idle), prompt prefill plus time to first token, the tokens from first token to the first
+sentence boundary, and the splitter's own wait — a sentence is emitted only when `.`/`!`/`?`
+is seen followed by whitespace, i.e. it always arrives one boundary token late. D-031 moved
+three of those parts:
+
+- **Session warm starts at the press**, not inside the turn (`Conversation.pushToTalkDown`
+  → `prewarm()` prepares or re-warms a session while the user is still talking; the
+  previous turn's end-of-response prewarm covers the back-to-back case).
+- **Conversational turns skip guided generation.** `lm_request` carries `action_possible`
+  (the D-027 routing); `false` streams plain reply text — no schema prefill and no `kind`
+  field before reply tokens — while `true` keeps the `GuidedProposal` channel.
+  `swift run -c release VoiceBench tokens` reports the model tokenizer's own counts:
+  instructions + schema + prompt (guided) vs instructions + prompt (plain), per fixture.
+- **The first clause pre-renders.** `LMEvent.clause` hands the leading clause (before the
+  first `,` `;` `—` `–` while the first sentence is still open) to the synthesizer at once;
+  its buffers sit inert until the service's `tts_request` for the whole classified sentence
+  arrives — the D-028 verdict stays the gate, and a replaced or mismatched sentence
+  discards them. This shortens time-to-first-audio below the sentence, not the model's own
+  `lm_first_sentence` mark (that stays honest: it is stamped on the first real sentence
+  event, not on the clause hint).
+
+Whether these bring the p95 back inside 2,000 ms is a live question: the numbers above
+were a busy shared machine, and the next bench rows also carry `lm_input_tokens`,
+`lm_cached_input_tokens` and `lm_output_tokens` from the stream's usage reports
+(macOS 27+). Recognizer and synthesis remain well inside their budgets.

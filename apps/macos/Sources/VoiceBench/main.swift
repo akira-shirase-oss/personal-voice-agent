@@ -89,6 +89,39 @@ let rounds = value("--rounds", 3)
 let warm = !flag("--cold")
 let paced = !flag("--unpaced")
 
+/// `tokens`: prompt-side token counts from the model's own tokenizer (D-031) for each
+/// fixture's heard text — the instructions prefix, the guided proposal channel, and the
+/// prompt text alone and with a representative two-exchange recap. `guided` vs `plain`
+/// totals are what the routing split removes from a conversational turn.
+if args.dropFirst().first == "tokens" {
+    let heardTexts = try String(contentsOf: repoRoot.appending(path: "fixtures/audio/utterances.tsv"), encoding: .utf8)
+        .split(separator: "\n").filter { !$0.hasPrefix("#") }
+        .map { String($0.split(separator: "\t", maxSplits: 1)[1]) }
+    let provider = FoundationModelsProvider()
+    let recap: [ConversationRecap.Exchange] = [
+        ("what time is my dentist appointment", "Your dentist appointment is at 3 p.m. on Thursday."),
+        ("and the train to York on Friday", "The 9:15 from King's Cross gets in at 11:02."),
+    ]
+    var rows: [[String: Any]] = []
+    for heard in heardTexts {
+        let counts: PromptTokens?
+        do { counts = try await provider.promptTokens(forHeard: heard) }
+        catch { fail("token counting unavailable: \(error)") }
+        let withRecap = try? await provider.promptTokens(forHeard: heard, recap: recap)
+        guard let counts else { fail("token counting needs macOS 26.4+") }
+        rows.append([
+            "heard": heard,
+            "instructions": counts.instructions, "guided_schema": counts.guidedSchema,
+            "prompt": counts.prompt, "prompt_with_recap": withRecap?.prompt ?? -1,
+            "guided_input": counts.instructions + counts.guidedSchema + counts.prompt,
+            "plain_input": counts.instructions + counts.prompt,
+        ])
+    }
+    let out: [String: Any] = ["per_fixture": rows]
+    print(String(decoding: try JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
+    exit(0)
+}
+
 func ms(_ d: Duration?) -> Double? { d.map { Double($0.components.seconds) * 1000 + Double($0.components.attoseconds) / 1e15 } }
 func summary(_ values: [Double]) -> [String: Double] {
     let v = values.sorted()
@@ -142,7 +175,7 @@ struct ColdModel: LanguageModeling {
     var instructionsVersion: String { inner.instructionsVersion }
     var isTestProvider: Bool { false }
     func availability() -> LMAvailability { inner.availability() }
-    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws { try await inner.respond(to: heard, events: events) }
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws { try await inner.respond(to: heard, actionPossible: actionPossible, events: events) }
 }
 
 func speak(_ pcm: PCM) async {
@@ -177,6 +210,11 @@ for round in 1...rounds {
         let row: [String: Double] = [
             "end_to_first_audio_ms": ms(timing.endToFirstAudio) ?? -1, "stt_finalize_ms": ms(timing.recognizerFinalize) ?? -1,
             "lm_first_sentence_ms": ms(timing.modelFirstSentence) ?? -1, "tts_first_audio_ms": ms(timing.synthesisFirstAudio) ?? -1,
+            // What the model reported spending (macOS 27+; -1 where it does not say):
+            // the warm prefix's share of the input shows in cached_input.
+            "lm_input_tokens": Double(model.lastUsage?.inputTokens ?? -1),
+            "lm_cached_input_tokens": Double(model.lastUsage?.cachedInputTokens ?? -1),
+            "lm_output_tokens": Double(model.lastUsage?.outputTokens ?? -1),
         ]
         turns.append(["round": round, "fixture": name, "outcome": outcome.rawValue, "timing": row])
         if firstTurn == nil { firstTurn = row } else if outcome == .completed {

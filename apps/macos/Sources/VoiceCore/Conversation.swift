@@ -295,6 +295,10 @@ public actor Conversation {
         calls.removeAll()
         callTurn.removeAll()
         synthesisTail.removeAll()
+        speculation.withLock { s in
+            for spec in s.values { spec.task.cancel() }
+            s.removeAll()
+        }
         recognition.removeAll()
         sessions.removeAll()
         pendingAudio.removeAll()
@@ -405,6 +409,10 @@ public actor Conversation {
         }
         // Barge-in: stop the assistant here before the service even hears about it (D-023).
         if let t = currentTurn { player.stop(fence: TurnID(t.raw + 1), epoch: epoch) }
+        // The press is the early warning: the session warm hides inside the capture window
+        // instead of sitting inside release → first sentence (D-031). After the barge-in
+        // stop, so a stop never waits on the model.
+        config.model.prewarm()
         // Every press checks the service is alive; the microphone opens only on its answer.
         if sessionUp && pendingPing == nil { ping() }
         send(.pttDown)
@@ -503,9 +511,9 @@ public actor Conversation {
             stopMicrophone(turn)
         case .sttRequest(let call, let turn, _):
             finishRecognition(call: call, turn: turn)
-        case .lmRequest(let call, let turn, _, let heard):
+        case .lmRequest(let call, let turn, _, let heard, let actionPossible):
             publish(.heard(turn, heard))
-            runModel(call: call, turn: turn, heard: heard)
+            runModel(call: call, turn: turn, heard: heard, actionPossible: actionPossible)
         case .ttsRequest(let call, let turn, let seq, let text, let voice, _):
             if timing[turn]?.firstTTSRequest == nil { timing[turn, default: TurnTiming()].firstTTSRequest = clock.now }
             publish(.speaking(turn, text))
@@ -526,6 +534,7 @@ public actor Conversation {
             if let unfinished = sessions.removeValue(forKey: turn) { Task { await unfinished.cancel() } }
             pendingAudio.removeValue(forKey: turn)
             synthesisTail.removeValue(forKey: turn)
+            speculation.withLock { $0.removeValue(forKey: turn) }?.task.cancel()
             restarts = 0
             publish(.turnClosed(turn, outcome, t))
         case .degraded(let turn, let stage, let reason):
@@ -573,6 +582,11 @@ public actor Conversation {
         for (turn, task) in synthesisTail where turn < fence {
             task.cancel()
             synthesisTail.removeValue(forKey: turn)
+        }
+        speculation.withLock { s in
+            for turn in s.keys.filter({ $0 < fence }) {
+                s.removeValue(forKey: turn)?.task.cancel()
+            }
         }
         if let c = capturing, c < fence { stopMicrophone(c) }
     }
@@ -645,16 +659,21 @@ public actor Conversation {
         { [weak self] mark, at in Task { await self?.mark(turn, mark, at) } }
     }
 
-    private func runModel(call: CallID, turn: TurnID, heard: String) {
+    private func runModel(call: CallID, turn: TurnID, heard: String, actionPossible: Bool) {
         let model = config.model
         let process = self.process
         let mark = marker(turn)
         track(call, turn, Task {
             do {
-                try await model.respond(to: heard) { event in
+                try await model.respond(to: heard, actionPossible: actionPossible) { event in
                     guard !Task.isCancelled else { return }
                     switch event {
                     case .kind(let k): try? process?.send(.lmKind(call: call, kind: k))
+                    case .clause(let text):
+                        // A hint only: the clause renders to buffers while the rest of its
+                        // sentence still generates. Nothing schedules from it — the
+                        // service's sentence-level request is what plays (D-031).
+                        self.speculate(turn: turn, clause: text)
                     case .sentence(let i, let text):
                         if i == 0 { mark(.firstSentence, ContinuousClock.now) }
                         try? process?.send(.lmSentence(call: call, index: i, text: text))
@@ -670,6 +689,32 @@ public actor Conversation {
         })
     }
 
+    /// A leading clause rendered to buffers while its sentence still generates (D-031): the
+    /// first `tts_request` that starts with it plays the pre-rendered audio, anything else
+    /// discards it. Buffers, never speech — the guard's sentence verdict remains the gate.
+    /// Off the actor: the provider's event handler writes it synchronously, so the store is
+    /// always set before the sentence's `lm_sentence` reaches the service.
+    private struct Speculation {
+        let clause: String
+        let task: Task<[PCM], Never>
+    }
+    private let speculation = Mutex<[TurnID: Speculation]>([:])
+
+    private nonisolated func speculate(turn: TurnID, clause: String) {
+        let synthesizer = config.synthesizer
+        let task = Task {
+            let buffers = Mutex<[PCM]>([])
+            try? await synthesizer.synthesize(clause, voice: .standard) { pcm in buffers.withLock { $0.append(pcm) } }
+            return buffers.withLock { $0 }
+        }
+        let dropped = speculation.withLock { s -> Task<[PCM], Never>? in
+            guard s[turn] == nil else { return task }
+            s[turn] = Speculation(clause: clause, task: task)
+            return nil
+        }
+        dropped?.cancel()
+    }
+
     private func speak(call: CallID, turn: TurnID, seq: UInt32, text: String, voice: Voice) {
         let previous = synthesisTail[turn]
         let synthesizer = config.synthesizer
@@ -679,6 +724,9 @@ public actor Conversation {
         let progress = ChunkProgress()
         let mark = marker(turn)
         let position = PlaybackPosition(epoch: epoch, turn: turn)
+        // A clause pre-rendered while its sentence generated plays only when this cleared
+        // sentence starts with it — a replaced or unrelated sentence discards it (D-031).
+        let spec = speculation.withLock { $0.removeValue(forKey: turn) }
         let task = Task {
             // Chunks of one turn are synthesized in order; playback overlaps the next synthesis.
             await previous?.value
@@ -690,28 +738,42 @@ public actor Conversation {
                 return
             }
             let converter = Mutex<FormatConverter?>(nil)
+            let deliver: @Sendable (PCM) -> Void = { pcm in
+                // No cancellation check here: this runs on the synthesizer's thread. The
+                // player's fence is what keeps a stale buffer from playing.
+                let ready: PCM
+                if pcm.buffer.format == target {
+                    ready = pcm
+                } else {
+                    let c = converter.withLock { c -> FormatConverter? in
+                        if c == nil { c = FormatConverter(from: pcm.buffer.format, to: target) }
+                        return c
+                    }
+                    guard let converted = try? c?.convert(pcm) else { return }
+                    ready = converted
+                }
+                let result = player.enqueue(AudioChunk(epoch: position.epoch, turn: turn, seq: seq, pcm: ready)) {
+                    if progress.played() { try? process?.send(.ttsFinished(call: call)) }
+                }
+                if result == .scheduled, progress.scheduled() {
+                    mark(.firstAudio, ContinuousClock.now)
+                    try? process?.send(.ttsStarted(call: call))
+                }
+            }
             do {
-                try await synthesizer.synthesize(text, voice: voice) { pcm in
-                    // No cancellation check here: this runs on the synthesizer's thread. The
-                    // player's fence is what keeps a stale buffer from playing.
-                    let ready: PCM
-                    if pcm.buffer.format == target {
-                        ready = pcm
-                    } else {
-                        let c = converter.withLock { c -> FormatConverter? in
-                            if c == nil { c = FormatConverter(from: pcm.buffer.format, to: target) }
-                            return c
-                        }
-                        guard let converted = try? c?.convert(pcm) else { return }
-                        ready = converted
-                    }
-                    let result = player.enqueue(AudioChunk(epoch: position.epoch, turn: turn, seq: seq, pcm: ready)) {
-                        if progress.played() { try? process?.send(.ttsFinished(call: call)) }
-                    }
-                    if result == .scheduled, progress.scheduled() {
-                        mark(.firstAudio, ContinuousClock.now)
-                        try? process?.send(.ttsStarted(call: call))
-                    }
+                var rest: String? = text
+                if let spec, voice == .standard, text.hasPrefix(spec.clause) {
+                    let buffers = await withTaskCancellationHandler(
+                        operation: { await spec.task.value },
+                        onCancel: { spec.task.cancel() })
+                    for pcm in buffers { deliver(pcm) }
+                    let remainder = text.dropFirst(spec.clause.count).trimmingCharacters(in: .whitespaces)
+                    rest = remainder.isEmpty ? nil : remainder
+                } else {
+                    spec?.task.cancel()
+                }
+                if let rest {
+                    try await synthesizer.synthesize(rest, voice: voice, onBuffer: deliver)
                 }
                 if progress.synthesisEnded() {
                     try? process?.send(.ttsFinished(call: call))

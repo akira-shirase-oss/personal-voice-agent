@@ -137,6 +137,10 @@ pub enum ServiceMessage {
         turn: TurnId,
         deadline_ms: u64,
         heard: String,
+        /// Whether the heard request may ask for an action (D-027's routing): the app opens
+        /// the action proposal channel only then, and generates a conversational turn as
+        /// plain reply text (D-031, the first-sentence latency cut).
+        action_possible: bool,
     },
     TtsRequest {
         call: CallId,

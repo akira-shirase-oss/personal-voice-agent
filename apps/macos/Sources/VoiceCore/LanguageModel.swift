@@ -7,6 +7,10 @@ import FoundationModels
 
 public enum LMEvent: Equatable, Sendable {
     case kind(ProposalKind)
+    /// The leading clause of a sentence whose rest is still generating — a hint only. The
+    /// service speaks whole judged sentences; this exists so synthesis can pre-render the
+    /// clause's audio and have it ready if the sentence's verdict later clears it (D-031).
+    case clause(String)
     case sentence(index: UInt32, text: String)
     case done(Proposal)
 }
@@ -28,7 +32,10 @@ public protocol LanguageModeling: Sendable {
     var isTestProvider: Bool { get }
     func availability() -> LMAvailability
     /// Streams events for one turn. `heard` is the user's transcript, passed as quoted data.
-    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws
+    /// `actionPossible` is the service's routing of the request (D-027): only when the heard
+    /// text may ask for an action is the proposal channel opened — a conversational turn
+    /// generates plain reply text, which is the first-sentence latency cut (D-031).
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws
     /// Loads the model ahead of the first turn.
     func prewarm()
     /// Drops everything carried from one turn to the next (the recap of earlier exchanges, any
@@ -124,6 +131,34 @@ public struct SentenceStream: Sendable {
     }
 }
 
+/// Emits the reply's leading clause once: the first pause boundary (`,` `;` `—` `–`) inside
+/// the first sentence, once text after it proves the sentence is not done. A complete first
+/// sentence and any later one never emit — the clause exists only to overlap synthesis with
+/// the rest of the first sentence's generation (D-031).
+public struct ClauseStream: Sendable {
+    private var emitted = false
+    public init() {}
+
+    public mutating func feed(_ text: String) -> [String] {
+        guard !emitted else { return [] }
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            if c == "." || c == "!" || c == "?" { return [] }  // the first sentence ended: too late
+            if c == "," || c == ";" || c == "—" || c == "–" {
+                var j = text.index(after: i)
+                while j < text.endIndex, text[j].isWhitespace { j = text.index(after: j) }
+                guard j < text.endIndex else { return [] }  // more must follow, or nothing is early
+                emitted = true
+                let clause = text[...i].trimmingCharacters(in: .whitespacesAndNewlines)
+                return clause.isEmpty ? [] : [clause]
+            }
+            i = text.index(after: i)
+        }
+        return []
+    }
+}
+
 @Generable
 struct GuidedProposal {
     @Guide(description: "reply for a conversational answer or a draft; action only when the user asks you to do something on their behalf, such as send, pay, call, book, remind or note")
@@ -149,6 +184,24 @@ struct GuidedSlot {
 
     @Generable
     enum GuidedSlotKind { case amount, datetime, person, recipient, text }
+}
+
+/// One turn's prompt-side token cost, counted by the model's own tokenizer (D-031): the
+/// session instructions every path pays, the guided proposal channel only an action-capable
+/// turn needs, and the prompt text for one `heard` plus its recap.
+public struct PromptTokens: Sendable, Equatable {
+    public let instructions: Int
+    public let guidedSchema: Int
+    public let prompt: Int
+}
+
+/// What the model reported spending on the last streamed turn, where the SDK provides it:
+/// the prompt-side input (and how much of it was served from the warm prefix) and the reply
+/// tokens generated. `nil` below macOS 27 or before the first turn.
+public struct LMUsage: Sendable, Equatable {
+    public let inputTokens: Int
+    public let cachedInputTokens: Int
+    public let outputTokens: Int
 }
 
 public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendable {
@@ -186,11 +239,11 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
     public func prewarm() {
         lock.lock()
         defer { lock.unlock() }
-        if ready == nil {
-            let s = LanguageModelSession(instructions: Self.instructions)
-            s.prewarm()
-            ready = s
-        }
+        // Re-warm an existing session too: the model can be unloaded while the app idles, and
+        // the push-to-talk press is exactly the early warning this exists for (D-031).
+        let s = ready ?? LanguageModelSession(instructions: Self.instructions)
+        s.prewarm()
+        ready = s
     }
 
     private func takeSession() -> LanguageModelSession {
@@ -213,6 +266,36 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
 
     static func mayRetryAfterOverflow(eventsSent: Int) -> Bool { eventsSent == 0 }
 
+    /// The last turn's token usage, read from the stream's final snapshot.
+    private var usageValue: LMUsage?
+    public var lastUsage: LMUsage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return usageValue
+    }
+
+    @available(macOS 27, *)
+    private func record(_ usage: LanguageModelSession.Usage) {
+        let u = LMUsage(inputTokens: usage.input.totalTokenCount,
+                        cachedInputTokens: usage.input.cachedTokenCount,
+                        outputTokens: usage.output.totalTokenCount)
+        lock.lock()
+        usageValue = u
+        lock.unlock()
+    }
+
+    /// Token counts for a turn's prompt side, from the model's own tokenizer (macOS 26.4+;
+    /// `nil` below it). The bench's `tokens` mode reports them: `guidedSchema` is what a
+    /// conversational turn no longer prefills.
+    public func promptTokens(forHeard heard: String, recap: [ConversationRecap.Exchange] = []) async throws -> PromptTokens? {
+        guard #available(macOS 26.4, *) else { return nil }
+        let model = SystemLanguageModel.default
+        return try await PromptTokens(
+            instructions: model.tokenCount(for: Instructions(Self.instructions)),
+            guidedSchema: model.tokenCount(for: GuidedProposal.generationSchema),
+            prompt: model.tokenCount(for: Self.prompt(heard, recap: recap)))
+    }
+
     final class Counter: @unchecked Sendable {
         private let lock = NSLock()
         private var n = 0
@@ -234,7 +317,7 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
         return "Earlier in this conversation, for context only:\n\(earlier)\n\nThe user said: «\(heard)»"
     }
 
-    public func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+    public func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         if case .unavailable(let reason, _) = availability() { throw LMError.failed(reason) }
         let session = takeSession()
         let (recap, generation) = self.recap.begin()
@@ -245,27 +328,81 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
         }
         let reply: String
         do {
-            reply = try await stream(Self.prompt(heard, recap: recap), session: session, events: counted)
+            reply = try await stream(Self.prompt(heard, recap: recap), guided: actionPossible, session: session, events: counted)
         } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
             // A long utterance plus the recap overflowed. Retry without the recap only if
             // nothing was streamed yet: a retry after some sentences would splice two
             // different generations into one reply.
             guard Self.mayRetryAfterOverflow(eventsSent: sent.value) else { throw LMError.failed(.contextWindow) }
-            reply = try await stream(Self.prompt(heard, recap: []), session: LanguageModelSession(instructions: Self.instructions), events: counted)
+            reply = try await stream(Self.prompt(heard, recap: []), guided: actionPossible, session: LanguageModelSession(instructions: Self.instructions), events: counted)
         }
         self.recap.remember(heard, reply, generation: generation)
         prewarm()
     }
 
-    /// Streams one proposal; returns its reply text.
-    private func stream(_ prompt: String, session: LanguageModelSession, events: @escaping @Sendable (LMEvent) -> Void) async throws -> String {
+    /// Streams one proposal; returns its reply text. `guided` runs the structured
+    /// proposal — kind first, then the reply — which the model pays for with schema prefill
+    /// and a kind field before any reply text. A turn whose request may ask for no action
+    /// has no proposal channel to fill: it streams plain reply text instead, same
+    /// instructions session (the prewarmed prefix covers both), kind known upfront (D-031).
+    private func stream(_ prompt: String, guided: Bool, session: LanguageModelSession, events: @escaping @Sendable (LMEvent) -> Void) async throws -> String {
+        if guided { return try await streamGuided(prompt, session: session, events: events) }
+        return try await streamPlain(prompt, session: session, events: events)
+    }
+
+    /// Plain-text generation for a conversational turn: the kind is `.reply` by construction
+    /// (sent on the first snapshot so the service's first-output deadline still measures real
+    /// model output), and the accumulated text feeds the sentence and clause splitters as it
+    /// streams.
+    private func streamPlain(_ prompt: String, session: LanguageModelSession, events: @escaping @Sendable (LMEvent) -> Void) async throws -> String {
+        var sentKind = false
+        var sentences = SentenceStream()
+        var clauses = ClauseStream()
+        var index: UInt32 = 0
+        var last = ""
+        do {
+            for try await snapshot in session.streamResponse(to: prompt) {
+                try Task.checkCancellation()
+                if #available(macOS 27, *) { record(snapshot.usage) }
+                let content = snapshot.content
+                last = content
+                if !sentKind {
+                    sentKind = true
+                    events(.kind(.reply))
+                }
+                if let clause = clauses.feed(content).first {
+                    events(.clause(clause))
+                }
+                for s in sentences.feed(content) {
+                    events(.sentence(index: index, text: s))
+                    index += 1
+                }
+            }
+        } catch let error as LanguageModelSession.GenerationError {
+            switch error {
+            case .exceededContextWindowSize: throw error
+            case .guardrailViolation, .refusal: throw LMError.failed(.guardrail)
+            case .assetsUnavailable: throw LMError.failed(.modelNotReady)
+            default: throw LMError.failed(.error)
+            }
+        }
+        if let rest = sentences.finish(last) {
+            events(.sentence(index: index, text: rest))
+        }
+        events(.done(.reply(last)))
+        return last
+    }
+
+    private func streamGuided(_ prompt: String, session: LanguageModelSession, events: @escaping @Sendable (LMEvent) -> Void) async throws -> String {
         var sentKind: ProposalKind?
         var sentences = SentenceStream()
+        var clauses = ClauseStream()
         var index: UInt32 = 0
         var last: GuidedProposal.PartiallyGenerated?
         do {
             for try await snapshot in session.streamResponse(to: prompt, generating: GuidedProposal.self) {
                 try Task.checkCancellation()
+                if #available(macOS 27, *) { record(snapshot.usage) }
                 let content = snapshot.content
                 last = content
                 if sentKind == nil, let k = content.kind {
@@ -273,6 +410,9 @@ public final class FoundationModelsProvider: LanguageModeling, @unchecked Sendab
                     events(.kind(sentKind!))
                 }
                 if sentKind == .reply, let reply = content.reply {
+                    if let clause = clauses.feed(reply).first {
+                        events(.clause(clause))
+                    }
                     for s in sentences.feed(reply) {
                         events(.sentence(index: index, text: s))
                         index += 1
@@ -337,7 +477,7 @@ public struct DeterministicTestProvider: LanguageModeling {
 
     public func availability() -> LMAvailability { .available }
 
-    public func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+    public func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         switch mode {
         case .stall:
             try await Task.sleep(for: .seconds(3_600))
@@ -348,7 +488,9 @@ public struct DeterministicTestProvider: LanguageModeling {
             break
         }
         let lower = heard.lowercased()
-        if lower.hasPrefix("note ") {
+        // A conversational turn has no proposal channel, exactly as the on-device provider
+        // sees it: "note …" then reads as speech, not a proposal.
+        if actionPossible, lower.hasPrefix("note ") {
             events(.kind(.action))
             try await Task.sleep(for: sentenceDelay)
             let text = String(heard.dropFirst(5)).trimmingCharacters(in: .punctuationCharacters)

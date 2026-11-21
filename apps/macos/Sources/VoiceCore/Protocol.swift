@@ -159,6 +159,7 @@ enum Field: String, CodingKey {
     case rightsReview = "rights_review"
     case deadlineMs = "deadline_ms"
     case personalVoice = "personal_voice"
+    case actionPossible = "action_possible"
 }
 
 // MARK: - App → service
@@ -299,7 +300,7 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
     case turnOpened(turn: TurnID)
     case capture(turn: TurnID, on: Bool)
     case sttRequest(call: CallID, turn: TurnID, deadlineMs: UInt64)
-    case lmRequest(call: CallID, turn: TurnID, deadlineMs: UInt64, heard: String)
+    case lmRequest(call: CallID, turn: TurnID, deadlineMs: UInt64, heard: String, actionPossible: Bool)
     case ttsRequest(call: CallID, turn: TurnID, seq: UInt32, text: String, voice: Voice, deadlineMs: UInt64)
     case cancel(call: CallID)
     case stopPlayback(fence: TurnID)
@@ -352,7 +353,10 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
         case "capture": self = .capture(turn: try turn(), on: try c.decode(Bool.self, forKey: .on))
         case "stt_request": self = .sttRequest(call: try call(), turn: try turn(), deadlineMs: try deadline())
         case "lm_request":
-            self = .lmRequest(call: try call(), turn: try turn(), deadlineMs: try deadline(), heard: try c.decode(String.self, forKey: .heard))
+            // `action_possible` missing (an older service) keeps the old always-guided path.
+            self = .lmRequest(
+                call: try call(), turn: try turn(), deadlineMs: try deadline(), heard: try c.decode(String.self, forKey: .heard),
+                actionPossible: try c.decodeIfPresent(Bool.self, forKey: .actionPossible) ?? true)
         case "tts_request":
             self = .ttsRequest(
                 call: try call(), turn: try turn(), seq: try c.decode(UInt32.self, forKey: .seq),
@@ -402,11 +406,12 @@ public enum ServiceMessage: Codable, Equatable, Sendable {
             try c.encode(call, forKey: .call)
             try c.encode(turn, forKey: .turn)
             try c.encode(deadline, forKey: .deadlineMs)
-        case .lmRequest(let call, let turn, let deadline, let heard):
+        case .lmRequest(let call, let turn, let deadline, let heard, let actionPossible):
             try c.encode(call, forKey: .call)
             try c.encode(turn, forKey: .turn)
             try c.encode(deadline, forKey: .deadlineMs)
             try c.encode(heard, forKey: .heard)
+            try c.encode(actionPossible, forKey: .actionPossible)
         case .ttsRequest(let call, let turn, let seq, let text, let voice, let deadline):
             try c.encode(call, forKey: .call)
             try c.encode(turn, forKey: .turn)

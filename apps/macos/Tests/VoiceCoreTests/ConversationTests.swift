@@ -155,13 +155,13 @@ final class StallOnceProvider: LanguageModeling, @unchecked Sendable {
     let isTestProvider = true
     private let calls = Mutex(0)
     func availability() -> LMAvailability { .available }
-    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         let n = calls.withLock { c -> Int in
             c += 1
             return c
         }
         if n == 1 { try await Task.sleep(for: .seconds(3_600)) }
-        try await DeterministicTestProvider().respond(to: heard, events: events)
+        try await DeterministicTestProvider().respond(to: heard, actionPossible: actionPossible, events: events)
     }
 }
 
@@ -175,6 +175,65 @@ final class SequenceRecognizer: SpeechRecognizing, @unchecked Sendable {
     }
 }
 
+/// Counts `prewarm` calls: the press must warm the model session, not the release.
+final class CountingPrewarmProvider: LanguageModeling, @unchecked Sendable {
+    let modelID = "prewarm-probe"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    let prewarms = Mutex(0)
+    func availability() -> LMAvailability { .available }
+    func prewarm() { prewarms.withLock { $0 += 1 } }
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        try await DeterministicTestProvider().respond(to: heard, actionPossible: actionPossible, events: events)
+    }
+}
+
+/// Records the synthesis strings it is asked for, in order.
+final class RecordingSynthesizer: SpeechSynthesizing, @unchecked Sendable {
+    let calls = Mutex<[String]>([])
+    func synthesize(_ text: String, voice: Voice, onBuffer: @escaping @Sendable (PCM) -> Void) async throws {
+        calls.withLock { $0.append(text) }
+        try await ToneSynthesizer().synthesize(text, voice: voice, onBuffer: onBuffer)
+    }
+}
+
+/// A reply stream with controlled boundaries: the leading clause while the rest of its
+/// sentence still generates, then the whole sentence, then the proposal. `actionPossible`
+/// arrives on the wire — recorded so the test can read what the service said.
+final class ClauseProvider: LanguageModeling, @unchecked Sendable {
+    let modelID = "clause-test-provider"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    let actionPossibleSeen = Mutex<Bool?>(nil)
+    private let clause: String
+    private let sentence: String
+    init(clause: String = "Sure,", sentence: String = "Sure, the train leaves at six.") {
+        self.clause = clause
+        self.sentence = sentence
+    }
+    func availability() -> LMAvailability { .available }
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        actionPossibleSeen.withLock { $0 = actionPossible }
+        events(.kind(.reply))
+        events(.clause(clause))
+        events(.sentence(index: 0, text: sentence))
+        events(.done(.reply(sentence)))
+    }
+}
+
+/// Records the `actionPossible` it is told, then answers like the test provider.
+final class ActionPossibleProbe: LanguageModeling, @unchecked Sendable {
+    let modelID = "action-possible-probe"
+    let instructionsVersion = "test-1"
+    let isTestProvider = true
+    let seen = Mutex<Bool?>(nil)
+    func availability() -> LMAvailability { .available }
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+        seen.withLock { $0 = actionPossible }
+        try await DeterministicTestProvider().respond(to: heard, actionPossible: actionPossible, events: events)
+    }
+}
+
 /// Builds each prompt exactly as the on-device provider does (its recap of the last two
 /// exchanges, then the heard text) and records it; answers like the test provider.
 final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
@@ -185,10 +244,10 @@ final class RecapProbeProvider: LanguageModeling, @unchecked Sendable {
     private let recap = Mutex<[(heard: String, reply: String)]>([])
     func availability() -> LMAvailability { .available }
     func forget() { recap.withLock { $0.removeAll() } }
-    func respond(to heard: String, events: @escaping @Sendable (LMEvent) -> Void) async throws {
+    func respond(to heard: String, actionPossible: Bool, events: @escaping @Sendable (LMEvent) -> Void) async throws {
         let earlier = recap.withLock { $0 }
         prompts.withLock { $0.append(FoundationModelsProvider.prompt(heard, recap: earlier)) }
-        try await DeterministicTestProvider().respond(to: heard, events: events)
+        try await DeterministicTestProvider().respond(to: heard, actionPossible: actionPossible, events: events)
         recap.withLock { r in
             r.append((heard, "You said: \(heard)"))
             if r.count > 2 { r.removeFirst(r.count - 2) }
@@ -750,6 +809,105 @@ struct ConversationTests {
         await c.shutdown()
     }
 
+    /// The warm model session must be ready before the request exists: the press re-warms it,
+    /// so the warm hides inside the capture window (the user's own speaking time) instead of
+    /// sitting inside release → first sentence (D-031).
+    @Test("the key press re-warms the model session")
+    func pressPrewarms() async throws {
+        let model = CountingPrewarmProvider()
+        let (c, r, pump) = try makeConversation("prewarm", model: model)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        let atStart = model.prewarms.withLock { $0 }
+        await c.pushToTalkDown()
+        #expect(await r.next(isCaptureOn) != nil)
+        #expect(model.prewarms.withLock { $0 } > atStart, "the press did not re-warm the model session")
+        await c.pushToTalkUp()
+        await c.shutdown()
+    }
+
+    /// The service says on the wire whether the request may ask for an action (D-031): a fact
+    /// question generates plain reply text, an imperative keeps the proposal channel.
+    @Test("the model is told whether the request may ask for an action")
+    func actionPossibleOnTheWire() async throws {
+        let model = ActionPossibleProbe()
+        let (c, r, pump) = try makeConversation("action-possible", heard: "what time does the library shut", model: model)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        #expect(model.seen.withLock { $0 } == false, "a fact question pays for no proposal channel")
+        await c.shutdown()
+    }
+
+    /// A clause that completes while its sentence still generates is handed to synthesis
+    /// early; the guard's whole-sentence verdict still gates what is scheduled — only a
+    /// sentence that prefixes the speculation plays its pre-rendered audio (D-031).
+    @Test("the leading clause is synthesized early but plays only for a cleared sentence")
+    func clauseIsSynthesizedEarlyAndGatedOnTheVerdict() async throws {
+        let model = ClauseProvider()
+        let synth = RecordingSynthesizer()
+        let (c, r, pump) = try makeConversation("clause", model: model, synthesizer: synth)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        #expect(synth.calls.withLock { $0 }.first == "Sure,", "the clause went to synthesis before the sentence cleared")
+        #expect(pump.loudBlocks.withLock { $0 } > 0, "the sentence was spoken")
+        await c.shutdown()
+    }
+
+    /// The clause the guard never cleared never plays: a first-person claim is replaced by the
+    /// disclaimer, so the speculated buffers are discarded and only the disclaimer is spoken.
+    @Test("a speculated clause is discarded when the sentence is not cleared")
+    func unclearedClauseNeverPlays() async throws {
+        let model = ClauseProvider(clause: "I booked", sentence: "I booked the seats.")
+        let synth = RecordingSynthesizer()
+        let (c, r, pump) = try makeConversation("clause-guard", model: model, synthesizer: synth)
+        defer { pump.stop() }
+        try await startWithConsent(c, r)
+        try await talk(c, r)
+        #expect(await r.next { closed($0) != nil } != nil)
+        #expect(synth.calls.withLock { $0 }.first == "I booked", "the clause was still handed to synthesis early")
+        let calls = synth.calls.withLock { $0 }
+        #expect(!calls.contains("the seats."), "the uncleared clause's remainder was never synthesized into the request")
+        let disclaimer = "That was only a draft; nothing has happened."
+        let spoken = await r.seen.compactMap { if case .speaking(_, let t) = $0 { t } else { nil } }
+        #expect(spoken.contains(disclaimer), "the disclaimer replaced the claim: \(spoken)")
+        await c.shutdown()
+    }
+
+    /// Without the proposal channel, an imperative reads as speech: the stand-in honors the
+    /// service's `action_possible` exactly like the on-device provider's plain mode does.
+    @Test("the test provider never proposes an action the turn cannot take")
+    func providerHonorsActionPossible() async throws {
+        let events = Mutex<[LMEvent]>([])
+        try await DeterministicTestProvider().respond(to: "note buy milk", actionPossible: false) { e in
+            events.withLock { $0.append(e) }
+        }
+        let kinds = events.withLock { $0 }.compactMap { if case .kind(let k) = $0 { k } else { nil } }
+        #expect(kinds == [.reply], "no action channel on a conversational turn: \(kinds)")
+        try await DeterministicTestProvider().respond(to: "note buy milk", actionPossible: true) { e in
+            events.withLock { $0.append(e) }
+        }
+        let all = events.withLock { $0 }.compactMap { if case .kind(let k) = $0 { k } else { nil } }
+        #expect(all == [.reply, .action], "the imperative keeps its proposal channel: \(all)")
+    }
+
+    /// The clause boundary: the first pause boundary inside an unfinished sentence; nothing
+    /// after the sentence is already complete, and never more than one per reply.
+    @Test("a leading clause boundary is emitted once, only while the sentence is open")
+    func clauseBoundaries() {
+        var s = ClauseStream()
+        #expect(s.feed("Yes").isEmpty, "no boundary yet")
+        #expect(s.feed("Yes, ").isEmpty, "the boundary needs the next word")
+        #expect(s.feed("Yes, the") == ["Yes,"], "the clause completes once text follows")
+        #expect(s.feed("Yes, the train") .isEmpty && s.feed("Yes, the train.").isEmpty, "only one clause per reply")
+        var t = ClauseStream()
+        #expect(t.feed("It is cold.").isEmpty, "a complete sentence has no early clause")
+        #expect(t.feed("It is cold. Next").isEmpty, "the first boundary is the sentence end")
+    }
+
     @Test("an action proposal is refused, not executed (no tools exist in this release)")
     func actionRefused() async throws {
         let (c, r, pump) = try makeConversation("action", heard: "note buy milk")
@@ -811,7 +969,7 @@ struct ModelTests {
         let clock = ContinuousClock()
         let t0 = clock.now
         let first = Mutex<Duration?>(nil)
-        try await FoundationModelsProvider().respond(to: "What is the capital of France?") { e in
+        try await FoundationModelsProvider().respond(to: "What is the capital of France?", actionPossible: true) { e in
             first.withLock { if $0 == nil { $0 = clock.now - t0 } }
             events.withLock { $0.append(e) }
         }

@@ -229,6 +229,48 @@ fn a_reply_turn_streams_sentences_and_completes_after_playback() {
     );
 }
 
+/// The model request tells the app whether the heard request may ask for an action
+/// (D-031): only then is the action proposal channel worth paying for — a conversational
+/// turn generates plain reply text, which is the first-sentence latency cut.
+#[test]
+fn the_lm_request_marks_whether_the_request_may_ask_for_an_action() {
+    let mut h = H::new();
+    let (_, stt) = h.speak_turn();
+    let out = h.ok(C::SttFinal {
+        call: stt,
+        text: "what time does the library shut".into(),
+        min_confidence: Some(0.9),
+    });
+    let informational = H::sent(&out)
+        .iter()
+        .find_map(|m| {
+            if let S::LmRequest { action_possible, .. } = m {
+                Some(*action_possible)
+            } else {
+                None
+            }
+        })
+        .expect("lm request");
+    assert!(!informational, "a fact question asks for no action channel");
+    let (_, stt) = h.speak_turn();
+    let out = h.ok(C::SttFinal {
+        call: stt,
+        text: "note buy milk".into(),
+        min_confidence: Some(0.9),
+    });
+    let action = H::sent(&out)
+        .iter()
+        .find_map(|m| {
+            if let S::LmRequest { action_possible, .. } = m {
+                Some(*action_possible)
+            } else {
+                None
+            }
+        })
+        .expect("lm request");
+    assert!(action, "an imperative keeps the proposal channel open");
+}
+
 #[test]
 fn push_to_talk_needs_capture_consent() {
     let mut s = Session::new(Limits::default(), registry(), ConsentState::default());
