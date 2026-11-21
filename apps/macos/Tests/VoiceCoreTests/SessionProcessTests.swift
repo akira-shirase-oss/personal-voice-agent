@@ -38,7 +38,26 @@ struct SessionProcessTests {
     func refusalLinePrecedesExit() async throws {
         let dir = try tempDataDir("refusal-order")
         let first = try SessionProcess(binary: sessionBinary, dataDir: dir)
+        // The lock is provably held only once `ready` is sent (it follows SessionOpened);
+        // a `hello` write landing in the pipe says nothing about store::open having run —
+        // launching the second on write order alone let it win the lock on a slow runner.
+        let becameReady = Task { () -> Bool in
+            for await event in first.events {
+                switch event {
+                case .message(.ready): return true
+                case .exited: return false
+                default: continue
+                }
+            }
+            return false
+        }
+        let readyWatchdog = Task {
+            try? await Task.sleep(for: .seconds(10))
+            becameReady.cancel()
+        }
         try first.send(.hello(protocol: protocolVersion, client: "order-test"))
+        try #require(await becameReady.value, "the first service never became ready")
+        readyWatchdog.cancel()
         defer { first.kill() }
         for run in 1...40 {
             let refused = try SessionProcess(binary: sessionBinary, dataDir: dir)
