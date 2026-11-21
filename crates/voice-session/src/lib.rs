@@ -135,17 +135,21 @@ struct Actor<E> {
 }
 
 /// Rate limit for the replies to malformed lines: a flood of them must not flood the app (or
-/// fill the reply queue until the session ends).
+/// fill the reply queue until the session ends). `seen`/`suppressed` are the session totals —
+/// a storm that ends in silence is still counted honestly at `session_end`.
 #[derive(Default)]
 struct BadLines {
     window: Option<Instant>,
     answered: u32,
     unanswered: u64,
+    seen: u64,
+    suppressed: u64,
 }
 
 impl BadLines {
     /// Whether this malformed line gets a reply, and how many before it went unanswered.
     fn admit(&mut self, now: Instant) -> Option<u64> {
+        self.seen += 1;
         if self
             .window
             .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(1))
@@ -154,7 +158,9 @@ impl BadLines {
             self.answered = 0;
         }
         if self.answered >= BAD_LINE_REPLIES_PER_S {
+            // GUARD(bad-line-limit)
             self.unanswered += 1;
+            self.suppressed += 1; // GUARD(malformed-count)
             return None;
         }
         self.answered += 1;
@@ -451,21 +457,29 @@ impl<E: ToolExecutor> Actor<E> {
         loop {
             let Ok(next) = tokio::time::timeout_at(deadline, in_rx.recv()).await else {
                 self.log.event("handshake_timeout", &[]);
-                return Err(EndReason::HandshakeTimeout);
+                return Err(EndReason::HandshakeTimeout); // GUARD(handshake-deadline)
             };
             match next {
                 Some(framing::Inbound::Message(ClientMessage::Hello { protocol, client })) => {
                     if protocol != PROTOCOL_VERSION {
+                        // GUARD(protocol-version)
                         let _ = self.error("protocol_mismatch", "this service speaks protocol 1").await;
                         return Err(EndReason::ProtocolMismatch);
                     }
                     return Ok(client.chars().take(64).collect());
                 }
                 Some(framing::Inbound::Message(_)) => {
-                    let _ = self.error("hello_required", "send hello first").await;
+                    // Bounded like every other refusal and its send error is an end like every
+                    // other: a dead writer is the client gone, not a reason to keep waiting.
+                    if self.bad_line("hello_required", "send hello first").await.is_err() {
+                        // GUARD(hello-required)
+                        return Err(EndReason::ClientUnresponsive);
+                    }
                 }
                 Some(framing::Inbound::Bad(code)) => {
-                    let _ = self.bad_line(code).await;
+                    if self.bad_line(code, "malformed line").await.is_err() {
+                        return Err(EndReason::ClientUnresponsive);
+                    }
                 }
                 Some(framing::Inbound::ReadError) => return Err(EndReason::ReadError),
                 Some(framing::Inbound::Eof) | None => return Err(EndReason::Eof),
@@ -492,9 +506,11 @@ impl<E: ToolExecutor> Actor<E> {
                 biased;
                 inbound = in_rx.recv() => match inbound {
                     Some(framing::Inbound::Message(msg)) => self.message(msg).await,
-                    Some(framing::Inbound::Bad(code)) => self.bad_line(code).await.map(|()| None),
+                    Some(framing::Inbound::Bad(code)) => {
+                        self.bad_line(code, "malformed line").await.map(|()| None)
+                    }
                     Some(framing::Inbound::ReadError) => return EndReason::ReadError,
-                    Some(framing::Inbound::Eof) | None => return EndReason::Eof,
+                    Some(framing::Inbound::Eof) | None => return EndReason::Eof, // GUARD(eof-gone)
                 },
                 Some((call, outcome)) = tool_rx.recv() => self.input(Input::ToolFinished { call, outcome }).await.map(|()| None),
                 Ok(()) = self.ledger_faults.changed() => {
@@ -533,7 +549,7 @@ impl<E: ToolExecutor> Actor<E> {
         match msg {
             ClientMessage::Shutdown => Ok(Some(EndReason::Shutdown)),
             ClientMessage::Hello { .. } => self
-                .error("duplicate_hello", "hello was already received")
+                .error("duplicate_hello", "hello was already received") // GUARD(dup-hello)
                 .await
                 .map(|()| None),
             ClientMessage::Ping { seq } => self.send(ServiceMessage::Pong { seq }).await.map(|()| None),
@@ -738,20 +754,17 @@ impl<E: ToolExecutor> Actor<E> {
     }
 
     /// Answers a malformed line, within the rate limit.
-    async fn bad_line(&mut self, code: &str) -> Result<(), Stop> {
+    async fn bad_line(&mut self, code: &str, detail: &str) -> Result<(), Stop> {
         let Some(unanswered) = self.bad_lines.admit(Instant::now()) else {
             return Ok(());
         };
         if unanswered == 0 {
-            return self.error(code, "malformed line").await;
+            return self.error(code, detail).await;
         }
         self.log
             .event("malformed_lines_unanswered", &[("count", unanswered.into())]);
-        self.error(
-            code,
-            &format!("malformed line; {unanswered} earlier ones were not answered"),
-        )
-        .await
+        self.error(code, &format!("{detail}; {unanswered} earlier ones were not answered"))
+            .await
     }
 
     async fn error(&self, code: &str, detail: &str) -> Result<(), Stop> {
@@ -776,8 +789,11 @@ impl<E: ToolExecutor> Actor<E> {
         // unreachable, its input broken, a handshake refused) is named for what it was.
         let closed = Record::SessionClosed {
             reason: match reason {
-                EndReason::Shutdown | EndReason::Eof => CloseReason::Clean,
-                EndReason::ClientUnresponsive | EndReason::ReadError | EndReason::HandshakeTimeout => {
+                // `clean` is only "the app chose to end": the protocol's own close is
+                // `shutdown` — an input stream that just ends (Eof) is the app gone, exactly
+                // like a reader that stopped answering.
+                EndReason::Shutdown => CloseReason::Clean,
+                EndReason::Eof | EndReason::ClientUnresponsive | EndReason::ReadError | EndReason::HandshakeTimeout => {
                     CloseReason::ClientGone
                 }
                 EndReason::ProtocolMismatch => CloseReason::Refused,
@@ -798,6 +814,8 @@ impl<E: ToolExecutor> Actor<E> {
                 ("turns", self.summary.turns_closed.into()),
                 ("refused", self.summary.refused.into()),
                 ("late_dropped", self.summary.late_dropped.into()),
+                ("malformed", self.bad_lines.seen.into()),
+                ("malformed_suppressed", self.bad_lines.suppressed.into()),
                 ("log_dropped", self.log.dropped().into()),
             ],
         );
@@ -816,9 +834,11 @@ async fn write_loop<W: AsyncWrite + Unpin>(writer: W, mut rx: mpsc::Receiver<Ser
         }
         line.push(b'\n');
         if w.write_all(&line).await.is_err() {
+            // GUARD(writer-dead)
             return;
         }
         if rx.is_empty() && w.flush().await.is_err() {
+            // GUARD(writer-dead)
             return;
         }
     }

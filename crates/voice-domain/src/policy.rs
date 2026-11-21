@@ -48,11 +48,13 @@ pub enum Decision {
 
 pub fn evaluate(action: &Action, heard: &Heard, registry: &ToolRegistry, limits: &Limits) -> Decision {
     let Some(spec) = registry.get(&action.tool) else {
+        // GUARD(unknown-tool)
         return Decision::Refuse {
             refusal: Refusal::UnknownTool,
         };
     };
     if spec.effect == ToolEffect::External {
+        // GUARD(external-refused)
         return Decision::Refuse {
             refusal: Refusal::ExternalNotAuthorized,
         };

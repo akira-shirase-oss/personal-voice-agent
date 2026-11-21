@@ -44,6 +44,7 @@ async fn read_line<R: AsyncRead + Unpin>(
         let take = newline.unwrap_or(buf.len());
         if !discarding {
             if line.len() + take > max {
+                // GUARD(line-cap)
                 discarding = true;
                 line.clear();
             } else {

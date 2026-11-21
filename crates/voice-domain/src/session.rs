@@ -595,6 +595,7 @@ impl Session {
             return late(call, "stt_final", out);
         };
         if t.phase != (Phase::Transcribing { stt: call }) {
+            // GUARD(call-bound)
             return late(call, "stt_final", out);
         }
         out.push(Output::Disarm {
@@ -717,6 +718,7 @@ impl Session {
             // informational turn the recall-tilted uninvited-assertion screen also applies:
             // a possible claim is still spoken, but its turn ends disclosed (D-027).
             let verdict = guard::classify(&spoken).max(if !t.asks_action && guard::uninvited_action(&spoken) {
+                // GUARD(claim-guard)
                 guard::Verdict::Disclose
             } else {
                 guard::Verdict::Plain
@@ -907,9 +909,11 @@ impl Session {
             return Err(Refused::NotAwaitingConfirmation);
         };
         if t.id != turn {
+            // GUARD(confirm-turn)
             return Err(Refused::NotAwaitingConfirmation);
         }
         if pending != digest {
+            // GUARD(digest-match)
             return Err(Refused::DigestMismatch);
         }
         let (window, action, digest) = (*window, action.clone(), pending.clone());
@@ -922,7 +926,7 @@ impl Session {
         if approve {
             self.start_tool(action, out);
         } else {
-            self.close(Outcome::Rejected, out);
+            self.close(Outcome::Rejected, out); // GUARD(reject-closes)
         }
         Ok(())
     }
@@ -940,7 +944,7 @@ impl Session {
         out.push(Output::Execute { call, action });
         out.push(arm(call, TimerKind::Total, self.limits.tool_ms));
         t.tool_sent = true;
-        t.phase = Phase::Executing { tool: call };
+        t.phase = Phase::Executing { tool: call }; // GUARD(phase-consumes)
     }
 
     fn tool_finished(&mut self, call: CallId, outcome: ToolOutcome, out: &mut Vec<Output>) {
@@ -1096,7 +1100,7 @@ impl Session {
                     digest,
                     approved: false,
                 }));
-                self.close(Outcome::Expired, out);
+                self.close(Outcome::Expired, out); // GUARD(expire-window)
             }
             Phase::Executing { .. } => {
                 out.push(Output::Record(Record::Executed {
@@ -1161,6 +1165,7 @@ fn disarm_all(call: CallId, out: &mut Vec<Output>) {
 
 fn late(call: CallId, message: &str, out: &mut Vec<Output>) {
     out.push(Output::Record(Record::LateResultDropped {
+        // GUARD(late-drop)
         call,
         message: message.to_owned(),
     }));

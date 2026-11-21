@@ -286,6 +286,11 @@ settled it, it is listed under **Open questions** rather than guessed.
   8 unprompted, was 5 of 8)**, and the false-positive numbers are unchanged — 6 of 22 plain
   replies replaced, 12 of 22 disclosed, all in the classifier, none added by the screen. The
   held-out pin now covers every claim, unprompted included.
+  *Caveat on the held-out numbers: those five misses came from the held-out set itself, so the
+  set has now shaped the design — "0 of 8 unprompted" is no longer an unbiased estimate. A
+  fresh blind set (`held-out-2`, written by someone who has not seen the code) will be added
+  as evaluation-only when it arrives: its numbers are reported without changing code in
+  response.*
 
 ## Open questions
 

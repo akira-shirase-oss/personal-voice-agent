@@ -1018,8 +1018,15 @@ async fn closing_stdin_mid_turn_closes_the_turn_honestly() {
     stub.close().await;
     let summary = handle.await.unwrap().unwrap();
     assert_eq!(summary.reason, EndReason::Eof);
-    let k = kinds(&ledger(&dir));
+    let recs = ledger(&dir);
+    let k = kinds(&recs);
     assert_eq!(&k[k.len() - 3..], ["interrupted", "turn_closed", "session_closed"]);
+    // The protocol's close is `shutdown`: an input stream that just ends is the app gone.
+    let closed = recs.iter().rev().find(|r| r["kind"] == "session_closed").unwrap();
+    assert_eq!(
+        closed["reason"], "client_gone",
+        "an EOF without shutdown is not a clean end"
+    );
 }
 
 /// A writer whose sink is already closed — the shape a dead stdout reader produces the first

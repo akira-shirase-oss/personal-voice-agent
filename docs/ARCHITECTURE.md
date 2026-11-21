@@ -162,8 +162,11 @@ crates/voice-session    stdio service, ledger, stub client, load runner
 apps/macos/             SwiftPM package: VoiceCore + VoiceAgent app
 docs/                   END_GOAL, ARCHITECTURE, PROTOCOL, ROADMAP, DECISIONS, DRILLS
 evals/                  recognition fixtures' expected text; rights reviews (V3)
-tests/attacks/          attack suite vs the real binary (handshake, forgery, replay,
-                        flooding, store paths, injection); fuzz/ targets + seed corpus
+tests/attacks/fuzz/     fuzz targets + seed corpus (detached workspace)
+crates/voice-session/tests/attack_*.rs
+                        attack suite vs the real binary (handshake, forgery, replay,
+                        flooding, store paths, injection), each proven by
+                        scripts/prove-attacks.sh to fail without its protection
 fixtures/               committed audio utterances, protocol golden lines
 perf/                   load/latency runners' results with machine + commit
 scripts/                check.sh, check-toolchain.sh, check-architecture.sh, fixture generation

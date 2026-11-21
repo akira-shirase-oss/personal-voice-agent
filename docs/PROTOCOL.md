@@ -15,7 +15,8 @@ durations only, never content (D-011).
   next inbound line.
 - The first app message must be `hello`; anything else first is
   `error` `hello_required`.
-- stdin EOF ends the session cleanly (`session_closed` `clean` is recorded).
+- stdin EOF ends the session as `client_gone` (`session_closed` `clean` is reserved for an
+  app that sent `shutdown` first — a stream that just stops is the app gone).
 - A client the service cannot reach ends the session from the service side: a message that cannot
   be delivered inside the I/O deadline (the app's reader dead or stalled — a dead stdout reader
   EPIPEs the writer task), a stdin read error, or no `hello` in time all end the session as

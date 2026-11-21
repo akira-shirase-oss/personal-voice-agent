@@ -128,7 +128,7 @@ pub fn scan_and_repair<T: DeserializeOwned>(path: &Path, mut visit: impl FnMut(&
     let file = match OpenOptions::new()
         .read(true)
         .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW) // GUARD(nofollow)
         .open(path)
     {
         Ok(f) => f,
@@ -245,23 +245,23 @@ fn sync_dir(dir: &Path) -> Result<(), StoreError> {
 
 /// Group/other access is stripped from `path` — never granted: a stricter mode is left
 /// untouched, and whatever needs it then fails honestly where it cannot be read or
-/// traversed. The mode is the object's own metadata, so the change is made durable
-/// through the object itself (a directory sync does not cover a file's).
+/// traversed. The change is made through an O_NOFOLLOW-opened descriptor — the object
+/// whose metadata was inspected is the object changed — and made durable through it.
 fn strip_group_other(path: &Path, meta: &fs::Metadata) -> Result<(), StoreError> {
     use std::os::unix::fs::PermissionsExt;
     let mode = meta.permissions().mode();
     if mode & 0o077 != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o077)).map_err(io_err(path))?;
-        if meta.is_dir() {
-            sync_dir(path)?;
-        } else {
-            OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(path)
-                .and_then(|f| f.sync_all())
-                .map_err(io_err(path))?;
-        }
+        // The chmod runs on an O_NOFOLLOW-opened descriptor — the object inspected is the
+        // object changed; a link swapped in between open and chmod would fail the open
+        // (ELOOP), and a directory is opened as one so a file can never stand in for it.
+        let mut o = OpenOptions::new();
+        // GUARD(dir-follow): the open below never follows a link or swaps a file for a dir.
+        o.read(true)
+            .custom_flags(libc::O_NOFOLLOW | if meta.is_dir() { libc::O_DIRECTORY } else { 0 });
+        let f = o.open(path).map_err(io_err(path))?;
+        f.set_permissions(fs::Permissions::from_mode(mode & !0o077))
+            .map_err(io_err(path))?;
+        f.sync_all().map_err(io_err(path))?;
     }
     Ok(())
 }
@@ -275,7 +275,7 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
     // `.mode(0o700)` applies only to directories the builder creates; one that already
     // existed keeps its mode. The data directory holds heard transcripts and must be
     // private, so group/other access is stripped and the change made durable.
-    let meta = fs::metadata(path).map_err(io_err(path))?;
+    let meta = fs::symlink_metadata(path).map_err(io_err(path))?;
     strip_group_other(path, &meta)
 }
 
@@ -311,7 +311,7 @@ fn strip_tree(dir: &Path, allowed_dir: Option<&str>) -> Result<(), StoreError> {
 fn open_append(path: &Path, create_new: bool) -> Result<File, StoreError> {
     let existed = path.exists();
     let mut o = OpenOptions::new();
-    o.append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    o.append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW); // GUARD(nofollow)
     if create_new {
         o.create_new(true);
     } else {
@@ -371,25 +371,23 @@ impl ConsentTokens {
     }
 
     pub fn grant(&self, scope: ConsentScope) -> io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         let path = self.path(scope);
-        // A token path that is a link is refused before the chmod below — set_permissions
-        // follows links and would change whatever file the link points at.
+        // A token path that is a link is refused. Whatever is left at the path — a token a
+        // revocation could not unlink (mode 0000), anything else — is removed first so the
+        // token is created atomically with its mode: no chmod-by-path, so no window where a
+        // planted link would be followed.
         if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err(io::Error::other("a token path that is a symlink is refused"));
         }
-        // A token left at 0000 by a revocation that could not unlink it: restore its mode first
-        // (a chmod needs ownership, not write permission).
-        match fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+        match fs::remove_file(&path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
             _ => {}
         }
         let f = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(false)
+            .create_new(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW) // GUARD(nofollow)
             .open(&path)?;
         f.sync_all()?;
         File::open(&self.dir)?.sync_all()
@@ -410,7 +408,7 @@ impl ConsentTokens {
                 // and never through a link, which would chmod whatever it points at.
                 let f = OpenOptions::new()
                     .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
+                    .custom_flags(libc::O_NOFOLLOW) // GUARD(nofollow)
                     .open(&path)
                     .map_err(|_| unlink)?;
                 f.set_permissions(fs::Permissions::from_mode(0o000))?;
@@ -445,10 +443,11 @@ fn lock_dir(dir: &Path) -> Result<File, StoreError> {
         .read(true)
         .write(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW) // GUARD(nofollow)
         .open(&path)
         .map_err(io_err(&path))?;
     match lock.try_lock() {
+        // GUARD(single-instance)
         Ok(()) => {
             let mut holder = &lock;
             holder
