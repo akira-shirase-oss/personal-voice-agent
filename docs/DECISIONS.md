@@ -756,6 +756,69 @@ settled it, it is listed under **Open questions** rather than guessed.
     plus dialect aspect and vocabulary ("don", "dey", "oot", "fae", "mair",
     "tae", "ma") and the pronoun half of agent binding.
 
+  *Development on that open surface (2026-11-21, judged later on a fresh
+  blind set 8; sets 2–7 untouched during development — held-out-1 and the
+  corpus are the only regression pins):*
+
+  - **A remit subject's done-form claims without a verb lexicon.** The
+    miss family was subject-side, not verb-side: `remit_change` already
+    iterates every `past_shaped` position, but `remit_thing` list-checked
+    the fused token, so "the card's been reloaded" hid "card" behind its
+    "'s". The head is now stemmed before the lists, a `your`/`my`/`our`
+    possessive left of the head with only nounish modifiers between ("your
+    tee time", "your expense claim") counts the user's possession as remit
+    in the *patient* slot only (an actor-side possessive — "your mum sent
+    it" — is still theirs), and a "'s"-fused head on a thing reads as the
+    headline passive ("presto's reloaded" = "presto's been reloaded"),
+    while the same fusion on a person stays their own perfect. "claim"
+    joined `REMIT_NOUNS` (expense/insurance/dispute claims are filed on the
+    user's behalf). `scan_back` steps over prepositional adjuncts to reach
+    the real subject — "the two o'clock *with Priya* has been shifted"
+    finds "o'clock", not "Priya" — and a prepositional "to" no longer
+    poisons the governed flag: `to_infinitive` distinguishes "to send"
+    from "delivered to Priya" (the three corpus items that regression was
+    caught on).
+  - **Dialect words are class members, not spellings.** "ma" joined
+    `POSSESSIVES`, "don"/"dey" joined `HAVE` as aspect markers, "e" is a
+    third-person pronoun, "doon"/"oot" are direction adverbs, "mair" is a
+    determiner, "fae"/"tae" sit in `PREPOSITIONS`. The `don`-perfect needs
+    more than class membership: `first_person_act` walks the aux slot past
+    "don"/"dey", and "don" alone (the perfect marker, not progressive
+    "dey") lets the bare verb after it count as the completed act — "i don
+    pay" claims like "i've paid".
+  - **A noun-led statement with a tag is not a request.**
+    `imperative_shaped` now reads the whole clause: a BE or "'s" after the
+    first word marks a statement ("Republic Day is 26 January, na?"),
+    verb-first "be quiet, mate" exempted. "abeg" moved off bare presence:
+    it marks a request only when a non-informational, non-question clause
+    follows. And `asks_for_speech` looks for the answer-verb in the verb
+    slot after the polite marker, not anywhere in the clause — "can ye put
+    ma name doon" no longer trips on the noun "name".
+  - **A pronoun binds the party the reply named.** `third_verdict` owns
+    the `Subject::Third` arms; when `agent_names` found a party earlier in
+    the reply, a pronoun's own perfect ("'s"/have directly on the
+    participle — no "been" chain) is that party's act: "Mr Byrne rang.
+    He's booked the plumber" stays plain. A real passive stays
+    unattributed — "she's been told" still claims.
+  - **"get X to Y" is a causative imperative.** `imperative_head` reads
+    get + nounish/third-person + a to-infinitive as a request ("get Spark
+    to fix my broadband"); the GET exclusion in `imperative_shaped` still
+    protects the possessive states.
+  - **One self-regression was caught and fixed before the gate.** The
+    corpus pin flagged "…to Priya has been delivered" and "payment of $42
+    to Priya complete" Plain — the adjunct-skip correctly stepped over
+    "Priya" but the "to" arm then poisoned the clause as infinitive
+    governance. `to_infinitive` (above) restored all three; held-out-1
+    stayed bit-identical throughout.
+  - **Measured (held-out-1 + corpus only, both unchanged):** claims **0 of
+    70 undisclosed**, plain replies **1 of 22 replaced, 6 of 22
+    turn-disclosed**; corpus pins all hold (168/9/1, 191/7/0). The
+    `guard_classify` fuzz target still runs clean (101,754 executions in
+    61 s, zero crashes, seed corpus unchanged). All five red-first tests
+    pass; fmt, clippy, the 23-attack suite and the workspace gate are
+    green except the five known `hdiutil` `disk_full` environment
+    failures. Awaiting judgement on blind set 8.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the

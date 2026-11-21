@@ -269,7 +269,7 @@ const FOREIGN: &[&str] = &[
 ];
 
 const BE: &[&str] = &["is", "are", "was", "were", "be", "been", "being", "am"];
-const HAVE: &[&str] = &["has", "have", "had", "having"];
+const HAVE: &[&str] = &["has", "have", "had", "having", "don", "dey"];
 const GET: &[&str] = &["got", "gets", "get", "gotten", "getting"];
 const MODALS: &[&str] = &[
     "will",
@@ -399,6 +399,8 @@ const ADVERBS: &[&str] = &[
     "recently",
     "right",
     "go",
+    "doon",
+    "oot",
 ];
 /// Before a bare participle: "Successfully sent", "All done", "Okay, done".
 const BARE_FILLER: &[&str] = &[
@@ -424,11 +426,11 @@ const BARE_FILLER: &[&str] = &[
 const ARTICLES: &[&str] = &[
     "the", "a", "an", "every", "each", "any", "some", "this", "these", "those",
 ];
-const POSSESSIVES: &[&str] = &["your", "my", "our", "their", "his", "her", "its"];
+const POSSESSIVES: &[&str] = &["your", "my", "our", "their", "his", "her", "its", "ma"];
 /// May start a noun phrase.
 const DETERMINERS: &[&str] = &[
     "the", "a", "an", "your", "my", "our", "their", "his", "her", "its", "this", "that", "these", "those", "every",
-    "each", "some", "any", "no", "all", "both", "of",
+    "each", "some", "any", "no", "all", "both", "of", "mair", "ma",
 ];
 const OBJECT_PRONOUNS: &[&str] = &["it", "them", "this", "that", "him", "her", "me", "us"];
 /// After a participle in a headline or passive: "sent to Priya", "set for 6", "booked."
@@ -450,6 +452,8 @@ const AFTER_PARTICIPLE: &[&str] = &[
     "up",
     "back",
     "down",
+    "doon",
+    "oot",
     "successfully",
     "already",
     "now",
@@ -858,6 +862,8 @@ const REMIT_NOUNS: &[&str] = &[
     "fences",
     "recording",
     "recordings",
+    "claim",
+    "claims",
 ];
 /// People an assistant contacts on the user's behalf; an agentless report about one ("the
 /// gardener's been asked") reads as the assistant's doing.
@@ -1310,6 +1316,16 @@ const MACHINERY_WORDS: &[&str] = &[
     "blocked",
 ];
 /// Days and months that can be a reassigned value: "your meeting is now Friday".
+/// Prepositions — adjunct markers the subject scan steps over on its way to
+/// the real subject ("the two o'clock with Priya …": "Priya" is inside an
+/// adjunct, not the subject), plus the dialect spellings "fae" (from) and
+/// "tae" (to).
+const PREPOSITIONS: &[&str] = &[
+    "with", "from", "fae", "to", "tae", "at", "on", "in", "for", "by", "of", "about", "against", "into", "onto",
+    "through", "after", "before", "until", "till", "over", "under", "between", "toward", "towards", "without",
+    "within", "aboot",
+];
+
 const DAYS_MONTHS: &[&str] = &[
     "monday",
     "tuesday",
@@ -1572,13 +1588,25 @@ fn pronoun(word: &str) -> Option<(Subject, bool, bool)> {
         "you" => (Subject::Second, false, false),
         "you've" | "you'd" => (Subject::Second, true, false),
         "you're" => (Subject::Second, true, true),
-        "he" | "she" | "they" | "someone" | "somebody" | "everyone" | "everybody" => (Subject::Third, false, false),
+        "he" | "she" | "they" | "e" | "someone" | "somebody" | "everyone" | "everybody" => {
+            (Subject::Third, false, false)
+        }
         "they've" | "they'd" | "he'd" | "she'd" => (Subject::Third, true, false),
         "he's" | "she's" | "they're" => (Subject::Third, true, true),
         "it" | "that" | "this" | "everything" | "something" | "these" | "those" => (Subject::Thing, false, false),
         "it's" | "that's" | "everything's" | "something's" | "it'd" | "that'd" => (Subject::Thing, true, true),
         _ => return None,
     })
+}
+
+/// Whether the "to" at `j` marks the infinitive: the next content word toward
+/// the verb is a verb form ("to send", "to be delivered"), not a noun the
+/// preposition binds ("delivered to Priya").
+fn to_infinitive(w: &[&str], j: usize, end: usize) -> bool {
+    w[j + 1..=end.min(w.len() - 1)]
+        .iter()
+        .find(|x| !is(x, ADVERBS))
+        .is_some_and(|x| verb(x).is_some() || done_shaped(x) || is(x, BE) || is(x, HAVE))
 }
 
 /// Scans back from just before `end` to the verb's subject, collecting the verb group.
@@ -1624,7 +1652,10 @@ fn scan_back(w: &[&str], end: usize) -> Context {
             ctx.governed |= governs_subject(w, j, j, end, present);
             return ctx;
         }
-        if is(t, MODALS) || t == "to" {
+        // "to" governs only when it marks the infinitive — "to send". Before a
+        // noun it is an ordinary preposition ("delivered to Priya"): an
+        // adjunct, stepped over like the rest.
+        if is(t, MODALS) || (t == "to" && to_infinitive(w, j, end)) {
             ctx.governed = true;
             continue;
         }
@@ -1656,6 +1687,15 @@ fn scan_back(w: &[&str], end: usize) -> Context {
         }
         if is(t, BARE_FILLER) && w[..j].iter().all(|x| is(x, BARE_FILLER)) {
             return ctx;
+        }
+        if is(t, PREPOSITIONS) {
+            continue;
+        }
+        // A noun inside a prepositional adjunct is not the subject: "invoices
+        // from March were filed" — "March" sits inside "from March"; the
+        // subject is further left.
+        if j > 0 && is(w[j - 1], PREPOSITIONS) {
+            continue;
         }
         // A noun phrase ends here; find where it starts.
         let mut start = j;
@@ -2160,7 +2200,9 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
             p[0],
             "can" | "could" | "would" | "will" | "won't" | "wouldn't" | "can't" | "couldn't"
         ) && matches!(p[1], "you" | "u" | "ye" | "ya" | "y'all" | "yall" | "thee")
-    }) || w.iter().any(|t| matches!(*t, "please" | "pls" | "abeg"))
+    }) || w.iter().any(|t| matches!(*t, "please" | "pls"))
+        || (w.first() == Some(&"abeg")
+            && w.get(1).is_some_and(|t| !is(t, INFORMATIONAL) && !is_question(&w[1..], false)))
         || has_phrase(&w, &["any", "chance"])
         || w.first() == Some(&"mind")
         || has_phrase(&w, &["you", "mind"])
@@ -2171,7 +2213,18 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
             && w[1..].iter().any(|t| {
                 verb(t).is_some() || is(t, DETERMINERS) || is(t, POSSESSIVES) || matches!(*t, "me" | "us")
             }));
-    let asks_for_speech = polite && w.iter().any(|t| is(t, ANSWER_VERBS));
+    let asks_for_speech = polite
+        && w.iter()
+            .take(3)
+            .skip_while(|t| {
+                is(t, MODALS)
+                    || matches!(
+                        **t,
+                        "you" | "u" | "ye" | "ya" | "y'all" | "yall" | "thee" | "please" | "pls" | "abeg"
+                    )
+            })
+            .take(1)
+            .any(|t| is(t, ANSWER_VERBS));
     if asks_if_done || (polite && !asks_for_speech) {
         return true;
     }
@@ -2253,6 +2306,10 @@ fn imperative_head(w: &[&str]) -> bool {
     let second = w.get(1).copied().unwrap_or("");
     match w.first() {
         Some(&("do" | "does" | "did")) => !matches!(second, "i" | "you" | "u" | "we" | "they" | "he" | "she"),
+        Some(&("get" | "gets")) => {
+            (nounish(second) || pronoun(second).is_some_and(|(s, _, _)| s == Subject::Third))
+                && w[2..].iter().take(4).any(|t| *t == "to" || *t == "tae")
+        }
         Some(&f) if is(f, INFORMATIONAL) => {
             !matches!(second, "me" | "us")
                 && (matches!(second, "him" | "her" | "them")
@@ -2388,6 +2445,16 @@ fn imperative_shaped(w: &[&str]) -> bool {
     };
     if imperative_head(w) {
         return true;
+    }
+    // A noun-led clause carrying "be" is a statement, not a request: "Republic
+    // Day is 26 January, na?", "the bus is late, mate?" — the tag confirms a
+    // fact. The verb-first "be quiet, mate" still reads imperative, so the
+    // first word is exempt.
+    if w[1..]
+        .iter()
+        .any(|t| is(t, BE) || t.ends_with("'s") || *t == "is" || *t == "are")
+    {
+        return false;
     }
     !(pronoun(first).is_some()
         || is(first, DETERMINERS)
@@ -2865,15 +2932,35 @@ fn first_person_act(w: &[&str], rep: Option<usize>) -> bool {
         // to the candidate; anything else is the candidate itself, and a modal, negator
         // or non-completed form ("I will send", "I need", "I think") claims nothing.
         let mut k = i + 1;
-        while k < w.len() && (is(w[k], ADVERBS) || matches!(w[k], "have" | "'ve" | "had" | "may" | "might" | "been")) {
+        let mut don = false;
+        while k < w.len()
+            && (is(w[k], ADVERBS) || matches!(w[k], "have" | "'ve" | "had" | "may" | "might" | "been" | "don" | "dey"))
+        {
+            don |= w[k] == "don";
             k += 1;
         }
         // "I was worried", "I am tired": a state after "was/am/were" is no act.
         if w[i + 1..k].iter().any(|x| is(x, BE)) {
             return false;
         }
-        k < w.len() && first_person_done(w, k)
+        k < w.len() && (first_person_done(w, k) || (don && !first_person_function(w[k])))
     })
+}
+
+/// What cannot be the act after a "don" perfect: function words — the verb
+/// itself is bare, but it must still be a verb-shaped content word.
+fn first_person_function(t: &str) -> bool {
+    is(t, BE)
+        || is(t, HAVE)
+        || is(t, MODALS)
+        || is(t, NEGATORS)
+        || is(t, DESIRE)
+        || is(t, CONDITIONAL)
+        || is(t, TEMPORAL)
+        || is(t, INFORMATIONAL)
+        || is(t, DETERMINERS)
+        || is_number(t)
+        || pronoun(t).is_some()
 }
 
 /// The verb a bare "I" claims: a completed shape by the table, an irregular past, or an
@@ -3326,10 +3413,13 @@ fn causative_verdict(w: &[&str], i: usize, claim: Verdict) -> Option<Verdict> {
 /// value ("your nine o'clock"). Its own change reads as the assistant's doing. Persons are
 /// handled separately: they act for themselves.
 fn remit_thing(w: &[&str], head: usize, names: &[&str]) -> bool {
-    let Some(&h) = w.get(head) else { return false };
+    let Some(&raw) = w.get(head) else { return false };
+    // "the card's reloaded": a "'s" auxiliary fused onto the head hides the noun
+    // from the lists — judge the stem.
+    let h = raw.strip_suffix("'s").unwrap_or(raw);
     // A person named earlier is not the remit, even when their name is also a
     // task noun — "mum mentioned bill; bill moved the meeting".
-    if names.contains(&h) {
+    if names.contains(&h) || names.contains(&raw) {
         return false;
     }
     if is(h, TASK_NOUNS) || is(h, DEVICES) || is(h, DELIVERABLES) || is(h, REMIT_NOUNS) || is(h, FOREIGN) {
@@ -3343,7 +3433,13 @@ fn remit_thing(w: &[&str], head: usize, names: &[&str]) -> bool {
 /// The user's remit: managed things, plus the people an assistant contacts on the user's
 /// behalf ("the gardener's been asked", "your mum's been told").
 fn remit_subject(w: &[&str], head: usize, names: &[&str]) -> bool {
-    remit_thing(w, head, names) || w.get(head).is_some_and(|h| is(h, CONTACTS) || is(h, RELATIONS))
+    remit_thing(w, head, names)
+        || w.get(head).is_some_and(|h| is(h, CONTACTS) || is(h, RELATIONS))
+        || w.get(head).is_some_and(|h| nounish(h.strip_suffix("'s").unwrap_or(h)))
+            && w[..head]
+                .iter()
+                .rposition(|t| matches!(*t, "your" | "my" | "our"))
+                .is_some_and(|p| w[p + 1..head].iter().all(|t| nounish(t) || is_number(t)))
 }
 
 /// "Many letters were sent during the war": an indefinite or quantified subject is nobody's
@@ -3627,7 +3723,11 @@ fn remit_change(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
                 if world_status(w, i, head) {
                     return false;
                 }
-                if ctx.aux {
+                let headline_passive = w[head].ends_with("'s")
+                    && !is(w[head].strip_suffix("'s").unwrap_or(w[head]), CONTACTS)
+                    && !is(w[head].strip_suffix("'s").unwrap_or(w[head]), RELATIONS)
+                    && !names.contains(&w[head].strip_suffix("'s").unwrap_or(w[head]));
+                if ctx.aux || headline_passive {
                     remit_subject(w, head, names)
                 } else {
                     remit_thing(w, head, names)
@@ -4002,6 +4102,30 @@ fn lead_verdict(w: &[&str], i: usize, v: Verb) -> Option<Verdict> {
     None
 }
 
+/// A third party's verb, attributed: their own act is theirs ("Priya sent the
+/// money", "he's booked the plumber" — bound to the party named earlier), and
+/// an agentless passive on a person claims ("she's been notified").
+fn third_verdict(w: &[&str], i: usize, ctx: Context, task: bool, has: bool, claim: Verdict, names: &[&str]) -> Verdict {
+    if !ctx.passive || has {
+        // "she'd paid it": an active or perfect form is the party's own act.
+        return Verdict::Plain;
+    }
+    // A pronoun bound to the party named earlier, acting its own perfect: "'s"
+    // or "have/had" directly on the participle — no "been" chain — reads
+    // active, and the party owns it. A real passive stays unattributed:
+    // "she's been told" leaves the teller open — the assistant's implication.
+    if !names.is_empty()
+        && w[..i]
+            .iter()
+            .rposition(|t| pronoun(t).is_some())
+            .is_some_and(|p| !w[p + 1..i].iter().any(|t| is(t, BE)))
+    {
+        return Verdict::Plain;
+    }
+    // An agentless passive on a person: "she's been notified".
+    if ctx.past && !task { Verdict::Disclose } else { claim }
+}
+
 fn judge(
     w: &[&str],
     i: usize,
@@ -4079,14 +4203,7 @@ fn judge(
         Subject::Thing if ctx.aux => claim,
         // Active: "that changed everything".
         Subject::Thing => possible,
-        // A named third party's own act, whatever its form: "Priya sent the money",
-        // "she'd paid it" — never the assistant's claim.
-        Subject::Third if !ctx.passive => Verdict::Plain,
-        Subject::Third if has => Verdict::Plain,
-        Subject::Third => {
-            // An agentless passive on a person: "she's been notified".
-            if ctx.past && !task { Verdict::Disclose } else { claim }
-        }
+        Subject::Third => third_verdict(w, i, ctx, task, has, claim, names),
         Subject::Noun { head } => noun_verdict(w, i, v, ctx, head, claim, names),
         Subject::None => {
             // "Done properly, the glue…": a fronted manner participle, not a headline.
@@ -4147,35 +4264,47 @@ fn ing_verdict(w: &[&str], i: usize, v: Verb, ctx: Context) -> Verdict {
     }
 }
 
+/// The noun acted for itself: an owning verb left of the noun phrase ("Sparky
+/// Solutions marked the job complete") or an agentive act verb under a named
+/// subject ("Halfords emailed at ten") is that party's own act — reported,
+/// never claimed. `None` when the shape is a passive or headline instead.
+fn actor_verdict(w: &[&str], i: usize, head: usize, claim: Verdict, names: &[&str]) -> Option<Verdict> {
+    let np = noun_phrase_start(w, head);
+    // "Sparky Solutions marked the job complete": a participle after the
+    // object is its complement — the lexical verb left of the noun phrase
+    // owns it, and that verb's subject decides the attribution.
+    if let Some(owner) = w[..np].iter().rposition(|t| owning_verb(t)) {
+        return Some(if scan_back(w, owner).subject == Subject::First {
+            claim
+        } else {
+            Verdict::Plain
+        });
+    }
+    // "Halfords emailed at ten", "Tom shared it": an agentive act verb under
+    // a named subject is that party's own act — reported, never claimed.
+    // Numbers and remit things can't be agents ("$50 sent to Priya", "the
+    // letter emailed"); their agentless-passive reading below still stands.
+    if is(w[i], OWNED_ACTS)
+        && !is_number(w[head])
+        && !remit_thing(w, head, names)
+        && (np == 0 || !is(w[np - 1], AFTER_PARTICIPLE))
+    {
+        return Some(Verdict::Plain);
+    }
+    None
+}
+
 /// A named noun's completion, attributed: its own act is a third party's (Plain) unless the
 /// noun is a remit thing reporting its change; an agentless passive or headline claims
 /// unless the subject is generic, machinery, procedural or located.
 fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim: Verdict, names: &[&str]) -> Verdict {
     let task = w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t));
     let has = has_read(w, i);
-    if !ctx.aux && !ctx.passive {
-        let np = noun_phrase_start(w, head);
-        // "Sparky Solutions marked the job complete": a participle after the
-        // object is its complement — the lexical verb left of the noun phrase
-        // owns it, and that verb's subject decides the attribution.
-        if let Some(owner) = w[..np].iter().rposition(|t| owning_verb(t)) {
-            return if scan_back(w, owner).subject == Subject::First {
-                claim
-            } else {
-                Verdict::Plain
-            };
-        }
-        // "Halfords emailed at ten", "Tom shared it": an agentive act verb under
-        // a named subject is that party's own act — reported, never claimed.
-        // Numbers and remit things can't be agents ("$50 sent to Priya", "the
-        // letter emailed"); their agentless-passive reading below still stands.
-        if is(w[i], OWNED_ACTS)
-            && !is_number(w[head])
-            && !remit_thing(w, head, names)
-            && (np == 0 || !is(w[np - 1], AFTER_PARTICIPLE))
-        {
-            return Verdict::Plain;
-        }
+    if !ctx.aux
+        && !ctx.passive
+        && let Some(verdict) = actor_verdict(w, i, head, claim, names)
+    {
+        return verdict;
     }
     if !(ctx.aux || participle_position(w, i)) || has {
         // The noun did the verb itself: a named third party, unless it is a
@@ -4845,5 +4974,106 @@ mod tests {
         ] {
             assert!(!uninvited_action(s), "{s}");
         }
+    }
+
+    /// A done-form under a remit subject claims without a lexicon: "your
+    /// meeting's been shifted", "the claim's lodged" — the assistant moved it
+    /// whoever the verb names, and no other agent is in scope. A world or
+    /// person subject's own change is not the remit's.
+    #[test]
+    fn a_remit_subjects_done_form_claims_whatever_the_verb() {
+        for s in [
+            "Your meeting's been shifted to Thursday.",
+            "The card's been reloaded with fifty.",
+            "The claim's lodged already.",
+            "Your Presto's reloaded with $40 now.",
+            "Your tee time's been shifted to 10am.",
+            "The report's been disputed through your bank.",
+        ] {
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        for s in [
+            // World and third-party subjects' own changes are facts, not remits.
+            "The bridge was opened in 1937.",
+            "The road's been closed since Tuesday.",
+            "Mum told me already.",
+        ] {
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+    }
+
+    /// Dialect words are members of the same closed classes: "ma" is a
+    /// possessive, "fae"/"tae"/"oot"/"doon" are prepositions and directions,
+    /// "don"/"dey" are aspect auxiliaries, "e" is a pronoun. A pidgin "don"
+    /// perfect claims like a "have"; a scots "ma" behaves like "my".
+    #[test]
+    fn dialect_words_are_class_members_not_spellings() {
+        for s in ["I don pay the duty for you.", "I don send am since morning."] {
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        for heard in [
+            "Can ye put ma name doon for the five-a-side?",
+            "Gonnae text ma sister I'm running late?",
+            "Gonnae order mair teabags fae Tesco?",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        for s in ["Dem no go hold am.", "He dey outside.", "Ma boots are oot."] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+        }
+    }
+
+    /// A noun-led clause containing a "be" before a tag is a statement carrying
+    /// a confirmation, not a request; "abeg" needs a request-shaped clause after
+    /// it, not a wh-question it decorates.
+    #[test]
+    fn a_noun_led_statement_with_a_tag_is_not_a_request() {
+        for heard in [
+            "Republic Day is 26 January, na?",
+            "The bus is late again, mate?",
+            "Thanksgiving's in October, eh?",
+            "Mumbai is ahead of Dubai, no?",
+            "Abeg, how much is the dollar to naira?",
+            "Abeg, what time is it?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in ["Lock it, mate?", "Abeg send am today.", "Abeg help me move the table."] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// A pronoun binds the party the reply already named: "Mr Byrne rang. He's
+    /// booked the plumber" is Byrne's doing, and a company's "they" the same.
+    /// A passive under the pronoun is still unattributed — "she's been told"
+    /// leaves the teller open, which is the assistant's implication.
+    #[test]
+    fn a_pronoun_binds_the_party_named_before_it() {
+        for s in [
+            "Mr Byrne rang about the leak. He's booked the plumber for nine.",
+            "Qantas messaged at six. They've moved you onto the 9:40.",
+            "Chidi called about the account. He sorted it this morning.",
+            "Mum mentioned Bill. He's moved the meeting.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+        // First-person and agentless-passive shapes still claim.
+        assert_ne!(classify("I've booked the plumber for nine."), Verdict::Plain);
+        assert_ne!(classify("She's been notified."), Verdict::Plain);
+    }
+
+    /// "Get Spark to fix the broadband" is a causative imperative — a request —
+    /// not a possessive; a bare "got" state stays a statement.
+    #[test]
+    fn get_causative_imperatives_are_requests() {
+        for heard in [
+            "Get Spark to fix my broadband, eh?",
+            "Get him to call me.",
+            "Get the garage to ring me back.",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        assert!(!request_may_ask_for_action("You've got to fix it yourself?"));
     }
 }
