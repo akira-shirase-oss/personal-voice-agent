@@ -184,6 +184,10 @@ struct Responding {
     lm: Option<Lm>,
     chunks: BTreeMap<CallId, bool>,
     next_seq: u32,
+    /// The model sentences spoken so far: the claim guard reads them as the
+    /// reply's context, so a state in a later sentence can bind to a party the
+    /// earlier text named doing it ("your mum phoned — Poppy's all booked in").
+    reply: String,
     /// The outcome once the model is done and every chunk has played.
     outcome: Outcome,
 }
@@ -638,6 +642,7 @@ impl Session {
             }),
             chunks: BTreeMap::new(),
             next_seq: 0,
+            reply: String::new(),
             outcome: Outcome::Completed,
         });
     }
@@ -718,12 +723,14 @@ impl Session {
             // A request that asked for no action cannot produce an evidenced claim, so on an
             // informational turn the recall-tilted uninvited-assertion screen also applies:
             // a possible claim is still spoken, but its turn ends disclosed (D-027).
-            let verdict = guard::classify(&spoken).max(if !t.asks_action && guard::uninvited_action(&spoken) {
-                // GUARD(claim-guard)
-                guard::Verdict::Disclose
-            } else {
-                guard::Verdict::Plain
-            });
+            let verdict = guard::classify_in(&spoken, &r.reply).max(
+                if !t.asks_action && guard::uninvited_action_in(&spoken, &r.reply) {
+                    // GUARD(claim-guard)
+                    guard::Verdict::Disclose
+                } else {
+                    guard::Verdict::Plain
+                },
+            );
             match verdict {
                 guard::Verdict::Plain => {}
                 guard::Verdict::Replace => {
@@ -736,6 +743,10 @@ impl Session {
                     t.flagged = true;
                     out.push(Output::Record(Record::ClaimDisclosed { turn: t.id, index }));
                 }
+            }
+            if verdict != guard::Verdict::Replace {
+                r.reply.push_str(&spoken);
+                r.reply.push(' ');
             }
         }
         let seq = r.next_seq;
@@ -880,6 +891,7 @@ impl Session {
                 lm: None,
                 chunks: BTreeMap::new(),
                 next_seq: 0,
+                reply: String::new(),
                 outcome,
             });
         }
