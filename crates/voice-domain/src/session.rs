@@ -1214,6 +1214,7 @@ pub fn split_sentences(text: &str) -> Vec<String> {
     while let Some((i, c)) = chars.next() {
         current.push(c);
         if matches!(c, '.' | '!' | '?')
+            && !guard::inside_quote(text, i)
             && (c != '.' || guard::terminal_period(text, i))
             && chars.peek().is_none_or(|(_, n)| n.is_whitespace())
         {

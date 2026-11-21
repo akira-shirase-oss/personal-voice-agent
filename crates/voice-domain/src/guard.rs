@@ -572,6 +572,39 @@ const DEVICES: &[&str] = &[
     "fan",
     "tv",
     "notifications",
+    "sprinkler",
+    "sprinklers",
+    "kettle",
+    "kettles",
+    "plug",
+    "plugs",
+    "charger",
+    "chargers",
+    "ac",
+    "aircon",
+    "dehumidifier",
+    "purifier",
+    "vacuum",
+    "mower",
+    "blinds",
+    "curtains",
+    "shutters",
+    "garage",
+    "gate",
+    "lock",
+    "locks",
+    "door",
+    "doors",
+    "camera",
+    "cameras",
+    "speaker",
+    "speakers",
+    "router",
+    "wifi",
+    "lamp",
+    "lamps",
+    "hob",
+    "grill",
 ];
 /// Transaction nouns that make "made", "placed", "processed" a claim.
 const TASK_STRONG: &[&str] = &[
@@ -819,6 +852,8 @@ const REMIT_NOUNS: &[&str] = &[
     "chimneys",
     "fence",
     "fences",
+    "recording",
+    "recordings",
 ];
 /// People an assistant contacts on the user's behalf; an agentless report about one ("the
 /// gardener's been asked") reads as the assistant's doing.
@@ -980,6 +1015,231 @@ const SPACE: &[&str] = &[
     "handbag",
     "locker",
     "lockers",
+];
+/// Spaces the assistant can deliver into on its own account: "the sheet is in your inbox",
+/// "the ticket's in the LNER app", "the directions are on your phone". A possessive or any
+/// determiner is enough — where it is implies who put it there.
+const DIGITAL_SPACE: &[&str] = &[
+    "inbox",
+    "inboxes",
+    "mailbox",
+    "mailboxes",
+    "app",
+    "apps",
+    "phone",
+    "phones",
+    "account",
+    "accounts",
+    "calendar",
+    "calendars",
+    "diary",
+    "diaries",
+    "wallet",
+    "wallets",
+    "message",
+    "messages",
+    "text",
+    "texts",
+    "email",
+    "emails",
+    "mail",
+    "drive",
+    "drives",
+    "file",
+    "files",
+    "folder",
+    "folders",
+    "download",
+    "downloads",
+    "note",
+    "notes",
+    "reminder",
+    "reminders",
+    "notification",
+    "notifications",
+    "basket",
+    "baskets",
+    "cart",
+    "carts",
+    "list",
+    "lists",
+    "watchlist",
+    "library",
+    "photos",
+    "gallery",
+    "cloud",
+    "tablet",
+    "tablets",
+    "laptop",
+    "laptops",
+    "computer",
+    "computers",
+    "desktop",
+];
+/// Words whose "says" is another's words, not the assistant's: "her email says…", "the
+/// app says…", "the tracking says…". `nounish` cannot name them — they double as report
+/// frames — so a report verb needs them listed on its own.
+const REPORT_NOUNS: &[&str] = &[
+    "email",
+    "emails",
+    "text",
+    "texts",
+    "message",
+    "messages",
+    "letter",
+    "letters",
+    "note",
+    "notes",
+    "post",
+    "posts",
+    "reply",
+    "replies",
+    "memo",
+    "memos",
+    "invoice",
+    "invoices",
+    "statement",
+    "statements",
+    "confirmation",
+    "confirmations",
+    "notice",
+    "notices",
+    "notification",
+    "notifications",
+    "alert",
+    "alerts",
+    "app",
+    "apps",
+    "site",
+    "sites",
+    "website",
+    "websites",
+    "page",
+    "pages",
+    "receipt",
+    "receipts",
+    "form",
+    "forms",
+    "document",
+    "documents",
+    "tracking",
+    "terms",
+    "ad",
+    "ads",
+    "advert",
+    "adverts",
+    "flyer",
+    "flyers",
+    "label",
+    "labels",
+    "chart",
+    "charts",
+    "screenshot",
+    "screenshots",
+    "voicemail",
+    "voicemails",
+    "recording",
+    "recordings",
+    "transcript",
+    "transcripts",
+    "review",
+    "reviews",
+    "listing",
+    "listings",
+    "update",
+    "updates",
+    "feed",
+    "feeds",
+];
+/// A place a charge is *reported* rather than delivered into — "a charge is on your card"
+/// is a bill, not a delivery — so it flags only behind a completed delivery verb ("loaded
+/// on your card").
+const LOAD_SPACES: &[&str] = &[
+    "card",
+    "cards",
+    "statement",
+    "statements",
+    "bill",
+    "bills",
+    "tab",
+    "tabs",
+    "invoice",
+    "invoices",
+];
+/// Quantified things the user can be reported holding: "you've got two nights", "you've
+/// got three seats".
+const DELIVERABLE_UNITS: &[&str] = &[
+    "night", "nights", "day", "days", "week", "weeks", "weekend", "weekends", "room", "rooms", "place", "places",
+    "entry", "entries", "spot", "spots", "name", "names", "minute", "minutes", "hour", "hours", "session", "sessions",
+];
+/// A state an act produces on a device or remit thing: "off", "on", "running", "locked",
+/// "sorted". The world's adjectives — weather, time, mood — are never an agentless act.
+const ACTIVE_STATES: &[&str] = &[
+    "off",
+    "on",
+    "open",
+    "shut",
+    "closed",
+    "live",
+    "armed",
+    "locked",
+    "unlocked",
+    "muted",
+    "silent",
+    "paused",
+    "stopped",
+    "started",
+    "queued",
+    "ready",
+    "sorted",
+    "set",
+    "active",
+    "running",
+    "ringing",
+    "recording",
+    "playing",
+    "charging",
+    "waiting",
+    "holding",
+];
+/// States that double as prepositions or locations — "it's on the Seine" is where the
+/// city is, not a change — so they claim only at clause end or before a state adverb
+/// ("the kettle's off already", "it's on for tomorrow").
+const LOCATIVE_STATES: &[&str] = &[
+    "on", "off", "open", "shut", "closed", "live", "armed", "muted", "silent", "paused", "active",
+];
+const STATE_FOLLOWERS: &[&str] = &[
+    "now", "already", "just", "still", "finally", "too", "again", "for", "as", "since", "at", "till", "until",
+];
+const NATURAL_STATES: &[&str] = &[
+    "raining",
+    "snowing",
+    "drizzling",
+    "sunny",
+    "windy",
+    "cloudy",
+    "foggy",
+    "hot",
+    "cold",
+    "warm",
+    "cool",
+    "dry",
+    "wet",
+    "humid",
+    "fine",
+    "bright",
+    "dark",
+    "early",
+    "late",
+    "light",
+    "clear",
+    "busy",
+    "quiet",
+    "loud",
+    "noisy",
+    "calm",
+    "empty",
+    "full",
 ];
 /// What couriers, airlines, banks and venues move or hold — a completion on one is the
 /// machinery's status, not the assistant's claim.
@@ -1337,13 +1597,17 @@ fn scan_back(w: &[&str], end: usize) -> Context {
             if is(t, OBJECT_PRONOUNS) && j > 0 && (is(w[j - 1], GET) || is(w[j - 1], HAVE)) {
                 continue;
             }
-            // "I'd have sent it": "would have", not "had".
+            // "'d" is "had" before a completed form, "been" or "got" ("they'd moved",
+            // "they'd been moved", "they'd got it"); before anything else it is "would"
+            // — "they'd be moved" is conditional, "I'd have sent it" is "would have".
             if matches!(
                 t,
                 "i'd" | "we'd" | "you'd" | "it'd" | "that'd" | "they'd" | "he'd" | "she'd"
-            ) && w.get(j + 1) == Some(&"have")
-            {
-                ctx.governed = true;
+            ) {
+                let next = w[j + 1..].iter().find(|x| !is(x, ADVERBS)).copied().unwrap_or("");
+                if !done_shaped(next) && !matches!(next, "been" | "got" | "gotten") {
+                    ctx.governed = true;
+                }
             }
             ctx.subject = subject;
             ctx.aux |= aux;
@@ -1498,13 +1762,31 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
     let (mut in_quotes, mut framed) = (false, false);
     let mut rest = sentence;
     loop {
-        let cut = rest.find([',', ';', ':', '—', '–', '(', ')', '"']);
-        let (part, separator) = match cut {
-            Some(at) => {
-                let c = rest[at..].chars().next().unwrap_or(',');
-                (&rest[..at], Some(c))
+        // A single quote bounds a quotation only at a word edge — "…said 'I've moved
+        // it'" — never inside a word ("don't") or on a possessive tail ("users'").
+        let mut from = 0;
+        let (part, separator) = loop {
+            let Some(at) = rest[from..].find([',', ';', ':', '—', '–', '(', ')', '"', '\'']) else {
+                break (rest, None);
+            };
+            let at = from + at;
+            let c = rest[at..].chars().next().unwrap_or(',');
+            if c != '\'' {
+                break (&rest[..at], Some(c));
             }
-            None => (rest, None),
+            let prev = rest[..at].chars().last();
+            let next = rest[at + c.len_utf8()..].chars().next();
+            let opens = next.is_some_and(char::is_alphanumeric)
+                && prev.is_none_or(|p| p.is_whitespace() || matches!(p, ',' | ';' | ':' | '(' | '"' | '\''));
+            let closes = in_quotes
+                && prev.is_some_and(char::is_alphanumeric)
+                && next.is_none_or(|n| {
+                    n.is_whitespace() || matches!(n, '.' | ',' | '!' | '?' | ':' | ';' | ')' | '"' | '\'')
+                });
+            if opens || closes {
+                break (&rest[..at], Some(c));
+            }
+            from = at + c.len_utf8();
         };
         let mut current: Vec<&str> = Vec::new();
         let mut current_join = join;
@@ -1537,7 +1819,7 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
         let Some(c) = separator else { break };
         join = Join::Punctuation;
         match c {
-            '"' => {
+            '"' | '\'' => {
                 in_quotes = !in_quotes;
                 join = Join::Start;
             }
@@ -1549,7 +1831,7 @@ fn clauses(sentence: &str) -> Vec<Clause<'_>> {
             }
             _ => {}
         }
-        rest = &rest[cut.unwrap_or(rest.len()) + c.len_utf8()..];
+        rest = &rest[part.len() + c.len_utf8()..];
     }
     out
 }
@@ -1611,9 +1893,41 @@ pub(crate) fn terminal_period(text: &str, i: usize) -> bool {
     true
 }
 
+/// Whether the char at byte `i` sits inside an open quotation — `"…"`, or a `'…'` that
+/// bounds quoted speech ("you said 'I sent it'"). A single quote bounds a quotation only
+/// at a word edge, so "don't" and "users'" never open one. Inside a quote a `.`/`!`/`?`
+/// is the quoted party's — the sentence does not break there.
+pub(crate) fn inside_quote(text: &str, i: usize) -> bool {
+    let mut in_quotes = false;
+    let mut prev: Option<char> = None;
+    let mut chars = text[..i].chars().peekable();
+    while let Some(c) = chars.next() {
+        let next = chars.peek().copied();
+        match c {
+            '"' => in_quotes = !in_quotes,
+            '\'' => {
+                let opens = next.is_some_and(char::is_alphanumeric)
+                    && prev.is_none_or(|p| p.is_whitespace() || matches!(p, ',' | ';' | ':' | '(' | '"' | '\''));
+                let closes = in_quotes
+                    && prev.is_some_and(char::is_alphanumeric)
+                    && next.is_none_or(|n| {
+                        n.is_whitespace() || matches!(n, '.' | ',' | '!' | '?' | ':' | ';' | ')' | '"' | '\'')
+                    });
+                if opens || closes {
+                    in_quotes = !in_quotes;
+                }
+            }
+            _ => {}
+        }
+        prev = Some(c);
+    }
+    in_quotes
+}
+
 /// Splits after `.`, `!`, `?` or `…` followed by whitespace or the end; each part keeps whether
 /// it was a question. A `.` that belongs to an abbreviation, an initial or a number does not
-/// end a sentence (`terminal_period`).
+/// end a sentence (`terminal_period`), and punctuation inside an open quotation is the
+/// quoted party's (`inside_quote`).
 fn sentences(text: &str) -> Vec<(&str, bool)> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -1622,6 +1936,7 @@ fn sentences(text: &str) -> Vec<(&str, bool)> {
         if matches!(c, '.' | '!' | '?' | '…') {
             let end = i + c.len_utf8();
             let at_break = iter.peek().is_none_or(|(_, n)| n.is_whitespace() || *n == '"')
+                && !inside_quote(text, i)
                 && (c != '.' || terminal_period(text, i));
             if at_break {
                 let part = &text[start..end];
@@ -1743,8 +2058,9 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
     if asks_if_done || (polite && !asks_for_speech) {
         return true;
     }
-    let question =
-        lowered.trim_end().ends_with('?') || (w.first().is_some_and(|f| is(f, INFORMATIONAL)) && !imperative_head(&w));
+    let question = (lowered.trim_end().ends_with('?')
+        || (w.first().is_some_and(|f| is(f, INFORMATIONAL)) && !imperative_head(&w)))
+        && !(lowered.trim_end().ends_with('?') && tag_imperative(&w));
     !question
 }
 
@@ -1752,6 +2068,47 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
 /// them the file", "help your mum": with a receiver other than the user the request is an
 /// act on a third party, not speech to the user.
 const RECEIVER_VERBS: &[&str] = &["tell", "show", "give", "write", "help", "suggest", "recommend"];
+
+/// Determiner-led receivers that are people or places a message can go to: "tell the
+/// babysitter", "tell the office", "show your mum". With a non-person object ("tell the
+/// story") the same opener is speech.
+const INSTITUTIONS: &[&str] = &[
+    "office",
+    "offices",
+    "surgery",
+    "practice",
+    "school",
+    "schools",
+    "nursery",
+    "work",
+    "workplace",
+    "team",
+    "teams",
+    "group",
+    "groups",
+    "committee",
+    "council",
+    "crew",
+    "bank",
+    "banks",
+    "company",
+    "companies",
+    "firm",
+    "firms",
+    "hotel",
+    "hotels",
+    "restaurant",
+    "restaurants",
+    "pharmacy",
+    "chemist",
+    "chemists",
+    "library",
+    "gym",
+    "clinic",
+    "clinics",
+    "hospital",
+    "surgery",
+];
 
 /// After a receiver verb these read as content ("tell it", "say something"), not a person
 /// being addressed.
@@ -1782,10 +2139,41 @@ fn imperative_head(w: &[&str]) -> bool {
         Some(&f) if is(f, INFORMATIONAL) => {
             !matches!(second, "me" | "us")
                 && (matches!(second, "him" | "her" | "them")
-                    || (is(f, RECEIVER_VERBS) && !is(second, DETERMINERS) && !is(second, CONTENT_WORDS)))
+                    || (is(f, RECEIVER_VERBS)
+                        && ((!is(second, DETERMINERS) && !is(second, CONTENT_WORDS))
+                            || w.get(2)
+                                .is_some_and(|t| is(t, CONTACTS) || is(t, RELATIONS) || is(t, INSTITUTIONS)))))
         }
         _ => false,
     }
+}
+
+/// A trailing tag — "…, yeah?", "…, right?", "…, would you?" — does not turn an imperative
+/// into a question: strip it and re-ask whether the remainder is imperative-shaped.
+fn tag_imperative(w: &[&str]) -> bool {
+    const TAGS: &[&[&str]] = &[
+        &["yeah"],
+        &["yes"],
+        &["right"],
+        &["ok"],
+        &["okay"],
+        &["alright"],
+        &["ta"],
+        &["eh"],
+        &["will", "you"],
+        &["would", "you"],
+        &["could", "you"],
+        &["can", "you"],
+        &["shall", "we"],
+        &["do", "you", "think"],
+    ];
+    for &tag in TAGS {
+        if w.len() > tag.len() && w.ends_with(tag) {
+            let rest = &w[..w.len() - tag.len()];
+            return rest.first().is_some_and(|f| !is(f, INFORMATIONAL)) || imperative_head(rest);
+        }
+    }
+    false
 }
 
 /// Whether `t` is a completed form — "confirmed", "sorted", "gone", "told" — by the
@@ -1810,6 +2198,15 @@ pub fn classify(text: &str) -> Verdict {
 /// Whether a sentence would be replaced or disclosed: it may claim that an action happened.
 pub fn claims_completion(text: &str) -> bool {
     classify(text) != Verdict::Plain
+}
+
+/// The second-pass option measured for D-029 — deliberately unshipped: where an
+/// informational turn's reply survives `uninvited_action` plain, one answer to "does this
+/// reply say the assistant did something?" would decide the disclosure. `judge` is
+/// injected so the same path measures any implementation — the on-device model in the
+/// app, a lexical stand-in or an oracle in tests — and no production code calls it.
+pub fn second_pass(reply: &str, judge: impl Fn(&str) -> bool) -> bool {
+    uninvited_action(reply) || judge(reply)
 }
 
 /// Arrangement-state idioms: a person, task or thing reported as put where it should be.
@@ -1946,6 +2343,58 @@ const IRREGULAR_DONE: &[&str] = &[
     "swore",
     "swept",
     "swung",
+    "rang",
+    "took",
+    "gave",
+    "drove",
+    "ate",
+    "drank",
+    "spoke",
+    "broke",
+    "chose",
+    "froze",
+    "stole",
+    "saw",
+    "fell",
+    "grew",
+    "knew",
+    "threw",
+    "blew",
+    "flew",
+    "drew",
+    "sat",
+    "fought",
+    "forgot",
+    "became",
+    "came",
+    "began",
+    "dug",
+    "hung",
+    "lit",
+    "struck",
+    "spun",
+    "stung",
+    "wrung",
+    "hit",
+    "cut",
+    "cost",
+    "shut",
+    "set",
+    "bet",
+    "fed",
+    "bled",
+    "bent",
+    "leant",
+    "leapt",
+    "dreamt",
+    "burst",
+    "cast",
+    "quit",
+    "spat",
+    "split",
+    "spread",
+    "thrust",
+    "fled",
     "understood",
     "woke",
     "won",
@@ -2112,8 +2561,108 @@ fn uninvited_clause(w: &[&str], rep: Option<usize>) -> bool {
         || deliverable_in_space(w, rep)
         || informed_contact(w, rep)
         || assistant_accomplished(w, rep)
+        || first_person_act(w, rep)
         || delivery_as_possession(w, rep)
         || arrangement_state(w, rep)
+        || agentless_state(w, rep)
+}
+
+/// "…the payment I sent on Tuesday", "which I did through your bank", "I may have already
+/// paid it", "I rang the surgery": a first person doing any completed form is the
+/// assistant's own report, whatever the verb and wherever in the clause it sits — a
+/// relative, a hedge, an untabled verb. A modal or negator in the verb group governs it
+/// away ("I will send", "I can't do it"), and "I was/am" is a state, not an act.
+fn first_person_act(w: &[&str], rep: Option<usize>) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r) || !matches!(*t, "i" | "we") {
+            return false;
+        }
+        // "If I sent it", "whether I paid": a governor before the "I" owns the clause.
+        if w[..i]
+            .iter()
+            .any(|x| is(x, CONDITIONAL) || is(x, NEGATORS) || is(x, MODALS) || *x == "to")
+        {
+            return false;
+        }
+        // "I have", "I may have", "I just…": auxiliaries, hedges and adverbs pass through
+        // to the candidate; anything else is the candidate itself, and a modal, negator
+        // or non-completed form ("I will send", "I need", "I think") claims nothing.
+        let mut k = i + 1;
+        while k < w.len() && (is(w[k], ADVERBS) || matches!(w[k], "have" | "'ve" | "had" | "may" | "might" | "been")) {
+            k += 1;
+        }
+        // "I was worried", "I am tired": a state after "was/am/were" is no act.
+        if w[i + 1..k].iter().any(|x| is(x, BE)) {
+            return false;
+        }
+        k < w.len() && first_person_done(w, k)
+    })
+}
+
+/// The verb a bare "I" claims: a completed shape by the table, an irregular past, or an
+/// "-ed" with a two-letter stem ("I used the points"). States and governed forms are out,
+/// and "I used to…" is a habit, not an act.
+fn first_person_done(w: &[&str], k: usize) -> bool {
+    let t = w[k];
+    if is(t, BE)
+        || is(t, HAVE)
+        || is(t, MODALS)
+        || is(t, NEGATORS)
+        || is(t, DESIRE)
+        || is(t, CONDITIONAL)
+        || is_number(t)
+        || pronoun(t).is_some()
+    {
+        return false;
+    }
+    if t == "used" {
+        return w.get(k + 1) != Some(&"to");
+    }
+    if is(t, PARTICIPLE_ADJECTIVES) {
+        return false;
+    }
+    done_shaped(t) || t.strip_suffix("ed").is_some_and(|s| s.len() >= 2)
+}
+
+/// "It's ringing now", "your timer's running", "the kettle's off", "she does now": a
+/// device, a remit thing or a managed person reported in a changed state with no other
+/// agent — nothing else can have changed it. Weather and time states are the world's; a
+/// person acting the verb itself is their own ("the train's running" is machinery's).
+fn agentless_state(w: &[&str], rep: Option<usize>) -> bool {
+    // "<person> does now": an elliptical informing — "she does now" = she knows now.
+    let does_now = w.windows(2).enumerate().any(|(i, p)| {
+        rep.is_none_or(|r| i < r)
+            && matches!(p[0], "does" | "do")
+            && matches!(p[1], "now" | "today" | "already" | "finally")
+            && match scan_back(w, i).subject {
+                Subject::Noun { head } => is(w[head], CONTACTS) || is(w[head], RELATIONS) || nounish(w[head]),
+                Subject::Third => true,
+                _ => false,
+            }
+            && !w[..i]
+                .iter()
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+    });
+    // "<remit thing or bare it> be <state>": only the assistant can have put it there.
+    let state = w.iter().enumerate().any(|(i, t)| {
+        if rep.is_some_and(|r| i > r) || !is(t, ACTIVE_STATES) || is(t, NATURAL_STATES) {
+            return false;
+        }
+        // "It's on the Seine" locates; "it's on" or "it's off already" changes.
+        if is(t, LOCATIVE_STATES) && w.get(i + 1).is_some_and(|n| !is(n, STATE_FOLLOWERS)) {
+            return false;
+        }
+        let ctx = scan_back(w, i);
+        if ctx.governed || !ctx.aux || by_agent(w, i) {
+            return false;
+        }
+        match ctx.subject {
+            Subject::Noun { head } => remit_thing(w, head),
+            Subject::Thing => true,
+            _ => false,
+        }
+    });
+    does_now || state
 }
 
 /// "I sorted that", "I've noted it", "we dropped it off", "I made a note": the assistant
@@ -2153,19 +2702,28 @@ fn delivery_as_possession(w: &[&str], rep: Option<usize>) -> bool {
             || is(object, TASK_NOUNS)
             || is(object, TASK_STRONG)
             || is(object, DELIVERABLES)
+            || is(object, DELIVERABLE_UNITS)
             || (is_number(object)
-                && after[j + 1..]
-                    .first()
-                    .is_some_and(|n| is_number(n) || is(n, TASK_NOUNS) || is(n, DELIVERABLES)));
+                && after[j + 1..].first().is_some_and(|n| {
+                    is_number(n) || is(n, TASK_NOUNS) || is(n, DELIVERABLES) || is(n, DELIVERABLE_UNITS)
+                }));
         if !delivered {
             return false;
         }
         let ctx = scan_back(w, i);
-        !ctx.governed
-            && matches!(
-                ctx.subject,
-                Subject::First | Subject::Third | Subject::Thing | Subject::Noun { .. }
-            )
+        if ctx.governed {
+            return false;
+        }
+        // "You've got it": a bare "it" under "you" reads as understanding or mere
+        // possession; a concrete object ("you've got the seats", "two nights") claims
+        // the delivery.
+        if ctx.subject == Subject::Second && matches!(*object, "it" | "them" | "that" | "this" | "everything") {
+            return false;
+        }
+        matches!(
+            ctx.subject,
+            Subject::First | Subject::Second | Subject::Third | Subject::Thing | Subject::Noun { .. }
+        )
     })
 }
 
@@ -2405,7 +2963,7 @@ fn report_at(w: &[&str]) -> Option<usize> {
             match pronoun(subject) {
                 Some((Subject::Third | Subject::Second | Subject::Thing, _, _)) => Some(i),
                 Some(_) => None,
-                None => nounish(subject).then_some(i),
+                None => (nounish(subject) || is(subject, REPORT_NOUNS)).then_some(i),
             }
         })
 }
@@ -2526,16 +3084,34 @@ fn deliverable_in_space(w: &[&str], rep: Option<usize>) -> bool {
             && win[1] == "yours"
             && (remit_left(i) || w[..i].iter().any(|t| is_number(t)))
     });
-    // "…in your wallet": be + in/on + a possessive + a space, over a remit subject.
+    // "…in your inbox", "…in the LNER app", "…loaded on your card": a space the
+    // assistant can deliver into. A digital space names itself — any determiner or
+    // possessive is enough, with a brand or kind modifier allowed before it ("the
+    // airline app"); a physical container still wants the possessive and a remit
+    // subject ("the letter's been in the drawer for years" is just where it lives),
+    // and a billing space wants a delivery verb done ("a charge is on your card" is a
+    // bill, "loaded on your card" is a delivery).
     let in_space = (0..w.len()).any(|i| {
-        if rep.is_some_and(|r| i > r) || !matches!(w[i], "in" | "inside" | "on") {
+        if rep.is_some_and(|r| i > r) || !matches!(w[i], "in" | "inside" | "on" | "onto") {
             return false;
         }
         let mut k = i + 1;
-        if w.get(k).is_some_and(|t| is(t, POSSESSIVES)) {
+        let possessed = w.get(k).is_some_and(|t| is(t, POSSESSIVES));
+        if possessed || w.get(k).is_some_and(|t| matches!(*t, "the" | "a" | "an")) {
             k += 1;
         }
-        w.get(k).is_some_and(|t| is(t, SPACE)) && remit_left(i)
+        let mut m = k;
+        while m < w.len() && m <= k + 2 && !is(w[m], DIGITAL_SPACE) && !is(w[m], LOAD_SPACES) && !is(w[m], SPACE) {
+            m += 1;
+        }
+        match w.get(m) {
+            Some(&t) if is(t, LOAD_SPACES) => w[..i]
+                .iter()
+                .any(|x| done_shaped(x) || matches!(*x, "sitting" | "waiting")),
+            Some(&t) if is(t, DIGITAL_SPACE) => m > i + 1 || remit_left(i),
+            Some(&t) if is(t, SPACE) => possessed && remit_left(i),
+            _ => false,
+        }
     });
     // "…gone to Raj's account": a completed go + "to" + a space ("raj's" → "raj is").
     let to_space = (0..w.len()).any(|i| {
@@ -2549,7 +3125,7 @@ fn deliverable_in_space(w: &[&str], rep: Option<usize>) -> bool {
                     } else if w.get(m + 1) == Some(&"is") && w.get(m).is_some_and(|t| nounish(t)) {
                         m += 2;
                     }
-                    w.get(m).is_some_and(|t| is(t, SPACE))
+                    w.get(m).is_some_and(|t| is(t, SPACE) || is(t, DIGITAL_SPACE))
                 }
             })
     });
@@ -3226,6 +3802,90 @@ mod tests {
             "The parcel.",
         ] {
             assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// The dangerous direction of routing: a request the classifier calls informational
+    /// loses the unconditional disclosure, so a person receiver or an imperative under a
+    /// tag question must not slip through. "Tell the babysitter" sends a message; "tell
+    /// the difference" asks for speech.
+    #[test]
+    fn person_receivers_and_tag_questions_are_requests() {
+        for heard in [
+            "Tell the babysitter we'll be back by eleven.",
+            "Tell my boss I'm off sick today.",
+            "Text the landlord about the boiler.",
+            "Show your mum the photos later.",
+            "Give the driver the new address.",
+            "Order the usual from the curry house for tonight, yeah?",
+            "Set an alarm for seven, right?",
+            "Ring the dentist back, ok?",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in [
+            "Tell the difference between the two plans.",
+            "Tell the story of how it started.",
+            "Is it going to rain later, do you think?",
+            "What time does the library shut?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// Recall on informational turns, as structure: a deliverable anywhere in the user's
+    /// digital space, a first person in any clause position, an agentless state change —
+    /// each implies the assistant where no other agent is named.
+    #[test]
+    fn the_screen_sees_deliverables_subordinate_first_persons_and_state_changes() {
+        for s in [
+            // A deliverable reported anywhere in the user's space — a possessive or a
+            // named app, with any subject at all.
+            "The comparison sheet is in your inbox now.",
+            "Your e-ticket's already in the airline app.",
+            "Two of them are in your inbox.",
+            "One's now loaded on your travel card.",
+            "The directions are on your phone as a text.",
+            "The confirmation is sitting in your messages.",
+            // The user reported holding the deliverable.
+            "You've now got two nights at the cliff hotel from Friday.",
+            "You've got the seats for Saturday.",
+            // First persons in subordinate positions: relative clauses, hedges,
+            // untabled verbs.
+            "The balance is lower after the payment I sent on Tuesday.",
+            "The duplicate charge is one I raised with the bank myself.",
+            "I may have already paid it, actually.",
+            "I might have told her about Saturday.",
+            "I rang the surgery first thing.",
+            // An agentless state change, with or without "now".
+            "It's ringing now.",
+            "Your timer's running.",
+            "The porch light's off already.",
+            "The kettle's off for the night now.",
+            "She does now.",
+        ] {
+            assert!(uninvited_action(s), "{s}");
+        }
+    }
+
+    /// The ok side of the same release: quoted user words, would-conditionals and
+    /// reported documents are governed or someone else's — none is the assistant's claim.
+    #[test]
+    fn governed_quoted_and_conditional_shapes_stay_plain() {
+        for s in [
+            "On Tuesday you said, 'I've moved the appointment to Friday.'",
+            "You said 'I sent it. Then she left.'",
+            "You told me yesterday you'd already paid it by transfer.",
+            "They'd be switched for you automatically under the switching service.",
+            "Her email says the invoice was settled on the 18th.",
+            "The app says, 'Your table's confirmed for eight.'",
+            "You'd see it once they'd pushed it through.",
+            "If I'd sent it earlier you'd have it by now.",
+            "It's cold in here now.",
+            "The train's running late today.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(!uninvited_action(s), "screen {s}");
         }
     }
 

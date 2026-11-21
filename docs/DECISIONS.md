@@ -434,6 +434,45 @@ settled it, it is listed under **Open questions** rather than guessed.
     turn-disclosed (32%, was 72%)**. asks_action=true: 8 missed (40%), **0
     undisclosed**; **0 replaced**, **19 turn-disclosed (95%)**.
 
+  *Recall work on the shapes the blind sets exposed, landed 2026-11-21 — red-first on
+  newly authored shapes; held-out sets 2/3/4 were not run while developing and a fresh
+  blind set 5 judges the change:*
+  - **The dangerous routing direction is closed:** a determiner-led person or
+    institution is a receiver — "tell the babysitter…", "tell my boss…", "text the
+    landlord…", "show your mum…" — where the same opener with a non-person object
+    stays speech ("tell the story"); and a trailing tag does not undo an imperative —
+    "order the usual …, yeah?", "set an alarm for seven, right?".
+  - **Recall on informational turns, by structure.** A deliverable reported anywhere
+    in the user's digital space flags regardless of its subject ("the sheet is in
+    your inbox", "the ticket's in the LNER app", "the directions are on your phone",
+    "one's loaded on your card" — a billing space still wants the delivery verb
+    done, so "a charge is on your card" stays a bill, and a physical container
+    still wants the possessive plus a remit subject); the user holding a
+    deliverable counts ("you've now got two nights", "you've got the seats"),
+    though a bare "you've got it" still reads as understanding. A first person
+    doing any completed form counts wherever in the clause it sits — relatives
+    ("the payment I sent", "which I did through your bank"), hedges ("I may/might
+    have paid"), untabled verbs ("I rang") — with modals, negators, desire verbs,
+    "I was/am" and a governor before the "I" still suppressing. And a device or
+    remit thing reported in a changed state with no other agent counts ("it's
+    ringing now", "your timer's running", "the kettle's off", "she does now"),
+    where weather and time states are the world's and a state that doubles as a
+    preposition ("on", "off") claims only at clause end or before a state adverb —
+    "it's on the Seine" locates.
+  - **The ok side tightens the same turn.** A `'…'` at a word edge bounds quoted
+    speech — "you said 'I've moved it'" and "the app says 'your table's confirmed'"
+    are another's words — and punctuation inside an open quotation no longer splits
+    the sentence, so "you said 'I sent it. Then she left'" stays attributed.
+    `'d` reads as "would" before anything but a completed form, "been" or "got" —
+    "they'd be moved" is conditional while "they'd moved" completes. And a report
+    noun reports — "her email says…", "the app says…", "the tracking says…".
+  - *Measured on authored shapes plus held-out-1 and the corpus (the only sets
+    touched):* claims **0 of 70 undisclosed**, plain replies **1 of 22 replaced,
+    6 of 22 turn-disclosed**, corpus rates unchanged (claims 168 replaced/9
+    disclosed/1 missed; plain 191 intact/7 disclosed/0 replaced). Authored probe
+    misses that remain for the next round: delivery idioms ("it's been and gone",
+    "it's in the system now") and the addressed imperative ("consider it done").
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -455,7 +494,22 @@ settled it, it is listed under **Open questions** rather than guessed.
     weakens the point-of-claim signal: the disclosure lands on turn one, long before the
     reply that needs it;
   - **disclose once per conversation stretch / on first unevidenced claim** — middle ground;
-    needs a "stretch" definition and still decouples the signal from the claim.
+    needs a "stretch" definition and still decouples the signal from the claim;
+  - **a model second pass on replies the screen leaves plain (measured 2026-11-21, not
+    shipped)** — on an informational turn whose reply survives `uninvited_action`,
+    ask the on-device model once "does this reply say the assistant did something?"
+    and let the answer earn the disclosure. The seam is `guard::second_pass` with an
+    injected judge; `tests/second_pass.rs` measures it without shipping it. Numbers:
+    it would fire on **17 of 29** informational turns on held-out-1 (59%) and 5 of
+    11 on authored probes — each firing is one model question; the lexical screen
+    costs ~55µs per reply so the option's price is one deadline-bounded provider
+    round-trip per triggering reply. A judge as accurate as the sentence classifier
+    alone recovers **+1 of 3** undisclosed authored claims at **0 of 4** false
+    disclosures (held-out-1: +0 of 0 at 1 of 21); a correct model is the ceiling —
+    all 3 authored misses ("it's been and gone", "it's in the system now",
+    "consider it done") recover at 0 false disclosures. The real model's recall and
+    false-positive rate can only be measured on device against the FoundationModels
+    provider.
 
   The trade-off is constant: each reduction in disclosure frequency raises the cost of the
   one undisclosed claim that gets through — held-out-2 measured 14 of 60. No change is made
