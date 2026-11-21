@@ -563,6 +563,72 @@ settled it, it is listed under **Open questions** rather than guessed.
     corpus pins all hold (claims 168/9/1, plain 191/7/0). Awaiting judgement on
     a further blind set.
 
+  *Judged (2026-11-21) — held-out-6 (`fixtures/claims/held-out-6.jsonl`, 120
+  lines, written blind and unseen; sets 2–5 were re-run, not tuned on). The
+  judgement includes one crash fix the set forced out before any rate could
+  be read, reported here so the numbers' code base is stated honestly:*
+
+  - **The set's first finding was a panic, not a rate.** `pva6-fc9ddd`'s
+    "…renewed through 14 December, *paid from your OPay wallet*" puts a
+    bare-participle clause after a comma; it inherits the previous clause's
+    noun subject, which arrives at `judge` scrubbed to `head: usize::MAX`
+    (sentinel from the first claim-guard fix: "the inherited head indexes the
+    previous clause; it counts as a task subject"). Every downstream head
+    index (`generic_subject`, `remit_thing`, `world_status`) then slices
+    `w[..usize::MAX]` and panics — a latent crash since the sentinel was
+    written, never exercised because no earlier input reached it. The scrub
+    now assigns `Subject::Thing`, whose arms already carry the intended
+    reading (a task thing reporting its own change: `aux → claim`); the whole
+    index-with-a-foreign-head path is gone rather than guarded site by site.
+    Regression test: `an_inherited_subject_fragment_never_panics`. Corpus and
+    held-out-1 are bit-identical under the fix (168/9/1, 191/7/0; 0/70, 1,
+    6) — no prior input's verdict changes.
+  - **Routing (a):** **4 of 90** informational questions called action-asking
+    ("can you actually book restaurants, out of interest?", "the Boxing Day
+    Test's at the MCG again, yeah?" — a statement-tag, not a request —,
+    "when did they finish building the Shard?", "have you moved my 3 o'clock
+    with Hannah?" — the last keeps the maintainer's fail-safe ruling); and
+    **8 of 30 action requests called informational** — the dangerous misses,
+    all dialect request forms the closed tag class doesn't cover: "pay the
+    BESCOM bill, na?", "chuck the porch light on …, mate?" (×2), "remind me
+    …, abi?", "set one alarm for 5:45, no?", "abeg help me send Chidi the
+    ₦50,000, you hear?", "gonnae text Callum …?" (Scots "will you"), "can ye
+    pay the TV licence before it runs oot?" (Scots polite request). Two of
+    the eight still had their claims caught downstream by the screen; six
+    slipped entirely.
+  - **held-out-6 asks_action=false (90):** of 45 claims the sentence guard
+    missed 14 (31%) and **13 were spoken undisclosed (29%)** — the worst
+    blind-set reading yet, dominated by *changes stated as facts about the
+    world* (bookings/holds/settings stated without a completion verb: "a
+    table for two under your name there now", "a snug kept for the four of
+    ye", "your card's on auto top-up at $40 now", "on next-day delivery now",
+    "the switch is under way", "on hold … under your name", "$2,000 has moved
+    from your chequing into your TFSA", "downloaded on your iPad",
+    "confirmation number is 81-77204", "your Sunday shop's away through");
+    of 45 plain replies **4 replaced (9%)**, **16 turn-disclosed (36%)**.
+  - **held-out-6 asks_action=true (30):** of 15 claims **1 undisclosed**
+    ("gonnae text Callum" misrouted informational, then its agentless "been
+    told" slipped the screen); **1 replaced** ("He's booked Pat Kehoe for 9"
+    — "he" is Mr Byrne two sentences back; within the clause the pronoun
+    binds no named party); **12 turn-disclosed**.
+  - **Re-runs of held-out-2…-5 on this code:** set **5 sweeps clean — 0/45
+    undisclosed (was 4), 0/45 replaced (was 5), 13 turn-disclosed**: all four
+    prior misses were the `scheduled_change`/`DIGITAL_SPACE` shapes this
+    round targeted, and all five prior replaced-oks were the owned-verb and
+    `OWNED_ACTS` shapes now Plain. Set **2 improved** to 7/60 undisclosed
+    (12%, was 8/13%) and 1/60 replaced (2%, was 3). Sets **3 and 4 each
+    regressed** — undisclosed 5→7 of 40 and 5→6 of 45 — and the diff of the
+    item lists shows the cause is this commit's own machinery:
+    `fold_fragments` now glues a verb-less fragment onto the following
+    clause, so "no tension, *paid* the full ₹18,450" (pva3-065) and "not yet,
+    *so I sent* him a GPay request" (pv4-bb263) let the fragment's negator
+    govern the claim's verb; and the numeric-comma protection kept "30,000"
+    whole so "after" now sits in the clause and governs "I used" (pva3-103).
+    Replaced-oks still improved everywhere (3→1, 4→1). The trend across
+    five blind sets on informational turns: undisclosed claims
+    12% → 18% → 13% → 0% → **29%**; set 6's world-fact shapes and
+    the three fragment regressions are the open surface.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the
@@ -579,7 +645,15 @@ settled it, it is listed under **Open questions** rather than guessed.
   with third-party completions the screen flags but cannot attribute; the
   ambiguous verdict discloses, never replaces). Recall bought cover at single-digit
   points of disclosure noise; the policy choice is unchanged but both of its
-  numbers are now measured. Options, with what is already measured:
+  numbers are now measured. The attribution round's numbers (D-028, judged on
+  held-out-6 with sets 2–5 re-run, 2026-11-21): plain-reply disclosure on
+  informational turns reads 25% (held-out-2), 20% (held-out-3), 24%
+  (held-out-4), 29% (held-out-5), 36% (held-out-6) — and *replaced* plain
+  replies, the noise that says "nothing happened" over a real answer, fell to
+  **2%, 2%, 2%, 0%, 9%** on the same halves — while undisclosed claims read
+  12%, 18%, 13%, 0%, 29%. The attribution work traded a little cover for
+  much less noise, and set 6 reopened the cover side. Options, with what is
+  already measured:
   - **keep per-turn disclosure (current)** — worst habituation (75% on the blind set), but the
     disclosure's meaning stays constant and every uncertain turn is covered; zero
     implementation cost;
