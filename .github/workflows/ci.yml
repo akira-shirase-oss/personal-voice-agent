@@ -57,8 +57,8 @@ jobs:
       - name: 60 s smoke per target (any crash is a red-first bug)
         working-directory: tests/attacks/fuzz
         run: |
-          for target in frame_line record_decode; do
-            cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=25
+          for target in frame_line record_decode guard_classify; do
+            cargo +nightly fuzz run "$target" --fuzz-dir . -- -max_total_time=60 -timeout=25
           done
 
   swift:
