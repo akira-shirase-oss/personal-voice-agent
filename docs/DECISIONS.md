@@ -629,6 +629,80 @@ settled it, it is listed under **Open questions** rather than guessed.
     12% → 18% → 13% → 0% → **29%**; set 6's world-fact shapes and
     the three fragment regressions are the open surface.
 
+  *Development on that open surface (2026-11-21, judged later on a fresh
+  blind set 7; sets 2–6 were not run while developing):*
+
+  - **Never-panics is now fuzzed, not hoped.** `guard_classify`
+    (`tests/attacks/fuzz/fuzz_targets/guard_classify.rs`) drives the whole
+    spoken-sentence path — `classify` (split → attribute → judge), the
+    `uninvited_action` screen, the `second_pass` seam and the
+    `request_may_ask_for_action` router — on arbitrary bytes, seeded with
+    every reply and heard string in the six held-out sets and the claims
+    corpus (1,767 seeds). CI's fuzz job runs it for 60 s beside
+    `frame_line`/`record_decode`; `cargo fuzz` needed `--fuzz-dir .` because
+    it resolves the outer workspace root otherwise. Local evidence:
+    **473,739 executions in 301 s, zero crashes** (plus a 114,373-run/61 s
+    smoke). The `usize::MAX` sentinel class the panic belonged to is exactly
+    what this target exists to catch.
+  - **Dialect request forms are grammar, not a spelling list.** The tag
+    class now has its vocative and dialect members — address terms ("mate",
+    "pal", "boss", "bhai", "duck"…), dialect confirmations ("na", "abi",
+    "no", "naw", "lah", "leh", "hor", "meh", "se", "she", "kan", "kah",
+    "wae", "capisce", "savvy"…), the hearsay check ("you hear", "you hear
+    me"), fused frames ("gonnae"/"gonny" when an act or object follows —
+    "gonnae rain" stays going-to), listener pronouns ("ye", "ya", "y'all",
+    "thee") and the please-form "abeg". `imperative_shaped` decides the
+    clause before the tag: verb-first is a request ("lock the door, mate?");
+    pronoun/determiner/auxiliary-led is a statement carrying a confirmation
+    tag ("it's cold in here, no?" stays a question).
+  - **`fold_fragments` no longer swallows governors.** A verb-less fragment
+    carrying a negator, modal or subordinator flushes the pending carry and
+    stands alone — "no tension, paid…" and "not yet, so I sent…" keep the
+    claim (the two pva3/pv4 regressions recorded above), while "no worries,
+    nothing was sent" stays governed and plain appositives still fold.
+  - **Temporal subordinators assert episodic acts.** `CONDITIONAL` split
+    into hypotheticals ("if", "unless", "whether" — govern whatever the
+    form) and `TEMPORAL` ("once", "when", "after", "before", "until",
+    "till", "whenever"). Under a temporal, a completed form with no BE
+    auxiliary is the event itself — "after the 30,000 I used" asserts the
+    use; a present, generic or result-state reading ("once it's sent",
+    "until the invoice is paid") stays governed. The bare no-subject arm
+    ("once sent") is a result state and stays governed outright.
+  - **Noun-headed world-fact changes are a `scheduled_change` sibling.**
+    `state_facts` reads the two verb-less shapes set 6 missed: a booking
+    noun under your name ("a table for two under your name now" — nobody
+    else books under your name; a locative like "under the window" does not
+    qualify) and a remit thing on a service mode ("your account's on auto
+    top-up"; a person's "mum's on auto-renew" is her own). "Under way"
+    joined `ARRANGEMENT`, and the kept-for-you arm takes a noun-headed
+    ellipsis ("a snug kept for ye").
+  - **A name the reply used as a person binds later mentions.**
+    `agent_names` collects parties named by a person-verb, a title or a
+    dative/contact preposition ("mr byrne rang…", "spoke to chidi", "mum
+    mentioned bill"); `remit_thing`/`remit_subject` take the list, so "bill
+    moved the meeting" is Bill the caller, not the remit noun. Separately,
+    `causative_at`/`causative_verdict` read have/get + object + participle
+    as the *owner's* arranging — "he's had the car fixed", "they got it
+    sorted" are theirs and stay plain, while the assistant's own ("I've had
+    it fixed", bare "had it sorted out") still claims; `is_question`
+    stopped calling the bare form an inversion when a done-form follows the
+    object. `remit_change`, `delivery_as_possession` and `arrangement_state`
+    consult the frame so a third party's causative never reads as the
+    assistant's delivery.
+  - **Two self-regressions were caught and fixed before the gate.** The
+    first corpus run after the change flagged `has been paid`-class passives
+    Plain: the causative gap-check mistook the auxiliary "been" for the
+    object — the gap now requires object-words only. And "once it's sent"
+    flipped to a claim because `episodic` saw the participle's form, not the
+    fused "is" — a BE auxiliary anywhere in the verb group (fused "'s" or
+    separate) now marks the result-state reading and stays governed.
+  - **Measured (held-out-1 + corpus only, both unchanged):** claims **0 of
+    70 undisclosed**, plain replies **1 of 22 replaced, 6 of 22
+    turn-disclosed**; corpus pins all hold (168/9/1, 191/7/0). All five
+    red-first tests pass; fmt, clippy, the 23-attack suite and the
+    workspace gate are green except the five known `hdiutil` `disk_full`
+    environment failures. Awaiting judgement on blind set 7.
+
 - **D-029 — The 75% over-disclosure rate is a maintainer's call; options recorded, behaviour
   unchanged (2026-11-21).** On held-out-2, 45 of 60 plain replies ended with "Nothing has
   been done." Appending it that often trains the user to ignore the disclosure, which is the

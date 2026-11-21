@@ -330,9 +330,13 @@ const NEGATORS: &[&str] = &[
 ];
 /// Negators that are themselves the subject: "nothing was sent".
 const NEG_SUBJECTS: &[&str] = &["nothing", "none", "nobody", "neither"];
-const CONDITIONAL: &[&str] = &[
-    "if", "once", "when", "whenever", "after", "before", "until", "unless", "whether", "till",
-];
+/// Hypotheticals — the embedded event is not asserted.
+const CONDITIONAL: &[&str] = &["if", "unless", "whether"];
+/// Temporal subordinators order events in time; they are not hypotheticals. An
+/// episodic completed form under one is asserted ("after the 30,000 I used" —
+/// the use happened); a present or generic reading stays governed ("once the
+/// reminder is in, it stays").
+const TEMPORAL: &[&str] = &["once", "when", "whenever", "after", "before", "until", "till"];
 const HABITUAL: &[&str] = &[
     "usually",
     "typically",
@@ -1617,7 +1621,7 @@ fn scan_back(w: &[&str], end: usize) -> Context {
             ctx.aux |= aux;
             ctx.passive |= passive;
             ctx.past &= !(present || aux);
-            ctx.governed |= governs_subject(w, j, j);
+            ctx.governed |= governs_subject(w, j, j, end, present);
             return ctx;
         }
         if is(t, MODALS) || t == "to" {
@@ -1644,8 +1648,9 @@ fn scan_back(w: &[&str], end: usize) -> Context {
         if is(t, ADVERBS) {
             continue;
         }
-        if is(t, CONDITIONAL) {
-            // "once sent": nothing between the conditional and the verb but the verb group.
+        if is(t, CONDITIONAL) || is(t, TEMPORAL) {
+            // "if sent", "once sent": nothing between the governor and the verb
+            // but the verb group — a result-state or generic reading, governed.
             ctx.governed = true;
             return ctx;
         }
@@ -1659,23 +1664,37 @@ fn scan_back(w: &[&str], end: usize) -> Context {
         }
         ctx.subject = Subject::Noun { head: j };
         ctx.past &= !present;
-        ctx.governed |= governs_subject(w, start, j);
+        ctx.governed |= governs_subject(w, start, j, end, present);
         return ctx;
     }
     ctx.past &= !present;
     ctx
 }
 
+/// Whether `verb` asserts an event under a temporal subordinator: a completed
+/// form not marked present — "after I sent it" and "once it was paid" are
+/// episodic; "after I send it" and "once it is paid" are prospective or generic.
+/// A BE auxiliary makes the participle a result state ("once it's sent"), which
+/// is the generic reading and stays governed.
+fn episodic(verb: &str, present: bool, be_aux: bool) -> bool {
+    done_shaped(verb) && !present && !be_aux
+}
+
 /// Whether a word just before (or inside) the subject spanning `start..=head` governs the verb:
 /// "if it's sent", "once the invoice is paid", "no message was sent", "want it sent".
-fn governs_subject(w: &[&str], start: usize, head: usize) -> bool {
+fn governs_subject(w: &[&str], start: usize, head: usize, end: usize, present: bool) -> bool {
     if w[start..=head].iter().any(|t| is(t, NEGATORS)) {
         return true;
     }
     let Some(before) = start.checked_sub(1).map(|i| w[i]) else {
         return false;
     };
+    let verb = w.get(end).copied().unwrap_or("");
+    // "it's sent", "the bill's sent": a BE fused onto the subject counts the same
+    // as a separate one — the participle is the result state, not the event.
+    let be_aux = w[head].ends_with("'s") || w[head + 1..end.min(w.len())].iter().any(|t| is(t, BE));
     is(before, CONDITIONAL)
+        || (is(before, TEMPORAL) && !episodic(verb, present, be_aux))
         || is(before, HABITUAL)
         || is(before, NEGATORS)
         || (is(before, DESIRE) && (start == head) && (is(w[head], OBJECT_PRONOUNS) || head > start))
@@ -1862,6 +1881,23 @@ fn fold_fragments(out: Vec<Clause<'_>>) -> Vec<Clause<'_>> {
     let mut carry_join = Join::Start;
     for c in out {
         if !c.quoted && !c.words.iter().any(|&t| verb_group(t)) {
+            // A fragment carrying a negator or a governor is its own clause:
+            // folding it forward would put the next clause's verb under its
+            // scope ("no worries, sent it" — the "no" is not the sending's).
+            if c.words
+                .iter()
+                .any(|&t| is(t, NEGATORS) || is(t, MODALS) || is(t, CONDITIONAL) || is(t, TEMPORAL))
+            {
+                if !carry.is_empty() {
+                    folded.push(Clause {
+                        words: std::mem::take(&mut carry),
+                        join: carry_join,
+                        quoted: false,
+                    });
+                }
+                folded.push(c);
+                continue;
+            }
             if carry.is_empty() {
                 carry_join = c.join;
             }
@@ -1905,7 +1941,14 @@ fn verb_group(t: &str) -> bool {
 
 fn is_question(w: &[&str], last_of_question: bool) -> bool {
     let first = w.first().copied().unwrap_or("");
-    last_of_question || (is(first, INVERTED) && w.len() > 1 && (pronoun(w[1]).is_some() || is(w[1], DETERMINERS)))
+    // "Had it sorted out.", "got it booked.": have/get + object + participle is
+    // a dropped-subject perfect or causative, not an inversion — a genuine
+    // question ends with '?' and `last_of_question` covers it.
+    let dropped_have = (is(first, HAVE) || is(first, GET))
+        && matches!(w.get(1), Some(&("it" | "them" | "that" | "this")))
+        && w[2..].iter().any(|t| done_shaped(t));
+    last_of_question
+        || (is(first, INVERTED) && w.len() > 1 && (pronoun(w[1]).is_some() || is(w[1], DETERMINERS)) && !dropped_have)
 }
 
 /// A period that closes one of these words is part of the word, not the end of the
@@ -2116,11 +2159,18 @@ pub fn request_may_ask_for_action(heard: &str) -> bool {
         matches!(
             p[0],
             "can" | "could" | "would" | "will" | "won't" | "wouldn't" | "can't" | "couldn't"
-        ) && matches!(p[1], "you" | "u")
-    }) || w.iter().any(|t| matches!(*t, "please" | "pls"))
+        ) && matches!(p[1], "you" | "u" | "ye" | "ya" | "y'all" | "yall" | "thee")
+    }) || w.iter().any(|t| matches!(*t, "please" | "pls" | "abeg"))
         || has_phrase(&w, &["any", "chance"])
         || w.first() == Some(&"mind")
-        || has_phrase(&w, &["you", "mind"]);
+        || has_phrase(&w, &["you", "mind"])
+        // "Gonnae", "gonny": a fused request frame — Scots "will you" — when an
+        // act or object follows it ("gonnae ring the plumber", "gonnae gie's a
+        // hand"). Bare "gonnae rain" is the going-to prediction instead.
+        || (matches!(w.first(), Some(&("gonnae" | "gonny" | "gony")))
+            && w[1..].iter().any(|t| {
+                verb(t).is_some() || is(t, DETERMINERS) || is(t, POSSESSIVES) || matches!(*t, "me" | "us")
+            }));
     let asks_for_speech = polite && w.iter().any(|t| is(t, ANSWER_VERBS));
     if asks_if_done || (polite && !asks_for_speech) {
         return true;
@@ -2225,10 +2275,78 @@ fn tag_imperative(w: &[&str]) -> bool {
     /// The tag's pronoun addresses the listener or the pair: "you", "ya", "ye",
     /// "we". "…, isn't it?" and "…, aren't they?" confirm a statement about
     /// someone else — no request is being made.
-    const TAG_PRONOUNS: &[&str] = &["you", "ya", "ye", "u", "we", "y'all", "yall"];
-    /// One-word confirmations.
+    const TAG_PRONOUNS: &[&str] = &["you", "ya", "ye", "u", "we", "y'all", "yall", "thee"];
+    /// One-word confirmations — standard and dialect ("na", "abi", "no", "lah").
     const CONFIRMATIONS: &[&str] = &[
-        "yeah", "yes", "yeh", "yep", "right", "ok", "okay", "alright", "ta", "eh", "aye", "huh", "innit", "correct",
+        "yeah",
+        "yes",
+        "yeh",
+        "yep",
+        "ya",
+        "right",
+        "ok",
+        "okay",
+        "alright",
+        "ta",
+        "eh",
+        "aye",
+        "huh",
+        "innit",
+        "correct",
+        "na",
+        "no",
+        "naw",
+        "abi",
+        "se",
+        "she",
+        "neh",
+        "lah",
+        "leh",
+        "hor",
+        "meh",
+        "ba",
+        "don",
+        "kan",
+        "kah",
+        "wae",
+        "capisce",
+        "comprende",
+        "savvy",
+        "understand",
+    ];
+    /// Terms of address in tag position: "…, mate?", "…, boss?", "…, love?".
+    const VOCATIVES: &[&str] = &[
+        "mate",
+        "pal",
+        "buddy",
+        "hun",
+        "honey",
+        "love",
+        "boss",
+        "chief",
+        "fam",
+        "bruv",
+        "bro",
+        "sis",
+        "dear",
+        "duck",
+        "hen",
+        "pet",
+        "son",
+        "lad",
+        "lass",
+        "bhai",
+        "yaar",
+        "sha",
+        "mucker",
+        "guv",
+        "sir",
+        "madam",
+        "darling",
+        "sweetheart",
+        "boyo",
+        "babes",
+        "luv",
     ];
     // The auxiliaries and modals a request tag is built from — INVERTED's
     // be/have/do set plus the modal contractions — and the fused forms that
@@ -2237,11 +2355,16 @@ fn tag_imperative(w: &[&str]) -> bool {
     let tag_len = match w {
         // "can you not", "will ye not"
         [.., aux, p, "not"] if tag_aux(aux) && is(p, TAG_PRONOUNS) => 3,
+        // "…, you hear me?" — the hearsay check as a three-word tag.
+        [.., p, "hear", "me"] if is(p, TAG_PRONOUNS) => 3,
         // "will ya", "won't ye", "can't you", "shall we", "didn't you"
         [.., aux, p] if tag_aux(aux) && is(p, TAG_PRONOUNS) => 2,
-        // "alright", "ok", "yeah", "ta", "innit", "d'ya"
+        // "…, you hear?", "…, ya hear?"
+        [.., p, "hear"] if is(p, TAG_PRONOUNS) => 2,
+        // "alright", "ok", "yeah", "ta", "innit", "d'ya", "mate", "na", "abi"
         [.., one]
             if is(one, CONFIRMATIONS)
+                || is(one, VOCATIVES)
                 || matches!(
                     *one,
                     "d'you" | "d'ya" | "d'ye" | "willya" | "wouldja" | "couldja" | "cancha" | "dontcha" | "wontcha"
@@ -2252,7 +2375,34 @@ fn tag_imperative(w: &[&str]) -> bool {
         _ => return false,
     };
     let rest = &w[..w.len() - tag_len];
-    !rest.is_empty() && (rest.first().is_some_and(|f| !is(f, INFORMATIONAL)) || imperative_head(rest))
+    !rest.is_empty() && imperative_shaped(rest)
+}
+
+/// Whether the clause before a tag reads as a request: verb-first ("lock the
+/// door", "sort it") or a receiver-verb phrase ("tell him", "show her"). A
+/// pronoun-, determiner-, possessive- or auxiliary-led clause is a statement
+/// with a confirmation tag — "the kids are fed, yeah?" asks, it does not tell.
+fn imperative_shaped(w: &[&str]) -> bool {
+    let Some(&first) = w.first() else {
+        return false;
+    };
+    if imperative_head(w) {
+        return true;
+    }
+    !(pronoun(first).is_some()
+        || is(first, DETERMINERS)
+        || is(first, POSSESSIVES)
+        || is(first, ARTICLES)
+        || is(first, BE)
+        || is(first, HAVE)
+        || is(first, GET)
+        || is(first, MODALS)
+        || is(first, NEGATORS)
+        || is(first, FINITE_NEGATORS)
+        || is(first, NEG_SUBJECTS)
+        || is(first, CONDITIONAL)
+        || is(first, TEMPORAL)
+        || is(first, INFORMATIONAL))
 }
 
 /// Whether `t` is a completed form — "confirmed", "sorted", "gone", "told" — by the
@@ -2261,15 +2411,60 @@ fn done_shaped(t: &str) -> bool {
     past_shaped(t) || verb(t).is_some_and(|v| matches!(v.form, Form::Done))
 }
 
+/// Persons the reply named — "mr byrne rang…", "she spoke to chidi", "mum
+/// mentioned bill": a nounish token next to a person-verb, a courtesy title, or
+/// a dative/contact preposition names a party, so a later "bill moved it" binds
+/// to him instead of reading the token as a remit noun.
+fn agent_names(lowered: &str) -> Vec<&str> {
+    const PERSON_VERBS: &[&str] = &[
+        "rang",
+        "called",
+        "emailed",
+        "texted",
+        "text",
+        "phoned",
+        "spoke",
+        "mailed",
+        "wrote",
+        "met",
+        "mentioned",
+        "thanked",
+        "warned",
+        "promised",
+        "contacted",
+        "messaged",
+    ];
+    const TITLES: &[&str] = &["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "lady", "lord"];
+    let w = words(lowered);
+    let mut names = Vec::new();
+    let candidate = |t: &str| nounish(t) && verb(t).is_none() && !is_number(t);
+    for (i, t) in w.iter().enumerate() {
+        // "told bill", "spoke to chidi", "a card from niamh".
+        if (is(t, PERSON_VERBS) || matches!(*t, "to" | "by" | "with" | "from"))
+            && w.get(i + 1).is_some_and(|x| candidate(x))
+        {
+            names.push(w[i + 1]);
+        }
+        // "chidi called", "mr byrne rang": the party on the verb's left.
+        if (is(t, PERSON_VERBS) || is(t, TITLES)) && i > 0 && candidate(w[i - 1]) {
+            names.push(w[i - 1]);
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// Classifies one reply sentence (or several: each is judged and the strongest verdict wins).
 pub fn classify(text: &str) -> Verdict {
     let lowered = text
         .to_lowercase()
         .replace(['\u{2019}', '\u{2018}', '`'], "'")
         .replace(['\u{201c}', '\u{201d}', '«', '»'], "\"");
+    let names = agent_names(&lowered);
     sentences(&lowered)
         .into_iter()
-        .map(|(s, question)| classify_sentence(s, question))
+        .map(|(s, question)| classify_sentence(s, question, &names))
         .max()
         .unwrap_or(Verdict::Plain)
 }
@@ -2304,6 +2499,7 @@ const ARRANGEMENT: &[&[&str]] = &[
     &["in", "the", "mail"],
     &["in", "the", "works"],
     &["in", "the", "pipeline"],
+    &["under", "way"],
     &["down", "for"],
     &["waiting", "for", "you"],
     &["expecting", "you"],
@@ -2604,6 +2800,7 @@ pub fn uninvited_action(text: &str) -> bool {
         .to_lowercase()
         .replace(['\u{2019}', '\u{2018}', '`'], "'")
         .replace(['\u{201c}', '\u{201d}', '«', '»'], "\"");
+    let names = agent_names(&lowered);
     sentences(&lowered).into_iter().any(|(sentence, question)| {
         let clauses = clauses(sentence);
         let last = clauses.len().saturating_sub(1);
@@ -2624,7 +2821,7 @@ pub fn uninvited_action(text: &str) -> bool {
             if !clause.quoted
                 && (!reported || floor)
                 && !is_question(w, question && n == last)
-                && uninvited_clause(w, rep)
+                && uninvited_clause(w, rep, &names)
             {
                 hit = true;
             }
@@ -2634,17 +2831,17 @@ pub fn uninvited_action(text: &str) -> bool {
     })
 }
 
-fn uninvited_clause(w: &[&str], rep: Option<usize>) -> bool {
+fn uninvited_clause(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
     dropped_subject(w, rep)
-        || remit_change(w, rep)
+        || remit_change(w, rep, names)
         || deliverable_in_space(w, rep)
         || informed_contact(w, rep)
         || assistant_accomplished(w, rep)
         || first_person_act(w, rep)
         || delivery_as_possession(w, rep)
         || arrangement_state(w, rep)
-        || agentless_state(w, rep)
-        || scheduled_change(w, rep)
+        || agentless_state(w, rep, names)
+        || scheduled_change(w, rep, names)
 }
 
 /// "…the payment I sent on Tuesday", "which I did through your bank", "I may have already
@@ -2713,12 +2910,8 @@ fn first_person_done(w: &[&str], k: usize) -> bool {
 /// booked slot or a rescheduled state on the remit — with no other agent the
 /// assistant is implied. A person in a state is their own business ("mum's in
 /// for a surprise" — no slot value — and a named agent's change is theirs).
-fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
-    let governed = |upto: usize| {
-        w[..upto]
-            .iter()
-            .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
-    };
+fn scheduled_change(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
+    let governed = |upto: usize| governed_prefix(w, upto);
     // "Held/kept/reserved under your name", "held for you": a passive hold for
     // the user — nobody else books under your name.
     let held = w.iter().enumerate().any(|(i, t)| {
@@ -2732,17 +2925,26 @@ fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
             && w.get(i + 2).is_some_and(|x| is(x, POSSESSIVES))
             && w.get(i + 3)
                 .is_some_and(|x| matches!(*x, "name" | "names" | "account" | "accounts"));
-        let for_you = w.get(i + 1) == Some(&"for") && w.get(i + 2) == Some(&"you");
+        let for_you =
+            w.get(i + 1) == Some(&"for") && matches!(w.get(i + 2), Some(&("you" | "ye" | "ya" | "u" | "thee")));
         if !(under_name || for_you) || by_agent(w, i) {
             return false;
         }
         // A "be" in the verb group makes it a passive: the subject is the thing
-        // held. Without one the left subject would be the holder itself — and
-        // only the assistant's own "I held…" claims anything there.
+        // held. Without one the left subject would be the holder itself — the
+        // assistant's own "I held…" claims, and so does a noun-headed ellipsis
+        // ("a snug kept for ye" — the snug is held, nobody else kept it).
         if w[..i].iter().rev().take(4).any(|x| is(x, BE)) {
             true
         } else {
-            matches!(scan_back(w, i).subject, Subject::First)
+            match scan_back(w, i).subject {
+                Subject::First => true,
+                Subject::Noun { head } => {
+                    remit_thing(w, head, names)
+                        || (nounish(w[head]) && !is(w[head], CONTACTS) && !is(w[head], RELATIONS))
+                }
+                _ => false,
+            }
         }
     });
     // "In for" a booked slot — a number or day inside the next few words ("in
@@ -2761,7 +2963,7 @@ fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
         // usual") or a bare "it" — never a person whose slot it is.
         if is(w[i - 1], BE) {
             match scan_back(w, i - 1).subject {
-                Subject::Noun { head } => remit_thing(w, head) || w[..i].iter().any(|x| is(x, POSSESSIVES)),
+                Subject::Noun { head } => remit_thing(w, head, names) || w[..i].iter().any(|x| is(x, POSSESSIVES)),
                 Subject::Thing => true,
                 _ => false,
             }
@@ -2786,7 +2988,7 @@ fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
                 && !is(w[j], HAVE)
                 && match scan_back(w, j).subject {
                     Subject::First | Subject::None | Subject::Negative => false,
-                    Subject::Noun { head } => !remit_subject(w, head),
+                    Subject::Noun { head } => !remit_subject(w, head, names),
                     _ => true,
                 }
         }) {
@@ -2796,14 +2998,94 @@ fn scheduled_change(w: &[&str], rep: Option<usize>) -> bool {
             .iter()
             .any(|x| is(x, TASK_NOUNS) || is(x, DEVICES) || is(x, REMIT_NOUNS) || is(x, DELIVERABLES))
     });
-    held || in_for || instead
+    held || in_for || instead || state_facts(w, rep, names)
 }
+
+/// A governing word anywhere before index `upto`: negators, modals and the
+/// subordinators all suppress the state that follows them.
+fn governed_prefix(w: &[&str], upto: usize) -> bool {
+    w[..upto]
+        .iter()
+        .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
+}
+
+/// World-fact state changes stated without their act — "a table for two under
+/// your name now", "your account's on auto top-up", "the switch is under way":
+/// the booking noun or the remit thing stands for the whole event, and only the
+/// assistant puts things under your name or onto a service mode.
+fn state_facts(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
+    // "A table for two under your name now": the hold stated without its verb.
+    // The booking noun on the left stands for the whole event — nobody else
+    // books under your name.
+    let under_name = (0..w.len()).any(|i| {
+        if rep.is_some_and(|r| i > r)
+            || w[i] != "under"
+            || !matches!(w.get(i + 2), Some(&("name" | "names" | "account" | "accounts")))
+            || !w.get(i + 1).is_some_and(|t| is(t, POSSESSIVES))
+            || governed_prefix(w, i)
+        {
+            return false;
+        }
+        // No agent verb on the left ("niamh booked a table under your name" is
+        // hers — it still states the hold, but it is her report of it).
+        w[..i].iter().any(|x| is(x, TASK_NOUNS) || is(x, BOOKINGS)) && !w[..i].iter().any(|x| owning_verb(x))
+    });
+    // "On auto top-up now", "the bill's on auto-renew": a remit thing reported
+    // under a service mode — only the assistant puts an account on one.
+    let on_mode = (0..w.len()).any(|i| {
+        if rep.is_some_and(|r| i > r)
+            || w[i] != "on"
+            || i < 1
+            || !is(w[i - 1], BE)
+            || !w.get(i + 1).is_some_and(|t| is(t, SERVICE_MODES))
+            || governed_prefix(w, i)
+        {
+            return false;
+        }
+        match scan_back(w, i - 1).subject {
+            Subject::Noun { head } => remit_thing(w, head, names) || w[..i].iter().any(|x| is(x, POSSESSIVES)),
+            Subject::Thing => true,
+            _ => false,
+        }
+    });
+    under_name || on_mode
+}
+
+/// A service or billing mode a remit thing can be put into: "on auto top-up",
+/// "on auto-renew", "on hold", "on repeat".
+const SERVICE_MODES: &[&str] = &[
+    "auto",
+    "automatic",
+    "autopilot",
+    "renew",
+    "renewal",
+    "rollover",
+    "repeat",
+    "repeating",
+    "recurring",
+    "pause",
+    "paused",
+    "hold",
+    "standby",
+    "snooze",
+    "snoozed",
+    "mute",
+    "muted",
+    "silent",
+    "charge",
+];
+
+/// Booking nouns that can head a verb-less hold — "a table", "a snug", "a cab"
+/// — the remit's seats and rooms, a few of which the task list does not carry.
+const BOOKINGS: &[&str] = &[
+    "seat", "seats", "snug", "cover", "covers", "berth", "cab", "cabs", "taxi", "taxis", "spot", "spots",
+];
 
 /// "It's ringing now", "your timer's running", "the kettle's off", "she does now": a
 /// device, a remit thing or a managed person reported in a changed state with no other
 /// agent — nothing else can have changed it. Weather and time states are the world's; a
 /// person acting the verb itself is their own ("the train's running" is machinery's).
-fn agentless_state(w: &[&str], rep: Option<usize>) -> bool {
+fn agentless_state(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
     // "<person> does now": an elliptical informing — "she does now" = she knows now.
     let does_now = w.windows(2).enumerate().any(|(i, p)| {
         rep.is_none_or(|r| i < r)
@@ -2816,7 +3098,7 @@ fn agentless_state(w: &[&str], rep: Option<usize>) -> bool {
             }
             && !w[..i]
                 .iter()
-                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
     });
     // "<remit thing or bare it> be <state>": only the assistant can have put it there.
     let state = w.iter().enumerate().any(|(i, t)| {
@@ -2832,7 +3114,7 @@ fn agentless_state(w: &[&str], rep: Option<usize>) -> bool {
             return false;
         }
         match ctx.subject {
-            Subject::Noun { head } => remit_thing(w, head),
+            Subject::Noun { head } => remit_thing(w, head, names),
             Subject::Thing => true,
             _ => false,
         }
@@ -2889,6 +3171,12 @@ fn delivery_as_possession(w: &[&str], rep: Option<usize>) -> bool {
         if ctx.governed {
             return false;
         }
+        // "She got it sorted", "they got the car fixed": an object followed by a
+        // participle is the owner's causative, not a delivery — the assistant's
+        // own "I got it sorted" still claims.
+        if after[j + 1..].iter().take(2).any(|x| past_shaped(x)) && ctx.subject != Subject::First {
+            return false;
+        }
         // "You've got it": a bare "it" under "you" reads as understanding or mere
         // possession; a concrete object ("you've got the seats", "two nights") claims
         // the delivery.
@@ -2909,6 +3197,8 @@ fn arrangement_state(w: &[&str], rep: Option<usize>) -> bool {
         if let Some(i) = w.windows(phrase.len()).position(|win| win == *phrase)
             && rep.is_none_or(|r| i <= r)
             && !scan_back(w, i).governed
+            // "He had it sorted out": the arrangement is his causative.
+            && !anothers_causative(w, i)
         {
             return true;
         }
@@ -2935,7 +3225,7 @@ fn arranged_in(w: &[&str], i: usize) -> bool {
             .is_none_or(|n| matches!(n, "now" | "already" | "too" | "finally" | "for" | "as" | "since"))
         && !w[..i]
             .iter()
-            .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+            .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
 }
 
 /// Whether `t` can head a noun phrase — anything that is not a verb form, a function word or
@@ -2951,6 +3241,7 @@ fn nounish(t: &str) -> bool {
         || is(t, ADVERBS)
         || is(t, HABITUAL)
         || is(t, CONDITIONAL)
+        || is(t, TEMPORAL)
         || is(t, DESIRE)
         || is(t, FRAMES)
         || is(t, ARTICLES)
@@ -2975,11 +3266,72 @@ fn noun_phrase_start(w: &[&str], head: usize) -> usize {
     start
 }
 
+/// "He's had the car fixed", "they got it sorted": have/get + object + participle
+/// is a causative — the arranging belongs to the have/get's subject, not to the
+/// object the participle attaches to. Returns the have/get's index when the
+/// participle at `i` sits in the frame.
+fn causative_at(w: &[&str], i: usize) -> Option<usize> {
+    if i == 0 {
+        return None;
+    }
+    // The object: a bare pronoun ("had it fixed") or a noun phrase ("had the
+    // car fixed", "got my papers sorted").
+    let mut start = i - 1;
+    while start > 0
+        && (is(w[start - 1], DETERMINERS)
+            || is(w[start - 1], POSSESSIVES)
+            || is_number(w[start - 1])
+            || is(w[start - 1], TASK_NOUNS))
+    {
+        start -= 1;
+    }
+    // The whole gap is the object: "has been paid" is a passive perfect — "been"
+    // is an auxiliary, not an object — so the causative is not there.
+    if !w[start..i]
+        .iter()
+        .all(|t| nounish(t) || is(t, OBJECT_PRONOUNS) || is(t, DETERMINERS) || is(t, POSSESSIVES) || is_number(t))
+    {
+        return None;
+    }
+    let before = start.checked_sub(1)?;
+    (is(w[before], HAVE) || is(w[before], GET)).then_some(before)
+}
+
+/// Whether the participle at `i` is another party's causative — the have/get
+/// subject is not the assistant. A first-person or dropped owner keeps the claim.
+fn anothers_causative(w: &[&str], i: usize) -> bool {
+    causative_at(w, i).is_some_and(|h| {
+        let owner = scan_back(w, h);
+        owner.governed || !matches!(owner.subject, Subject::First | Subject::None)
+    })
+}
+
+/// The judge's verdict when the participle at `i` sits in a causative frame:
+/// the assistant's own ("I've had it fixed", bare "had it sorted") still claims;
+/// a governed or third-party owner makes it theirs. `None` when there is no
+/// frame and the ordinary dispatch applies.
+fn causative_verdict(w: &[&str], i: usize, claim: Verdict) -> Option<Verdict> {
+    let h = causative_at(w, i)?;
+    let owner = scan_back(w, h);
+    Some(
+        if !owner.governed && matches!(owner.subject, Subject::First | Subject::None) {
+            claim
+        } else {
+            Verdict::Plain
+        },
+    )
+}
+
 /// A managed *thing*: a task noun, device, deliverable or remit noun — or a slot named by its
 /// value ("your nine o'clock"). Its own change reads as the assistant's doing. Persons are
 /// handled separately: they act for themselves.
-fn remit_thing(w: &[&str], head: usize) -> bool {
+fn remit_thing(w: &[&str], head: usize, names: &[&str]) -> bool {
     let Some(&h) = w.get(head) else { return false };
+    // A person named earlier is not the remit, even when their name is also a
+    // task noun — "mum mentioned bill; bill moved the meeting".
+    if names.contains(&h) {
+        return false;
+    }
     if is(h, TASK_NOUNS) || is(h, DEVICES) || is(h, DELIVERABLES) || is(h, REMIT_NOUNS) || is(h, FOREIGN) {
         return true;
     }
@@ -2990,8 +3342,8 @@ fn remit_thing(w: &[&str], head: usize) -> bool {
 
 /// The user's remit: managed things, plus the people an assistant contacts on the user's
 /// behalf ("the gardener's been asked", "your mum's been told").
-fn remit_subject(w: &[&str], head: usize) -> bool {
-    remit_thing(w, head) || w.get(head).is_some_and(|h| is(h, CONTACTS) || is(h, RELATIONS))
+fn remit_subject(w: &[&str], head: usize, names: &[&str]) -> bool {
+    remit_thing(w, head, names) || w.get(head).is_some_and(|h| is(h, CONTACTS) || is(h, RELATIONS))
 }
 
 /// "Many letters were sent during the war": an indefinite or quantified subject is nobody's
@@ -3198,9 +3550,9 @@ fn report_at(w: &[&str]) -> Option<usize> {
 /// "Water is added slowly while you stir": a present passive wrapped in a temporal
 /// subordinator reads as a procedure step, not as something anyone completed. Needs a real
 /// clause after the subordinator — "posted before Friday" is still a deadline.
-fn procedural(w: &[&str], i: usize, head: usize, past: bool) -> bool {
+fn procedural(w: &[&str], i: usize, head: usize, past: bool, names: &[&str]) -> bool {
     !past
-        && !remit_thing(w, head)
+        && !remit_thing(w, head, names)
         && w.iter().enumerate().any(|(k, t)| {
             k > i
                 && matches!(*t, "while" | "before" | "after" | "until" | "when" | "once" | "till")
@@ -3261,9 +3613,9 @@ fn dropped_subject(w: &[&str], rep: Option<usize>) -> bool {
 /// agentless change on the remit — the people and things this assistant manages — reads as
 /// the assistant's doing. A managed *thing* doing the verb itself counts too ("the letter
 /// reached her"); a person doing it does not ("the gardener asked about the gate").
-fn remit_change(w: &[&str], rep: Option<usize>) -> bool {
+fn remit_change(w: &[&str], rep: Option<usize>, names: &[&str]) -> bool {
     w.iter().enumerate().any(|(i, t)| {
-        if rep.is_some_and(|r| i > r) || !past_shaped(t) {
+        if rep.is_some_and(|r| i > r) || !past_shaped(t) || anothers_causative(w, i) {
             return false;
         }
         let ctx = scan_back(w, i);
@@ -3276,9 +3628,9 @@ fn remit_change(w: &[&str], rep: Option<usize>) -> bool {
                     return false;
                 }
                 if ctx.aux {
-                    remit_subject(w, head)
+                    remit_subject(w, head, names)
                 } else {
-                    remit_thing(w, head)
+                    remit_thing(w, head, names)
                 }
             }
             Subject::Thing => ctx.aux,
@@ -3291,7 +3643,7 @@ fn remit_change(w: &[&str], rep: Option<usize>) -> bool {
                 && is(w[i], BE)
                 && w.get(i + 1) == Some(&"now")
                 && new_value(w, i + 2)
-                && matches!(scan_back(w, i).subject, Subject::Noun { head } if remit_subject(w, head))
+                && matches!(scan_back(w, i).subject, Subject::Noun { head } if remit_subject(w, head, names))
         })
     }
 }
@@ -3380,7 +3732,7 @@ fn informed_contact(w: &[&str], rep: Option<usize>) -> bool {
             && w[h + 3] == "for"
             && !w[..h]
                 .iter()
-                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
             && match scan_back(w, h).subject {
                 Subject::Noun { head } => is(w[head], CONTACTS) || is(w[head], RELATIONS),
                 Subject::Third | Subject::Thing => true,
@@ -3406,12 +3758,12 @@ fn informed_contact(w: &[&str], rep: Option<usize>) -> bool {
             }
             && !w[..i]
                 .iter()
-                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
     });
     down_for || knows
 }
 
-fn classify_sentence(sentence: &str, question: bool) -> Verdict {
+fn classify_sentence(sentence: &str, question: bool, names: &[&str]) -> Verdict {
     let all = words(sentence);
     let hearsay = HEARSAY.iter().any(|p| has_phrase(&all, p));
     let clauses = clauses(sentence);
@@ -3443,7 +3795,7 @@ fn classify_sentence(sentence: &str, question: bool) -> Verdict {
             let v = if clause.quoted {
                 Verdict::Plain
             } else {
-                classify_clause(w, inherited, hearsay, rep, reported && !floor)
+                classify_clause(w, inherited, hearsay, rep, reported && !floor, names)
             };
             verdict = verdict.max(v);
         }
@@ -3459,11 +3811,12 @@ fn classify_clause(
     hearsay: bool,
     rep: Option<usize>,
     reported: bool,
+    names: &[&str],
 ) -> Verdict {
     if w.iter().any(|t| is(t, FOREIGN)) {
         return Verdict::Replace;
     }
-    let mut verdict = phrases(w, rep, reported);
+    let mut verdict = phrases(w, rep, reported, names);
     // "Transfer complete", "Payment of $42 to Priya complete". "…marked the job
     // complete" is different: the tail is a lexical verb's object complement and
     // that verb's subject decides — a named or third-party subject's own act.
@@ -3489,7 +3842,7 @@ fn classify_clause(
     for i in 0..w.len() {
         if let Some(v) = verb(w[i]) {
             let reported_verb = reported || rep.is_some_and(|r| i > r);
-            verdict = verdict.max(judge(w, i, v, inherited, hearsay, reported_verb));
+            verdict = verdict.max(judge(w, i, v, inherited, hearsay, reported_verb, names));
         }
     }
     verdict
@@ -3497,7 +3850,7 @@ fn classify_clause(
 
 /// "Went out", "gone through", "on its way": a completion phrased as motion. A remit
 /// subject doing the phrase is an implied-assistant claim; a bare "it" is only ambiguous.
-fn transit_phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
+fn transit_phrases(w: &[&str], rep: Option<usize>, reported: bool, names: &[&str]) -> Verdict {
     let mut verdict = Verdict::Plain;
     let at = |phrase: &[&str]| w.windows(phrase.len()).position(|win| win == phrase);
     for phrase in [
@@ -3525,7 +3878,7 @@ fn transit_phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
             // "The invoice went out", "your repeat's gone through": the scan reads the
             // whole left side — "the booking for Friday went in" finds "booking".
             let taskish = match ctx.subject {
-                Subject::Noun { head } => remit_subject(w, head) || is_number(w[head]),
+                Subject::Noun { head } => remit_subject(w, head, names) || is_number(w[head]),
                 _ => false,
             } || w[..i]
                 .iter()
@@ -3543,8 +3896,8 @@ fn transit_phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
 }
 
 /// Completion phrases and possession claims.
-fn phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
-    let mut verdict = transit_phrases(w, rep, reported);
+fn phrases(w: &[&str], rep: Option<usize>, reported: bool, names: &[&str]) -> Verdict {
+    let mut verdict = transit_phrases(w, rep, reported, names);
     let at = |phrase: &[&str]| w.windows(phrase.len()).position(|win| win == phrase);
     for phrase in [&["taken", "care", "of"][..], &["all", "set"]] {
         if let Some(i) = at(phrase) {
@@ -3607,7 +3960,7 @@ fn phrases(w: &[&str], rep: Option<usize>, reported: bool) -> Verdict {
             && is(w[i - 2], DEVICES)
             && !w[..i]
                 .iter()
-                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL))
+                .any(|x| is(x, NEGATORS) || is(x, MODALS) || is(x, CONDITIONAL) || is(x, TEMPORAL))
         {
             verdict = verdict.max(Verdict::Disclose);
         }
@@ -3632,20 +3985,38 @@ fn other_sense(w: &[&str], i: usize, v: Verb) -> bool {
             && next.is_some_and(|n| matches!(n, "when" | "once" | "if" | "whenever")))
 }
 
-fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: bool, reported: bool) -> Verdict {
-    let next = w.get(i + 1).copied();
-    let strong = matches!(v.class, Class::Acts | Class::Completion | Class::TaskOnly);
-    // Attributive: "the paid version", "your scheduled meeting".
+/// The attributive reads that end the judging before a subject is even scanned:
+/// "the paid version" is nobody's act; "your scheduled meeting" discloses only
+/// when the verb is itself an act ("your cancelled flight").
+fn lead_verdict(w: &[&str], i: usize, v: Verb) -> Option<Verdict> {
     if i > 0 && is(w[i - 1], ARTICLES) {
-        return Verdict::Plain;
+        return Some(Verdict::Plain);
     }
     if i > 0 && is(w[i - 1], POSSESSIVES) {
-        return if v.class == Class::Acts {
+        return Some(if v.class == Class::Acts {
             Verdict::Disclose
         } else {
             Verdict::Plain
-        };
+        });
     }
+    None
+}
+
+fn judge(
+    w: &[&str],
+    i: usize,
+    v: Verb,
+    inherited: Option<Context>,
+    hearsay: bool,
+    reported: bool,
+    names: &[&str],
+) -> Verdict {
+    if let Some(v) = lead_verdict(w, i, v) {
+        return v;
+    }
+    let next = w.get(i + 1).copied();
+    let strong = matches!(v.class, Class::Acts | Class::Completion | Class::TaskOnly);
+    let has = has_read(w, i);
     let mut ctx = scan_back(w, i);
     if ctx.subject == Subject::None
         && !ctx.governed
@@ -3668,7 +4039,7 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
     }
     // A remit thing makes even a particle-less verb form its own change report
     // ("the letter reached her"), where `other_sense` would read the word aside.
-    if other_sense(w, i, v) && !matches!(ctx.subject, Subject::Noun { head } if remit_thing(w, head)) {
+    if other_sense(w, i, v) && !matches!(ctx.subject, Subject::Noun { head } if remit_thing(w, head, names)) {
         return Verdict::Plain;
     }
     // The completion's agent decides (D-028): an explicit "by" phrase naming someone else,
@@ -3689,7 +4060,13 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
     if v.form == Form::Ing {
         return ing_verdict(w, i, v, ctx);
     }
-    let has = has_read(w, i);
+    // "He's had the car fixed", "they got it sorted": have/get + object +
+    // participle is the owner's causative — the arranging is theirs. A
+    // first-person or dropped owner still claims ("I've had it fixed",
+    // "had it sorted").
+    if let Some(v) = causative_verdict(w, i, claim) {
+        return v;
+    }
     let base = match ctx.subject {
         Subject::Negative => return Verdict::Plain,
         // The user's own action ("you told me you sent it"), unless passive ("you're booked").
@@ -3710,7 +4087,7 @@ fn judge(w: &[&str], i: usize, v: Verb, inherited: Option<Context>, hearsay: boo
             // An agentless passive on a person: "she's been notified".
             if ctx.past && !task { Verdict::Disclose } else { claim }
         }
-        Subject::Noun { head } => noun_verdict(w, i, v, ctx, head, claim),
+        Subject::Noun { head } => noun_verdict(w, i, v, ctx, head, claim, names),
         Subject::None => {
             // "Done properly, the glue…": a fronted manner participle, not a headline.
             if i == 0
@@ -3773,7 +4150,7 @@ fn ing_verdict(w: &[&str], i: usize, v: Verb, ctx: Context) -> Verdict {
 /// A named noun's completion, attributed: its own act is a third party's (Plain) unless the
 /// noun is a remit thing reporting its change; an agentless passive or headline claims
 /// unless the subject is generic, machinery, procedural or located.
-fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim: Verdict) -> Verdict {
+fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim: Verdict, names: &[&str]) -> Verdict {
     let task = w.iter().any(|t| is(t, TASK_NOUNS) || is_number(t));
     let has = has_read(w, i);
     if !ctx.aux && !ctx.passive {
@@ -3794,7 +4171,7 @@ fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim:
         // letter emailed"); their agentless-passive reading below still stands.
         if is(w[i], OWNED_ACTS)
             && !is_number(w[head])
-            && !remit_thing(w, head)
+            && !remit_thing(w, head, names)
             && (np == 0 || !is(w[np - 1], AFTER_PARTICIPLE))
         {
             return Verdict::Plain;
@@ -3803,7 +4180,7 @@ fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim:
     if !(ctx.aux || participle_position(w, i)) || has {
         // The noun did the verb itself: a named third party, unless it is a
         // remit thing reporting its own change ("the letter reached her").
-        if remit_thing(w, head) {
+        if remit_thing(w, head, names) {
             Verdict::Disclose
         } else {
             Verdict::Plain
@@ -3819,7 +4196,7 @@ fn noun_verdict(w: &[&str], i: usize, v: Verb, ctx: Context, head: usize, claim:
         }
     } else if generic_subject(w, head)
         || world_status(w, i, head)
-        || procedural(w, i, head, ctx.past)
+        || procedural(w, i, head, ctx.past, names)
         // "The movie is set in Rome": a named subject with "set in" is located, not
         // acted on. A bare "it's set in…" stays ambiguous — the referent is hidden.
         || (v.lemma == "set" && w.get(i + 1) == Some(&"in"))
@@ -4272,6 +4649,167 @@ mod tests {
             "Niamh moved the heating to half five instead of six.",
         ] {
             assert!(!uninvited_action(s), "{s}");
+        }
+    }
+
+    /// A request's tag is the same closed class in every dialect: a vocative
+    /// ("mate", "pal", "boss"), a dialect confirmation ("na", "abi", "no",
+    /// "lah"), a hearsay check ("you hear", "you hear me"), a fused request
+    /// frame ("gonnae", "can ye") or a please-form ("abeg"). The clause before
+    /// the tag decides: a bare imperative is a request; a statement carrying a
+    /// confirmation tag is still a question.
+    #[test]
+    fn dialect_request_forms_are_the_same_tag_class() {
+        for heard in [
+            "Pay the leccy, mate?",
+            "Pay the leccy, pal?",
+            "Sort the direct debit, na?",
+            "Send the receipt, abi?",
+            "Book the taxi, no?",
+            "Wire the deposit, you hear?",
+            "Lock the door, you hear me?",
+            "Gonnae ring the plumber?",
+            "Gonnae book the cab?",
+            "Can ye drop the keys off?",
+            "Could ye ring the surgery?",
+            "Abeg move the meeting to Friday.",
+        ] {
+            assert!(request_may_ask_for_action(heard), "{heard}");
+        }
+        for heard in [
+            // A statement with a confirmation tag or a vocative stays a question.
+            "You'll be there, mate?",
+            "It's cold in here, no?",
+            "The kids are fed, yeah?",
+            "It's ready, pal?",
+            "The meeting's at three, abi?",
+            // "Gonnae" as going-to predicts; it does not ask.
+            "Gonnae rain later?",
+            "You hear?",
+        ] {
+            assert!(!request_may_ask_for_action(heard), "{heard}");
+        }
+    }
+
+    /// A fragment carrying a negator or a governor is its own clause: folding it
+    /// into the next clause puts that clause's verb under the fragment's scope —
+    /// in "no worries, sent it" the "no" is not the sending's, and in "not yet,
+    /// so I sent it" the "yet" is not the sending's either. An appositive or
+    /// address fragment still folds.
+    #[test]
+    fn a_governing_fragment_does_not_fold_into_the_next_clause() {
+        for s in [
+            "No worries, sent the receipt over.",
+            "No problem, paid the invoice this morning.",
+            "Not yet, so I sent him the file.",
+            "Not now, but I've moved it.",
+        ] {
+            assert_ne!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        // "dropped" is untabled — the lexicon-less screen owns it.
+        assert!(uninvited_action("No tension, dropped the cash off."));
+        for s in ["No worries, nothing was sent.", "Not yet, so I can't send it."] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+        }
+    }
+
+    /// "After", "before", "until", "when", "once" order events in time; they are
+    /// not hypotheticals. An episodic completed form under a temporal
+    /// subordinator is asserted — "after the 30,000 I used", the use happened —
+    /// while a present or generic reading stays governed ("once the reminder is
+    /// in, it stays"). "If", "unless" and "whether" govern whatever the form.
+    #[test]
+    fn temporal_subordinators_assert_episodic_acts() {
+        for s in [
+            "After I sent the transfer, the receipt came through.",
+            "Before I paid it, the balance was fine.",
+            "He relaxed once I'd sent it.",
+            "The balance dropped after I moved the savings.",
+            "The account's short after the money I sent this morning.",
+        ] {
+            assert_ne!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        // "rang" is untabled — the lexicon-less screen owns it.
+        assert!(uninvited_action("Until I rang the plumber, nothing moved."));
+        for s in [
+            "Once the reminder is in, it stays.",
+            "When I send it tomorrow, you'll have it.",
+            "After I send it tomorrow, you'll have it.",
+            "If I sent it, you'd have it.",
+            "Until the invoice is paid, it shows pending.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+    }
+
+    /// A state change stated as a noun-headed fact — no completion verb: the
+    /// booking under the user's name, the account on a service mode, the process
+    /// under way, a kept place for the listener. With no other agent these read
+    /// as assistant-implied; a locative or a person's own state does not.
+    #[test]
+    fn noun_headed_world_facts_are_agentless_claims() {
+        for s in [
+            "A table for two under your name now.",
+            "A window table under your name.",
+            "Your account's on auto top-up now.",
+            "The bill's on auto-renew now.",
+            "The switch is under way.",
+            "The transfer's under way now.",
+            "A snug kept for ye.",
+            "The money has moved from your savings into the holiday fund.",
+        ] {
+            assert!(uninvited_action(s), "screen {s}");
+        }
+        for s in [
+            // Locatives and persons' own states are not deliveries.
+            "A table under the window now.",
+            "The shop is on the corner now.",
+            "Mum's on auto-renew.",
+            "A snug kept for the regulars.",
+            "The parcel's under the stairs.",
+        ] {
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+    }
+
+    /// "He's had the car fixed", "they got it sorted": have/get + object +
+    /// participle is the owner's causative — the arranging is theirs, never the
+    /// assistant's. A name the reply already used as a person binds the same way:
+    /// "Bill" the caller is not the bill on the remit.
+    #[test]
+    fn a_third_partys_causative_and_name_are_their_own() {
+        for s in [
+            "He's had the car fixed.",
+            "They got the car fixed.",
+            "She's had it sorted.",
+            "He had it sorted out.",
+            "He's had the documents sent over.",
+            "She got it sorted.",
+            "They've had it delivered.",
+            // The pronoun binds the party named two sentences back.
+            "Mr Byrne rang about the leak. He's had the boiler fixed.",
+            "Chidi called about the account. He had it sorted.",
+        ] {
+            assert_eq!(classify(s), Verdict::Plain, "classify {s}");
+            assert!(!uninvited_action(s), "screen {s}");
+        }
+        // A name the reply used as a person binds later mentions of the same
+        // token — "Bill" the caller, not the task noun.
+        assert_eq!(classify("Mum mentioned Bill. Bill moved the meeting."), Verdict::Plain);
+        assert!(!uninvited_action("Mum mentioned Bill. Bill moved the meeting."));
+        for s in [
+            // The assistant's own causative still claims, bare or under "I".
+            "I've had the car fixed.",
+            "I had it sorted out.",
+            "I got it sorted.",
+            "Had it sorted out.",
+            // An unbound task noun still reports its own change.
+            "Your bill's moved to Friday.",
+        ] {
+            assert!(uninvited_action(s), "screen {s}");
         }
     }
 
